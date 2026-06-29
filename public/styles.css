@@ -1,0 +1,181 @@
+:root {
+  --bg: #0B0E17;
+  --surface: #121826;
+  --accent-green: #10b981;
+  --accent-gold: #f59e0b;
+  --accent-blue: #3b82f6;
+  --text: #f1f5f9;
+  --muted: #64748b;
+}
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.stat-card {
+  background: linear-gradient(145deg, #121826, #0f1422);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+}
+
+#dashboard {
+  font-feature-settings: "tnum";
+}
+
+.premium-card {
+  background: #121826;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 20px;
+  padding: 24px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.premium-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(to right, transparent, rgba(16,185,129,0.3), transparent);
+}
+
+.premium-card:hover {
+  border-color: rgba(16,185,129,0.2);
+  transform: translateY(-1px);
+  box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.25);
+}
+
+.modern-table th {
+  background: #0f1422;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+
+.modern-table td {
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  transition: background 0.1s;
+}
+
+.modern-table tr:hover td {
+  background: rgba(16,185,129,0.03);
+}
+
+.manager-row {
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.manager-row:hover {
+  background: rgba(255,255,255,0.02) !important;
+  transform: scale(1.005);
+}
+
+.premium-button {
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.premium-button::after {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 0;
+  height: 0;
+  background: rgba(255,255,255,0.2);
+  border-radius: 50%;
+  transition: width 0.6s, height 0.6s;
+}
+
+.premium-button:hover::after {
+  width: 300px;
+  height: 300px;
+}
+
+.premium-button:active {
+  transform: scale(0.98);
+}
+
+.lineup-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+
+.lineup-player {
+  background: #0f1422;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  padding: 8px;
+  font-size: 12px;
+  text-align: center;
+  transition: all 0.2s;
+}
+
+.lineup-player.captain {
+  border-color: #f59e0b;
+  background: linear-gradient(145deg, #1a1408, #0f1422);
+}
+
+.projection-bar {
+  height: 6px;
+  background: linear-gradient(to right, var(--accent-green), var(--accent-gold));
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.chip-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.sponsor-card {
+  background: linear-gradient(135deg, #1a1408, #121826);
+  border: 1px solid #f59e0b;
+}
+
+.challenge-proposal {
+  border-left: 4px solid var(--accent-green);
+}
+
+#dashboard {
+  font-feature-settings: "tnum";
+}
+
+/* Enhanced ticker */
+#ticker-content {
+  animation: ticker-slide 18s linear infinite;
+}
+
+@keyframes ticker-slide {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.premium-shadow {
+  box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.4);
+}
+
+/* Responsive premium */
+@media (max-width: 768px) {
+  .premium-card {
+    padding: 16px;
+  }
+}

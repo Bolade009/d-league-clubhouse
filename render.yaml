@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: d-league-clubhouse
+    env: node
+    plan: starter
+    region: oregon
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DEMO_MODE
+        value: "false"
+      - key: PORT
+        value: 4174
+      - key: DATA_DIR
+        value: ./data
+      # Paystack - add via Render dashboard (never commit secrets)
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: PAYSTACK_PUBLIC_KEY
+        sync: false
+      - key: PAYSTACK_CALLBACK_URL
+        sync: false
+      # Required tokens - generate strong random values
+      - key: EXPORT_TOKEN
+        sync: false
+      - key: SYNC_TOKEN
+        sync: false
+      # Optional adapter templates
+      - key: LIVE_FPL_API_TEMPLATE
+        value: ""
+      - key: UCL_FANTASY_API_TEMPLATE
+        value: ""
+      - key: ENABLE_SCHEDULED_SYNC
+        value: "false"
+      - key: SYNC_INTERVAL_MS
+        value: "300000"
+    disk:
+      name: dleague-data
+      mountPath: /app/data
+      sizeGB: 1

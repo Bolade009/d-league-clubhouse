@@ -1,0 +1,23 @@
+{
+  "name": "d-league-clubhouse",
+  "version": "1.0.0",
+  "description": "D League Clubhouse — Premium manager-centric fantasy football community app for FPL, UCL Fantasy, H2H, cups, fines, and transparent payouts.",
+  "private": true,
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js",
+    "seed": "node -e \"require('./server.js').seedDemoIfNeeded && console.log('Seeded')\""
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {}
+}

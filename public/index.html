@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>D League Clubhouse • Manager Command Center</title>
+  <meta name="description" content="Premium private fantasy football community. FPL + UCL Fantasy. Transparent pots, fines, H2H, cups.">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏆</text></svg>">
+</head>
+<body class="bg-[#0A0F1C] text-slate-200">
+  <!-- Top Bar -->
+  <div id="topbar" class="border-b border-white/10 bg-[#0A0F1C]/95 backdrop-blur sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-400 via-emerald-500 to-teal-600 flex items-center justify-center shadow-inner">
+            <span class="font-black text-[#0A0F1C] text-2xl tracking-tighter">DL</span>
+          </div>
+          <div>
+            <div class="font-black tracking-[-1.5px] text-2xl">D LEAGUE</div>
+            <div class="text-[10px] text-emerald-400 -mt-1 font-mono">CLUBHOUSE 25/26</div>
+          </div>
+        </div>
+        <div class="hidden md:flex items-center gap-2 text-xs px-3 py-1 rounded-full bg-white/5 border border-white/10">
+          <div class="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></div>
+          <span class="text-emerald-400 font-medium">SEASON ACTIVE</span>
+        </div>
+      </div>
+
+      <div id="topbar-right" class="flex items-center gap-3">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- LIVE TICKER -->
+  <div id="ticker" class="bg-black/60 border-b border-white/10 overflow-hidden h-9 flex items-center text-xs font-mono tracking-[1px]">
+    <div class="max-w-7xl mx-auto px-6 w-full">
+      <div id="ticker-content" class="whitespace-nowrap flex items-center gap-12 text-emerald-300/80"></div>
+    </div>
+  </div>
+
+  <!-- LOGIN SCREEN -->
+  <div id="login-screen" class="max-w-md mx-auto pt-16 px-6">
+    <div class="bg-[#121826] border border-white/10 rounded-3xl p-8 shadow-2xl">
+      <div class="text-center mb-8">
+        <div class="mx-auto w-16 h-16 rounded-3xl bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center mb-4">
+          <span class="text-[#0A0F1C] font-black text-4xl">DL</span>
+        </div>
+        <div style="color:#64748b; font-size:12px; margin-bottom:8px;">Server must be running — visit <span style="font-family:monospace">http://localhost:4174</span> in your browser after <span style="font-family:monospace">npm start</span></div>
+        <h1 class="text-4xl font-black tracking-[-2px]">D League Clubhouse</h1>
+        <p class="text-slate-400 mt-2">Private. Transparent. Manager-first.</p>
+      </div>
+
+      <div class="space-y-4">
+        <div>
+          <label class="text-xs uppercase tracking-[1px] text-slate-500">Email</label>
+          <input id="login-email" type="email" value="ayo@dleague.ng"
+                 class="w-full bg-black/60 border border-white/10 focus:border-emerald-500 outline-none rounded-2xl px-4 py-3 text-lg">
+        </div>
+        <div>
+          <label class="text-xs uppercase tracking-[1px] text-slate-500">Access Code</label>
+          <input id="login-code" type="text" value="ayo2026"
+                 class="w-full bg-black/60 border border-white/10 focus:border-emerald-500 outline-none rounded-2xl px-4 py-3 text-lg tracking-widest font-mono">
+        </div>
+
+        <button id="login-button" 
+                class="w-full py-4 bg-white text-[#0A0F1C] font-bold rounded-2xl hover:bg-emerald-400 active:scale-[0.985] transition-all">
+          ENTER THE CLUBHOUSE
+        </button>
+      </div>
+
+      <div id="server-warning" class="mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-2xl text-xs text-red-300 hidden">
+        <strong>IMPORTANT:</strong> This is a server-powered app.<br>
+        1. In Terminal: <span class="font-mono">cd d-league-clubhouse && npm start</span><br>
+        2. Then open <span class="font-mono">http://localhost:4174</span> in your browser.
+      </div>
+
+      <div id="demo-hint" class="mt-6 text-center text-[11px] text-slate-500">
+        Demo mode active • Try other managers: chinedu@dleague.ng / chi2026
+      </div>
+    </div>
+
+    <div class="mt-8 text-center">
+      <div class="text-xs text-slate-500">FPL • UCL FANTASY • H2H • CUPS • FINES • PAYOUTS</div>
+      <div class="text-[10px] text-slate-600 mt-1">Payments secured by Paystack. Only verified webhooks mark paid.</div>
+    </div>
+  </div>
+
+  <!-- MAIN DASHBOARD -->
+  <div id="dashboard" class="hidden max-w-7xl mx-auto px-4 md:px-6 pb-24">
+    
+    <!-- MANAGER HERO -->
+    <div class="pt-8 pb-6 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+      <div>
+        <div id="welcome-line" class="uppercase text-xs tracking-[3px] text-emerald-400 font-semibold"></div>
+        <div id="manager-name" class="text-6xl font-black tracking-[-3.2px] leading-none"></div>
+        <div id="manager-status-line" class="mt-2 flex items-center gap-2 text-sm"></div>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <div id="wallet-card" onclick="showLedgerModal()"
+             class="cursor-pointer bg-[#121826] border border-white/10 hover:border-white/20 transition px-5 py-3 rounded-3xl flex items-center gap-4">
+          <div>
+            <div class="text-[10px] uppercase tracking-widest text-slate-400">WALLET BALANCE</div>
+            <div id="wallet-balance" class="text-3xl font-black tabular-nums tracking-tighter">₦0</div>
+          </div>
+          <div class="text-right text-xs">
+            <div class="text-emerald-400">VIEW LEDGER →</div>
+          </div>
+        </div>
+
+        <button onclick="logout()" 
+                class="px-5 h-12 rounded-3xl border border-white/10 hover:bg-white/5 text-sm font-medium">SIGN OUT</button>
+      </div>
+    </div>
+
+    <!-- QUICK STATS -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+      <div class="stat-card">
+        <div class="text-xs text-slate-400">FPL STATUS</div>
+        <div id="fpl-status" class="font-bold text-xl"></div>
+        <div id="fpl-current" class="text-emerald-400 text-sm tabular-nums"></div>
+      </div>
+      <div class="stat-card">
+        <div class="text-xs text-slate-400">UCL STATUS</div>
+        <div id="ucl-status" class="font-bold text-xl"></div>
+        <div id="ucl-current" class="text-blue-400 text-sm tabular-nums"></div>
+      </div>
+      <div class="stat-card">
+        <div class="text-xs text-slate-400">COMBINED RANK</div>
+        <div id="combined-rank" class="font-black text-3xl tabular-nums"></div>
+      </div>
+      <div class="stat-card">
+        <div class="text-xs text-slate-400">TOTAL FINES</div>
+        <div id="total-fines" class="font-black text-3xl tabular-nums text-amber-400"></div>
+      </div>
+    </div>
+
+    <!-- LIVE TICKER INSIDE + ACTIONS -->
+    <div class="mb-6 flex flex-wrap gap-3 items-center">
+      <button onclick="triggerSync()" 
+              class="flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-sm font-medium">
+        <span>⟳</span> <span>SYNC SCORES</span>
+      </button>
+      <button onclick="initiatePayment('fpl')" 
+              class="flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-sm font-semibold">
+        PAY FPL SEASON (₦20,000)
+      </button>
+      <button onclick="initiatePayment('ucl')" 
+              class="flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-400 text-sm font-semibold">
+        PAY UCL SEASON (₦10,000)
+      </button>
+      <button onclick="generateWhatsAppSummary()" 
+              class="ml-auto text-sm px-4 py-2 rounded-2xl border border-white/10 hover:bg-white/5">SHARE ON WHATSAPP</button>
+    </div>
+
+    <!-- MAIN LEADERBOARD + RACES -->
+    <div class="grid lg:grid-cols-12 gap-5">
+      
+      <!-- COMBINED RACE -->
+      <div class="lg:col-span-7 bg-[#121826] border border-white/10 rounded-3xl p-6">
+        <div class="flex justify-between items-baseline mb-3">
+          <div>
+            <span class="font-bold text-xl">COMBINED RACE</span>
+            <span class="ml-2 text-xs px-2 py-0.5 rounded bg-white/10">PAID BOTH</span>
+          </div>
+          <div class="text-xs text-slate-400">FPL + UCL TOTAL POINTS</div>
+        </div>
+
+        <div id="combined-race" class="space-y-2"></div>
+      </div>
+
+      <!-- FPL + UCL SIDE BY SIDE -->
+      <div class="lg:col-span-5 grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <!-- FPL RACE -->
+        <div class="bg-[#121826] border border-white/10 rounded-3xl p-5">
+          <div class="flex items-center justify-between mb-3">
+            <div class="font-semibold">FPL RACE • <span class="text-emerald-400">GW<span id="fpl-gw-num"></span></span></div>
+            <div class="text-xs text-slate-400">90% POT WINNER</div>
+          </div>
+          <div id="fpl-race" class="space-y-[5px] text-sm"></div>
+        </div>
+
+        <!-- UCL RACE -->
+        <div class="bg-[#121826] border border-white/10 rounded-3xl p-5">
+          <div class="flex items-center justify-between mb-3">
+            <div class="font-semibold">UCL RACE • <span class="text-blue-400">MD<span id="ucl-md-num"></span></span></div>
+            <div class="text-xs text-slate-400">90% POT WINNER</div>
+          </div>
+          <div id="ucl-race" class="space-y-[5px] text-sm"></div>
+        </div>
+      </div>
+
+      <!-- FULL STANDINGS TABLE -->
+      <div class="lg:col-span-12 bg-[#121826] border border-white/10 rounded-3xl p-6">
+        <div class="flex justify-between items-center mb-4">
+          <div class="font-semibold text-lg">COMMUNITY STANDINGS — ALL MANAGERS</div>
+          <div class="text-xs text-slate-400">Only paid managers qualify for prizes</div>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left text-slate-400 border-b border-white/10">
+                <th class="py-2 pr-4">MANAGER</th>
+                <th class="py-2 px-3">FPL</th>
+                <th class="py-2 px-3">UCL</th>
+                <th class="py-2 px-3 font-semibold">COMBINED</th>
+                <th class="py-2 px-3">GW/MD</th>
+                <th class="py-2 px-3">FINES</th>
+                <th class="py-2 px-3">STATUS</th>
+                <th class="py-2 pl-3">WALLET</th>
+              </tr>
+            </thead>
+            <tbody id="standings-table" class="divide-y divide-white/10"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- H2H + CUP + CHALLENGES GRID -->
+    <div class="grid md:grid-cols-12 gap-5 mt-5">
+      
+      <!-- H2H -->
+      <div class="md:col-span-5 bg-[#121826] border border-white/10 rounded-3xl p-6">
+        <div class="font-semibold mb-3 flex items-center justify-between">
+          <span>HEAD-TO-HEAD</span>
+          <span class="text-[10px] px-2 py-px rounded bg-amber-400/10 text-amber-400">10% TO RESERVE</span>
+        </div>
+        <div id="h2h-list" class="space-y-3 text-sm"></div>
+      </div>
+
+      <!-- CUP BRACKET -->
+      <div class="md:col-span-4 bg-[#121826] border border-white/10 rounded-3xl p-6">
+        <div class="font-semibold mb-3">D LEAGUE CUP</div>
+        <div id="cup-bracket" class="text-sm grid grid-cols-1 gap-3"></div>
+      </div>
+
+      <!-- CHALLENGES -->
+      <div class="md:col-span-3 bg-[#121826] border border-white/10 rounded-3xl p-6">
+        <div class="font-semibold mb-3">CHALLENGE ROOM</div>
+        <div id="challenges-list" class="space-y-3 text-sm"></div>
+      </div>
+    </div>
+
+    <!-- FINES + PROJECTIONS + LEDGER TEASER -->
+    <div class="grid md:grid-cols-12 gap-5 mt-5">
+      <div class="md:col-span-4 bg-[#121826] border border-white/10 rounded-3xl p-6">
+        <div class="uppercase tracking-widest text-xs mb-2 text-amber-400">FINES SYSTEM</div>
+        <div class="text-sm leading-snug">Managers scoring below official round average are automatically fined <span class="font-semibold">₦500</span>. Fines are deducted from next payout or wallet.</div>
+        <div id="fines-detail" class="mt-4 text-xs text-slate-400"></div>
+      </div>
+
+      <div class="md:col-span-5 bg-[#121826] border border-white/10 rounded-3xl p-6">
+        <div class="uppercase tracking-widest text-xs mb-2 text-emerald-400">PAYOUT PROJECTIONS</div>
+        <div id="payout-projections" class="grid grid-cols-2 gap-4 text-sm"></div>
+      </div>
+
+      <div class="md:col-span-3 bg-[#121826] border border-white/10 rounded-3xl p-6 flex flex-col">
+        <div class="font-semibold">LEDGER</div>
+        <div class="text-xs text-slate-400 flex-1">All money movement is recorded. Click wallet above to view full history.</div>
+        <button onclick="showLedgerModal()" class="text-xs mt-3 self-start underline">OPEN FULL LEDGER</button>
+      </div>
+    </div>
+
+    <!-- ENHANCED FPL & PROJECTIONS -->
+    <div class="mt-5 grid md:grid-cols-2 gap-5">
+      <div class="premium-card">
+        <div class="font-semibold mb-3 flex items-center justify-between">
+          <span>MY SQUAD & CHIPS (FPL)</span>
+          <button onclick="showSquadModal()" class="text-xs px-3 py-1 bg-emerald-500/10 text-emerald-400 rounded-full">VIEW LINEUP</button>
+        </div>
+        <div id="squad-chips" class="text-sm space-y-2"></div>
+      </div>
+      <div class="premium-card">
+        <div class="font-semibold mb-3">PROJECTIONS & LIVE</div>
+        <div id="projections-live" class="text-sm"></div>
+      </div>
+    </div>
+
+    <!-- CHALLENGE ARENA & SPONSORS -->
+    <div class="mt-5 grid md:grid-cols-2 gap-5">
+      <div class="premium-card">
+        <div class="font-semibold mb-3 flex justify-between">
+          <span>CHALLENGE ARENA</span>
+          <button onclick="showChallengeModal()" class="text-xs px-3 py-1 bg-amber-500/10 text-amber-400 rounded-full">PROPOSE BET</button>
+        </div>
+        <div id="challenge-arena" class="text-sm space-y-2"></div>
+      </div>
+      <div class="premium-card sponsor-card">
+        <div class="font-semibold mb-3">SPONSORED AWARDS</div>
+        <div id="sponsored-awards" class="text-sm space-y-1"></div>
+        <button onclick="showSponsorModal()" class="mt-3 text-xs text-amber-400">+ SPONSOR AN AWARD</button>
+      </div>
+    </div>
+
+    <!-- MANAGER SPOTLIGHT + INFO -->
+    <div class="mt-6 rounded-3xl bg-gradient-to-br from-white/5 to-transparent border border-white/10 p-6">
+      <div class="flex items-center justify-between">
+        <div>
+          <span class="uppercase text-xs tracking-[2px] text-emerald-400">MANAGER SPOTLIGHT</span>
+          <div id="spotlight-name" class="font-black text-3xl tracking-[-1.5px]"></div>
+        </div>
+        <div id="spotlight-stats" class="text-right text-sm"></div>
+      </div>
+      <div class="text-xs text-slate-400 mt-1">Highest combined or weekly hero. Data auto-refreshes from FPL public APIs and UCL adapter.</div>
+    </div>
+
+    <div class="mt-8 text-center text-[10px] text-slate-500">
+      Payments confirmed exclusively via Paystack <span class="font-mono">charge.success</span> webhooks.<br>
+      Scores pulled from official FPL public API. Live projections configurable. No manual paid toggles.
+    </div>
+  </div>
+
+  <!-- Modals -->
+  <div id="modal" onclick="if (event.target.id === 'modal') closeModal()" class="hidden fixed inset-0 bg-black/70 backdrop-blur z-[70] flex items-center justify-center p-4">
+    <div onclick="event.stopImmediatePropagation()" class="bg-[#121826] w-full max-w-xl rounded-3xl border border-white/10 shadow-2xl p-6" id="modal-content">
+      <!-- dynamic -->
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
