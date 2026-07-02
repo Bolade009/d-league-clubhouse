@@ -144,6 +144,39 @@ async function loadAllData() {
   const uclBtn = document.getElementById('ucl-btn');
   if (fplBtn) fplBtn.onclick = () => switchLeague('fpl');
   if (uclBtn) uclBtn.onclick = () => switchLeague('ucl');
+
+  // Admin backend view for commissioner
+  if (currentManager && currentManager.email.includes('ayo')) {
+    loadAdminOverview();
+  }
+}
+
+async function loadAdminOverview() {
+  try {
+    const data = await fetchJSON('/api/admin/overview');
+    const panel = document.createElement('div');
+    panel.className = 'mt-6 p-4 bg-[#1c1c1c] border border-[#00ff85] rounded-2xl text-xs';
+    panel.innerHTML = `
+      <div class="font-bold text-[#00ff85] mb-2">BACKEND ADMIN VIEW</div>
+      <div>Managers: ${data.totalManagers} | Paid FPL: ${data.paidFpl} UCL: ${data.paidUcl}</div>
+      <div>Confirmed Payments: ${data.totalPaymentsConfirmed}</div>
+      <div>House Commission Total: ₦${data.totalHouseCommission || 0}</div>
+      <div>Last Sync: ${data.lastSync}</div>
+      <div class="mt-2">Recent Events: ${JSON.stringify(data.recentEvents || []).slice(0,200)}...</div>
+      <button onclick="triggerSettle()" class="mt-2 px-3 py-1 bg-[#00ff85] text-black rounded text-xs">TRIGGER SETTLE & PAYOUTS</button>
+    `;
+    // append to dashboard or fpl
+    const dash = document.getElementById('dashboard');
+    if (dash) dash.appendChild(panel);
+  } catch(e) {}
+}
+
+async function triggerSettle() {
+  try {
+    await fetchJSON('/api/settle/run', {method: 'POST', body: JSON.stringify({comp: 'fpl'})});
+    alert('Settlement triggered. Check ledger.');
+    await loadAllData();
+  } catch(e) { alert('Settle failed'); }
 }
 
 async function loadStandings() {
@@ -801,12 +834,10 @@ async function initiatePayment(comp) {
     }
 
     if (res.demo) {
-      // Show simulate button
       showPaymentModal(res.reference, comp, true);
     } else if (res.authorizationUrl) {
       window.location.href = res.authorizationUrl;
     } else {
-      // Use Paystack inline if public key available
       handlePaystackInline(res, comp);
     }
   } catch (e) {

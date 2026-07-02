@@ -276,7 +276,196 @@ function calculateRoundPot(compKey, round, paidCount) {
   };
 }
 
-// ============ SCORING & FINES ============
+// ============ AUTO SETTLEMENT & PAYOUTS (for live) ============
+
+async function settleWeeklyPot(comp, round) {
+  const s = await loadStore();
+  const eligible = getEligibleManagers(comp);
+  const paidCount = eligible.filter(m => isFullyPaidFor(m, comp)).length;
+  if (paidCount === 0) return 0;
+
+  const pot = calculateRoundPot(comp, round, paidCount);
+  // Find top scorer
+  const scores = s.scores.filter(sc => sc.competition === comp && sc.round === round && typeof sc.points === 'number' && sc.isFinal);
+  if (!scores.length) return 0;
+  scores.sort((a, b) => b.points - a.points);
+  const winner = scores[0];
+
+  // Credit winner
+  s.ledger.push({
+    id: generateId("ldg"),
+    type: "weekly_win",
+    managerId: winner.managerId,
+    competition: comp,
+    round,
+    amount: pot.winnerShare,
+    note: `${comp.toUpperCase()} GW/MD ${round} winner (90%)`,
+    at: nowISO()
+  });
+
+  // House commission 10%
+  s.ledger.push({
+    id: generateId("ldg"),
+    type: "house_commission",
+    managerId: "house",
+    competition: comp,
+    round,
+    amount: -pot.reserve,
+    note: `House 10% commission from ${comp} ${round}`,
+    at: nowISO()
+  });
+
+  await persistStore();
+  await logEvent("pot_settled", { comp, round, winner: winner.managerId, amount: pot.winnerShare });
+  return pot.winnerShare;
+}
+
+async function settleOpenChallenges() {
+  const s = await loadStore();
+  let settled = 0;
+  for (const ch of s.challenges) {
+    if (ch.status !== "open") continue;
+    // Simple demo settle: pick a random or top manager as winner for demo
+    // In real, based on criteria in title e.g. highest captain etc.
+    const top = s.managers[0]; // placeholder, in prod compute from scores
+    if (top) {
+      const commission = Math.floor(ch.prize * 0.1);
+      const winnerShare = ch.prize - commission;
+      s.ledger.push({
+        id: generateId("ldg"),
+        type: "challenge_win",
+        managerId: top.id,
+        competition: "fpl",
+        round: s.settings.currentRound.fpl,
+        amount: winnerShare,
+        note: `Won challenge: ${ch.title} (90%, 10% house)`,
+        at: nowISO()
+      });
+      s.ledger.push({
+        id: generateId("ldg"),
+        type: "house_commission",
+        managerId: "house",
+        competition: "fpl",
+        round: s.settings.currentRound.fpl,
+        amount: -commission,
+        note: `House 10% from ${ch.title}`,
+        at: nowISO()
+      });
+      ch.status = "settled";
+      ch.winner = top.displayName;
+      settled++;
+    }
+  }
+  if (settled) await persistStore();
+  return settled;
+}
+
+async function autoSettleIfNeeded() {
+  const s = await loadStore();
+  const curF = s.settings.currentRound.fpl;
+  const curU = s.settings.currentRound.ucl;
+  await settleWeeklyPot("fpl", curF - 1);
+  await payWinnersForRound("fpl", curF - 1);
+  await settleWeeklyPot("ucl", curU - 1);
+  await payWinnersForRound("ucl", curU - 1);
+  await settleOpenChallenges();
+  // TODO: for h2h settled, credit winner 90% house 10%
+}
+
+async function createTransferRecipient(mgr) {
+  if (!mgr || !mgr.payoutDetails || !PAYSTACK_SECRET) return null;
+  const parts = String(mgr.payoutDetails).split(":");
+  if (parts.length < 3) return null;
+  const [bankCode, accountNumber, name] = parts;
+  const postData = JSON.stringify({
+    type: "nuban",
+    name: name || mgr.displayName,
+    account_number: accountNumber,
+    bank_code: bankCode,
+    currency: "NGN"
+  });
+  return new Promise((resolve) => {
+    const options = {
+      hostname: "api.paystack.co",
+      path: "/transferrecipient",
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${PAYSTACK_SECRET}`,
+        "Content-Type": "application/json"
+      }
+    };
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", c => data += c);
+      res.on("end", () => {
+        try {
+          const body = JSON.parse(data);
+          resolve(body.data && body.data.recipient_code ? body.data.recipient_code : null);
+        } catch { resolve(null); }
+      });
+    });
+    req.on("error", () => resolve(null));
+    req.write(postData);
+    req.end();
+  });
+}
+
+async function initiateTransfer(managerId, amount, reason) {
+  const mgr = getManagerById(managerId);
+  if (!mgr || amount <= 0 || !PAYSTACK_SECRET) {
+    await logEvent("transfer_skipped", { managerId, amount });
+    return { success: false };
+  }
+  const recipient = await createTransferRecipient(mgr);
+  if (!recipient) {
+    await logEvent("transfer_no_recipient", { managerId });
+    return { success: false, reason: "no recipient" };
+  }
+  const reference = `DL-PAYOUT-${Date.now()}-${managerId.slice(-6)}`;
+  const postData = JSON.stringify({
+    source: "balance",
+    amount: Math.floor(amount * 100),
+    recipient,
+    reason: reason || "D League payout",
+    reference
+  });
+  return new Promise((resolve) => {
+    const options = {
+      hostname: "api.paystack.co",
+      path: "/transfer",
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${PAYSTACK_SECRET}`,
+        "Content-Type": "application/json"
+      }
+    };
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", c => data += c);
+      res.on("end", () => {
+        try {
+          const body = JSON.parse(data);
+          logEvent("transfer_initiated", { managerId, amount, reference, status: body.status });
+          resolve({ success: !!body.status, data: body.data, reference });
+        } catch { resolve({ success: false }); }
+      });
+    });
+    req.on("error", () => resolve({ success: false }));
+    req.write(postData);
+    req.end();
+  });
+}
+
+// Call this after settling pots/challenges
+async function payWinnersForRound(comp, round) {
+  const s = await loadStore();
+  const wins = s.ledger.filter(l => l.competition === comp && l.round === round && l.type === "weekly_win" && l.amount > 0);
+  for (const win of wins) {
+    await initiateTransfer(win.managerId, win.amount, win.note);
+  }
+}
+
+// ============ SCORING & FINES (fines removed) ============
 
 async function syncFPL(roundsToSync = null) {
   const s = await loadStore();
@@ -410,6 +599,7 @@ async function syncFPL(roundsToSync = null) {
 
   s.settings.lastSyncAt = nowISO();
   await persistStore();
+  await autoSettleIfNeeded();
   await logEvent("sync_fpl_completed", { rounds, managers: s.managers.length });
   return { ok: true };
 }
@@ -515,6 +705,7 @@ async function syncUCL(roundsToSync = null) {
 
   s.settings.lastSyncAt = nowISO();
   await persistStore();
+  await autoSettleIfNeeded();
   await logEvent("sync_ucl_completed", { rounds });
   return { ok: true };
 }
@@ -671,7 +862,7 @@ async function seedDemoData(force = false) {
       accessCode: dm.code,
       fpl: { teamId: dm.fplId, teamName: dm.club || (dm.displayName.split(" ")[0] + " FC") },
       ucl: { teamId: dm.uclId, teamName: dm.club || (dm.displayName.split(" ")[0] + " United") },
-      payoutDetails: "Bank: Demo Bank • Acc: 0123456789 • Name: " + dm.displayName, // editable later
+      payoutDetails: "058:0001234567:" + dm.displayName, // bank_code:account_number:name for Paystack transfer (test format)
       fplClubName: dm.club || (dm.displayName.split(" ")[0] + " FC"),
       createdAt: now
     };
@@ -1046,6 +1237,7 @@ app.post("/api/sync/run", requireSyncAuth, async (req, res) => {
   if (!comp || comp === "fpl") result = await syncFPL();
   if (comp === "ucl") result = await syncUCL();
 
+  await autoSettleIfNeeded();
   const s = await loadStore();
   res.json({ ok: true, result, lastSyncAt: s.settings.lastSyncAt });
 });
@@ -1130,15 +1322,33 @@ app.get("/api/admin/overview", async (req, res) => {
   const paidFpl = getEligibleManagers("fpl").length;
   const paidUcl = getEligibleManagers("ucl").length;
 
+  const recentLedger = (s.ledger || []).slice(0, 10);
+  const recentEvents = (s.events || []).slice(0, 10);
+  const pendingChallenges = (s.challenges || []).filter(c => c.status === "open");
+  const totalHouseCommission = (s.ledger || []).filter(l => l.type === "house_commission").reduce((sum, l) => sum + Math.abs(l.amount || 0), 0);
+
   res.json({
     totalManagers: s.managers.length,
     paidFpl,
     paidUcl,
     totalPaymentsConfirmed: s.payments.filter(p => p.status === "confirmed").length,
-    totalFines: 0, // fines removed
+    totalFines: 0,
     lastSync: s.settings.lastSyncAt,
-    reserveEstimate: getProjectedPayouts()
+    reserveEstimate: getProjectedPayouts(),
+    recentLedger,
+    recentEvents,
+    pendingChallenges,
+    totalHouseCommission
   });
+});
+
+// Trigger settlement (protected, for admin/commissioner)
+app.post("/api/settle/run", requireSyncAuth, async (req, res) => {
+  const { comp } = req.body || {};
+  await autoSettleIfNeeded();
+  if (comp === "fpl" || !comp) await settleWeeklyPot("fpl", (await loadStore()).settings.currentRound.fpl);
+  if (comp === "ucl" || !comp) await settleWeeklyPot("ucl", (await loadStore()).settings.currentRound.ucl);
+  res.json({ ok: true, message: "Settlements processed, payouts initiated where possible." });
 });
 
 // Catch all for SPA
