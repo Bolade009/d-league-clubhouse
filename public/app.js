@@ -138,6 +138,12 @@ async function loadAllData() {
   if (!currentLeagueMode || currentLeagueMode === 'fpl') {
     setTimeout(() => switchLeague('fpl'), 300);
   }
+
+  // Ensure buttons are clickable
+  const fplBtn = document.getElementById('fpl-btn');
+  const uclBtn = document.getElementById('ucl-btn');
+  if (fplBtn) fplBtn.onclick = () => switchLeague('fpl');
+  if (uclBtn) uclBtn.onclick = () => switchLeague('ucl');
 }
 
 async function loadStandings() {
@@ -1273,6 +1279,7 @@ function switchLeague(mode) {
     if (fplTail) fplTail.classList.remove('hidden');
     if (uclTail) uclTail.classList.add('hidden');
     renderFplTailored();
+    if (typeof renderLineupViewer === 'function') renderLineupViewer();
   } else if (mode === 'ucl') {
     if (fplTail) fplTail.classList.add('hidden');
     if (uclTail) uclTail.classList.remove('hidden');

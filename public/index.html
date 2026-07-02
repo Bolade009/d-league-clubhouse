@@ -277,61 +277,12 @@
       </div>
     </div>
 
-    <!-- MAIN LEADERBOARD + RACES -->
-    <div class="grid lg:grid-cols-12 gap-5">
-      
-      <!-- COMBINED RACE (removed - leagues are separate) -->
-      <div class="lg:col-span-7 hidden"></div>
+    <!-- Old mixed races and standings removed for clean separate FPL/UCL only views -->
 
-      <!-- FPL + UCL SIDE BY SIDE -->
-      <div class="lg:col-span-5 grid grid-cols-1 sm:grid-cols-2 gap-5">
-        <!-- FPL RACE -->
-        <div class="bg-[#1c1c1c] border border-[#333] rounded-3xl p-5">
-          <div class="flex items-center justify-between mb-3">
-            <div class="font-semibold">FPL RACE • <span class="text-[#00ff85]">GW<span id="fpl-gw-num"></span></span></div>
-            <div class="text-xs text-[#888]">90% POT WINNER</div>
-          </div>
-          <div id="fpl-race" class="space-y-[5px] text-sm"></div>
-        </div>
-
-        <!-- UCL RACE -->
-        <div class="bg-[#1c1c1c] border border-[#333] rounded-3xl p-5">
-          <div class="flex items-center justify-between mb-3">
-            <div class="font-semibold">UCL RACE • <span class="text-[#aaa]">MD<span id="ucl-md-num"></span></span></div>
-            <div class="text-xs text-[#888]">90% POT WINNER</div>
-          </div>
-          <div id="ucl-race" class="space-y-[5px] text-sm"></div>
-        </div>
-      </div>
-
-      <!-- STANDINGS TABLE (mode specific - rendered in tailored views) -->
-      <div class="lg:col-span-12 hidden"></div>
-    </div>
-
-    <!-- H2H + CUP + CHALLENGES GRID -->
-    <div class="grid md:grid-cols-12 gap-5 mt-5">
-      
-      <!-- H2H -->
-      <div class="md:col-span-5 bg-[#1c1c1c] border border-[#333] rounded-3xl p-6">
-        <div class="font-semibold mb-3 flex items-center justify-between">
-          <span>HEAD-TO-HEAD</span>
-          <span class="text-[10px] px-2 py-px rounded bg-[#222] text-[#00ff85]">10% TO RESERVE</span>
-        </div>
-        <div id="h2h-list" class="space-y-3 text-sm"></div>
-      </div>
-
-      <!-- FPL CUP (Auto by FPL for your league) -->
-      <div class="md:col-span-4 premium-card">
-        <div class="font-semibold mb-3">FPL CUP <span class="text-xs text-[#00ff85]">(Auto-organized by FPL)</span></div>
-        <div class="text-xs">FPL will auto organize the cup for your private H2H league later in the season. Check FPL app for bracket.</div>
-        <div class="text-[10px] mt-1 text-[#00ff85]">No separate custom cup.</div>
-      </div>
-
-      <!-- CHALLENGES -->
-      <div class="md:col-span-3 bg-[#1c1c1c] border border-[#333] rounded-3xl p-6">
-        <div class="font-semibold mb-3">CHALLENGE ROOM</div>
-        <div id="challenges-list" class="space-y-3 text-sm"></div>
-      </div>
+    <!-- CHALLENGE ROOM (kept as liked) - populated with expanded innovative challenges -->
+    <div class="md:col-span-12 bg-[#1c1c1c] border border-[#333] rounded-3xl p-6 mt-5">
+      <div class="font-semibold mb-3">CHALLENGE ROOM (innovative, auto-settled)</div>
+      <div id="challenges-list" class="space-y-3 text-sm"></div>
     </div>
 
     <!-- PROJECTIONS + LEDGER TEASER (no fines) -->
