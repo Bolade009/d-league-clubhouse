@@ -4,28 +4,28 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>D League Clubhouse • Manager Command Center</title>
-  <meta name="description" content="Premium private fantasy football community. FPL + UCL Fantasy. Transparent pots, fines, H2H, cups.">
+  <meta name="description" content="Premium private fantasy football community. FPL + UCL Fantasy. Transparent pots, H2H, cups, awards and challenges.">
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="/styles.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏆</text></svg>">
 </head>
-<body class="bg-[#0A0F1C] text-slate-200">
+<body class="bg-[#111111] text-white">
   <!-- Top Bar -->
-  <div id="topbar" class="border-b border-white/10 bg-[#0A0F1C]/95 backdrop-blur sticky top-0 z-50">
+  <div id="topbar" class="border-b border-[#222] bg-[#0a0a0a] sticky top-0 z-50">
     <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
       <div class="flex items-center gap-4">
         <div class="flex items-center gap-3">
-          <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-400 via-emerald-500 to-teal-600 flex items-center justify-center shadow-inner">
-            <span class="font-black text-[#0A0F1C] text-2xl tracking-tighter">DL</span>
+          <div class="w-10 h-10 rounded-2xl bg-black flex items-center justify-center border border-[#333]">
+            <span class="font-black text-[#00ff85] text-2xl tracking-tighter">DL</span>
           </div>
           <div>
-            <div class="font-black tracking-[-1.5px] text-2xl">D LEAGUE</div>
-            <div class="text-[10px] text-emerald-400 -mt-1 font-mono">CLUBHOUSE 25/26</div>
+            <div class="font-black tracking-[-1.5px] text-2xl text-white">D LEAGUE</div>
+            <div class="text-[10px] text-[#00ff85] -mt-1 font-mono">CLUBHOUSE 25/26</div>
           </div>
         </div>
-        <div class="hidden md:flex items-center gap-2 text-xs px-3 py-1 rounded-full bg-white/5 border border-white/10">
-          <div class="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></div>
-          <span class="text-emerald-400 font-medium">SEASON ACTIVE</span>
+        <div class="hidden md:flex items-center gap-2 text-xs px-3 py-1 rounded-full bg-[#1c1c1c] text-[#00ff85] border border-[#333]">
+          <div class="w-1.5 h-1.5 bg-[#00ff85] rounded-full animate-pulse"></div>
+          <span class="font-medium">SEASON ACTIVE</span>
         </div>
       </div>
 
@@ -36,249 +36,364 @@
   </div>
 
   <!-- LIVE TICKER -->
-  <div id="ticker" class="bg-black/60 border-b border-white/10 overflow-hidden h-9 flex items-center text-xs font-mono tracking-[1px]">
+  <div id="ticker" class="border-b border-[#222] overflow-hidden h-9 flex items-center text-xs font-mono tracking-[1px] bg-[#0a0a0a]">
     <div class="max-w-7xl mx-auto px-6 w-full">
-      <div id="ticker-content" class="whitespace-nowrap flex items-center gap-12 text-emerald-300/80"></div>
+      <div id="ticker-content" class="whitespace-nowrap flex items-center gap-12 text-[#888]"></div>
     </div>
   </div>
 
   <!-- LOGIN SCREEN -->
   <div id="login-screen" class="max-w-md mx-auto pt-16 px-6">
-    <div class="bg-[#121826] border border-white/10 rounded-3xl p-8 shadow-2xl">
+    <div class="bg-[#1c1c1c] border border-[#333] rounded-3xl p-8">
       <div class="text-center mb-8">
-        <div class="mx-auto w-16 h-16 rounded-3xl bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center mb-4">
-          <span class="text-[#0A0F1C] font-black text-4xl">DL</span>
+        <div class="mx-auto w-16 h-16 rounded-3xl bg-black flex items-center justify-center mb-4 border border-[#333]">
+          <span class="text-[#00ff85] font-black text-4xl">DL</span>
         </div>
-        <div style="color:#64748b; font-size:12px; margin-bottom:8px;">Server must be running — visit <span style="font-family:monospace">http://localhost:4174</span> in your browser after <span style="font-family:monospace">npm start</span></div>
+        <div style="color:#888; font-size:12px; margin-bottom:8px;">Server must be running — visit <span style="font-family:monospace">http://localhost:4174</span> in your browser after <span style="font-family:monospace">npm start</span></div>
         <h1 class="text-4xl font-black tracking-[-2px]">D League Clubhouse</h1>
-        <p class="text-slate-400 mt-2">Private. Transparent. Manager-first.</p>
+        <p class="text-[#888] mt-2">Private. Transparent. Manager-first.</p>
       </div>
 
       <div class="space-y-4">
         <div>
-          <label class="text-xs uppercase tracking-[1px] text-slate-500">Email</label>
+          <label class="text-xs uppercase tracking-[1px] text-[#888]">Email</label>
           <input id="login-email" type="email" value="ayo@dleague.ng"
-                 class="w-full bg-black/60 border border-white/10 focus:border-emerald-500 outline-none rounded-2xl px-4 py-3 text-lg">
+                 class="w-full bg-[#111] border border-[#444] focus:border-[#00ff85] outline-none rounded-2xl px-4 py-3 text-lg">
         </div>
         <div>
-          <label class="text-xs uppercase tracking-[1px] text-slate-500">Access Code</label>
+          <label class="text-xs uppercase tracking-[1px] text-[#888]">Access Code</label>
           <input id="login-code" type="text" value="ayo2026"
-                 class="w-full bg-black/60 border border-white/10 focus:border-emerald-500 outline-none rounded-2xl px-4 py-3 text-lg tracking-widest font-mono">
+                 class="w-full bg-[#111] border border-[#444] focus:border-[#00ff85] outline-none rounded-2xl px-4 py-3 text-lg tracking-widest font-mono">
         </div>
 
         <button id="login-button" 
-                class="w-full py-4 bg-white text-[#0A0F1C] font-bold rounded-2xl hover:bg-emerald-400 active:scale-[0.985] transition-all">
+                class="w-full py-4 bg-[#00ff85] text-[#111] font-bold rounded-2xl hover:bg-[#00e676] active:scale-[0.985] transition-all">
           ENTER THE CLUBHOUSE
         </button>
       </div>
 
-      <div id="server-warning" class="mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-2xl text-xs text-red-300 hidden">
+      <div id="server-warning" class="mt-4 p-3 bg-[#2a1515] border border-[#552] rounded-2xl text-xs text-red-400 hidden">
         <strong>IMPORTANT:</strong> This is a server-powered app.<br>
         1. In Terminal: <span class="font-mono">cd d-league-clubhouse && npm start</span><br>
         2. Then open <span class="font-mono">http://localhost:4174</span> in your browser.
       </div>
 
-      <div id="demo-hint" class="mt-6 text-center text-[11px] text-slate-500">
+      <div id="demo-hint" class="mt-6 text-center text-[11px] text-[#666]">
         Demo mode active • Try other managers: chinedu@dleague.ng / chi2026
       </div>
     </div>
 
+    <!-- NEW MANAGER JOINING GUIDE -->
+    <div class="mt-6 bg-[#1c1c1c] border border-[#333] rounded-2xl p-5 text-sm">
+      <div class="font-semibold text-[#00ff85] mb-2 flex items-center gap-2">
+        <span>NEW TO D LEAGUE?</span>
+      </div>
+      <div class="text-[#aaa] space-y-1 text-xs leading-relaxed">
+        <div><strong>1. Join the official FPL league</strong> — Ask the commissioner for the <strong>league code</strong> or join link. Go to <a href="https://fantasy.premierleague.com" target="_blank" class="underline text-[#00ff85]">fantasy.premierleague.com</a> and join using the code.</div>
+        <div><strong>2. Get your Clubhouse invite</strong> — The admin adds you and sends your <strong>email + Access Code</strong>.</div>
+        <div><strong>3. Login here</strong> using the email + code.</div>
+        <div><strong>4. Pay</strong> the season fees (FPL + UCL) via the buttons after login.</div>
+        <div><strong>5. Sync &amp; play</strong> — Use Lineup Viewer (sees your real FPL squad), standings, money, etc.</div>
+      </div>
+      <div class="flex gap-2 mt-3">
+        <button onclick="showJoinGuideModal()" class="flex-1 py-2 text-xs rounded-xl border border-[#444] hover:bg-[#222] text-[#00ff85]">
+          FULL WALKTHROUGH
+        </button>
+        <button onclick="submitJoinRequest()" class="flex-1 py-2 text-xs rounded-xl bg-[#222] hover:bg-[#2a2a2a] text-[#00ff85]">
+          REQUEST ACCESS
+        </button>
+      </div>
+    </div>
+
     <div class="mt-8 text-center">
-      <div class="text-xs text-slate-500">FPL • UCL FANTASY • H2H • CUPS • FINES • PAYOUTS</div>
-      <div class="text-[10px] text-slate-600 mt-1">Payments secured by Paystack. Only verified webhooks mark paid.</div>
+      <div class="text-xs text-[#666]">FPL • UCL FANTASY • H2H • CUPS • AWARDS • CHALLENGES</div>
+      <div class="text-[10px] text-[#555] mt-1">Payments secured by Paystack. Only verified webhooks mark paid.</div>
+    </div>
+  </div>
+
+  <!-- JOINING GUIDE MODAL -->
+  <div id="join-guide-modal" onclick="if (event.target.id === 'join-guide-modal') hideJoinGuideModal()" class="hidden fixed inset-0 bg-black/70 backdrop-blur z-[80] flex items-center justify-center p-4">
+    <div onclick="event.stopImmediatePropagation()" class="bg-[#1c1c1c] w-full max-w-2xl rounded-3xl border border-[#333] p-6 max-h-[85vh] overflow-auto text-sm">
+      <div class="flex justify-between items-start mb-4">
+        <div>
+          <div class="text-[#00ff85] font-bold text-xl">How to Join D League Clubhouse</div>
+          <div class="text-[#888] text-xs">Full walkthrough for new managers</div>
+        </div>
+        <button onclick="hideJoinGuideModal()" class="text-[#666] hover:text-white">✕</button>
+      </div>
+
+      <div class="space-y-5">
+        <div>
+          <div class="font-semibold mb-1 text-[#00ff85]">STEP 1 — Join the official FPL D League</div>
+          <ul class="list-disc pl-5 text-[#aaa] text-xs space-y-0.5">
+            <li>The Commissioner creates a <strong>private league</strong> in Fantasy Premier League.</li>
+            <li>You will receive the <strong>league code</strong> or direct join link (usually via WhatsApp group).</li>
+            <li>Go to <a href="https://fantasy.premierleague.com" target="_blank" class="text-[#00ff85] underline">fantasy.premierleague.com</a></li>
+            <li>Create or log into your FPL account.</li>
+            <li>Join the league using the code.</li>
+            <li>Build your team before the deadline.</li>
+          </ul>
+          <div class="mt-1 text-[10px] text-[#666]">This is required — the Clubhouse pulls your real squad, captain picks, points from this FPL team.</div>
+        </div>
+
+        <div>
+          <div class="font-semibold mb-1 text-[#00ff85]">STEP 2 — Get access to this Clubhouse app</div>
+          <div class="text-[#aaa] text-xs">The league admin (commissioner) will add you to the D League Clubhouse system and send you:</div>
+          <ul class="list-disc pl-5 text-[#aaa] text-xs mt-1 space-y-0.5">
+            <li>Your registered <strong>email</strong></li>
+            <li>Your personal <strong>Access Code</strong> (e.g. yourname2026)</li>
+          </ul>
+          <div class="mt-1 text-[10px] text-[#666]">When requesting access, provide your FPL club name to confirm you joined the correct league.</div>
+        </div>
+
+        <div>
+          <div class="font-semibold mb-1 text-[#00ff85]">STEP 3 — Login</div>
+          <div class="text-[#aaa] text-xs">Return to this page. Enter the email + access code and click ENTER THE CLUBHOUSE.</div>
+          <div class="mt-1 text-[10px] text-[#666]">First time? The server must be running (or use the live link the group shares).</div>
+        </div>
+
+        <div>
+          <div class="font-semibold mb-1 text-[#00ff85]">STEP 4 — Pay your fees</div>
+          <div class="text-[#aaa] text-xs">After logging in you’ll see Pay buttons:</div>
+          <ul class="list-disc pl-5 text-[#aaa] text-xs mt-1 space-y-0.5">
+            <li><strong>FPL Season</strong> — full entry fee + admin (see current amounts in UI)</li>
+            <li><strong>UCL Season</strong> — full entry fee + admin</li>
+          </ul>
+          <div class="mt-1 text-xs">Pay via Paystack. Only confirmed webhooks mark you as paid. You can pay one or both.</div>
+        </div>
+
+        <div>
+          <div class="font-semibold mb-1 text-[#00ff85]">STEP 5 — Use &amp; monitor your dashboard</div>
+          <ul class="list-disc pl-5 text-[#aaa] text-xs space-y-0.5">
+            <li><strong>Sync Scores</strong> regularly to pull latest FPL points.</li>
+            <li><strong>LINEUP VIEWER</strong> — dropdown to see any manager’s real FPL squad + captain + chip + projected points. Bench shown below the pitch.</li>
+            <li><strong>Standings</strong> — combined + FPL + UCL races. Click rows for full profile + recent picks.</li>
+            <li><strong>Ledger</strong> — see transaction history, winnings, payouts.</li>
+            <li><strong>H2H &amp; Challenges</strong> — real matches from the group.</li>
+            <li><strong>FPL League data</strong> — admin can load the official FPL league ID so H2H and standings match FPL’s own system.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="mt-6 pt-4 border-t border-[#333] text-[10px] text-[#666]">
+        Questions? Message the commissioner. Everything is transparent and recorded via Paystack webhooks + FPL public APIs.
+      </div>
     </div>
   </div>
 
   <!-- MAIN DASHBOARD -->
   <div id="dashboard" class="hidden max-w-7xl mx-auto px-4 md:px-6 pb-24">
     
+    <!-- LEAGUE CHOICE / SELECTOR -->
+    <div id="league-selector" class="pt-6 flex gap-3">
+      <button id="fpl-btn" onclick="switchLeague('fpl')" class="px-6 py-2 rounded-2xl bg-[#00ff85] text-[#111] font-bold text-sm cursor-pointer">FPL</button>
+      <button id="ucl-btn" onclick="switchLeague('ucl')" class="px-6 py-2 rounded-2xl bg-[#222] text-white font-bold text-sm cursor-pointer">UCL</button>
+      <div class="ml-auto text-xs text-[#888] self-center">Click to switch - completely separate</div>
+    </div>
+
     <!-- MANAGER HERO -->
     <div class="pt-8 pb-6 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
       <div>
-        <div id="welcome-line" class="uppercase text-xs tracking-[3px] text-emerald-400 font-semibold"></div>
+        <div id="welcome-line" class="uppercase text-xs tracking-[3px] text-[#00ff85] font-semibold"></div>
         <div id="manager-name" class="text-6xl font-black tracking-[-3.2px] leading-none"></div>
         <div id="manager-status-line" class="mt-2 flex items-center gap-2 text-sm"></div>
       </div>
 
       <div class="flex items-center gap-3">
-        <div id="wallet-card" onclick="showLedgerModal()"
-             class="cursor-pointer bg-[#121826] border border-white/10 hover:border-white/20 transition px-5 py-3 rounded-3xl flex items-center gap-4">
-          <div>
-            <div class="text-[10px] uppercase tracking-widest text-slate-400">WALLET BALANCE</div>
-            <div id="wallet-balance" class="text-3xl font-black tabular-nums tracking-tighter">₦0</div>
-          </div>
-          <div class="text-right text-xs">
-            <div class="text-emerald-400">VIEW LEDGER →</div>
-          </div>
-        </div>
-
         <button onclick="logout()" 
-                class="px-5 h-12 rounded-3xl border border-white/10 hover:bg-white/5 text-sm font-medium">SIGN OUT</button>
+                class="px-5 h-12 rounded-3xl border border-[#333] hover:bg-[#1c1c1c] text-sm font-medium">SIGN OUT</button>
       </div>
     </div>
 
-    <!-- QUICK STATS -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+    <!-- QUICK STATS (clean - no fines, no combined) -->
+    <div class="grid grid-cols-2 md:grid-cols-2 gap-3 mb-6">
       <div class="stat-card">
-        <div class="text-xs text-slate-400">FPL STATUS</div>
-        <div id="fpl-status" class="font-bold text-xl"></div>
-        <div id="fpl-current" class="text-emerald-400 text-sm tabular-nums"></div>
+        <div class="text-xs text-[#888]">FPL GW</div>
+        <div id="fpl-current" class="text-[#00ff85] text-sm tabular-nums"></div>
       </div>
       <div class="stat-card">
-        <div class="text-xs text-slate-400">UCL STATUS</div>
-        <div id="ucl-status" class="font-bold text-xl"></div>
-        <div id="ucl-current" class="text-blue-400 text-sm tabular-nums"></div>
-      </div>
-      <div class="stat-card">
-        <div class="text-xs text-slate-400">COMBINED RANK</div>
-        <div id="combined-rank" class="font-black text-3xl tabular-nums"></div>
-      </div>
-      <div class="stat-card">
-        <div class="text-xs text-slate-400">TOTAL FINES</div>
-        <div id="total-fines" class="font-black text-3xl tabular-nums text-amber-400"></div>
+        <div class="text-xs text-[#888]">UCL MD</div>
+        <div id="ucl-current" class="text-[#aaa] text-sm tabular-nums"></div>
       </div>
     </div>
 
-    <!-- LIVE TICKER INSIDE + ACTIONS -->
+    <!-- ACTIONS (clean) -->
     <div class="mb-6 flex flex-wrap gap-3 items-center">
       <button onclick="triggerSync()" 
-              class="flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-sm font-medium">
-        <span>⟳</span> <span>SYNC SCORES</span>
-      </button>
-      <button onclick="initiatePayment('fpl')" 
-              class="flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-sm font-semibold">
-        PAY FPL SEASON (₦20,000)
-      </button>
-      <button onclick="initiatePayment('ucl')" 
-              class="flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-400 text-sm font-semibold">
-        PAY UCL SEASON (₦10,000)
-      </button>
+              class="px-4 py-1.5 rounded-xl bg-[#222] border border-[#444] text-xs hover:bg-[#333]">SYNC / REFRESH</button>
       <button onclick="generateWhatsAppSummary()" 
-              class="ml-auto text-sm px-4 py-2 rounded-2xl border border-white/10 hover:bg-white/5">SHARE ON WHATSAPP</button>
+              class="ml-auto text-sm px-4 py-2 rounded-2xl border border-[#333] hover:bg-[#1c1c1c]">SHARE WEEKLY WINNERS</button>
+    </div>
+
+    <!-- FPL TAILORED OVERVIEW (shown when FPL mode) -->
+    <div id="fpl-tailored" class="mb-8">
+      <div class="flex items-center justify-between mb-3">
+        <div class="font-bold text-xl">FPL • GW<span id="fpl-gw-num2"></span> OVERVIEW</div>
+        <div class="text-xs text-[#00ff85]">Current points • Click managers for squad + bench + proj + comparison</div>
+      </div>
+
+      <!-- Managers list with points (FPL style) -->
+      <div id="fpl-managers-list" class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4 mb-4 space-y-1 text-sm"></div>
+
+      <!-- H2H -->
+      <div class="grid md:grid-cols-2 gap-4 mb-4">
+        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
+          <div class="font-semibold mb-2">YOUR H2H THIS WEEK</div>
+          <div id="fpl-h2h-this" class="text-sm"></div>
+          <div class="mt-2 text-xs text-[#888]">Next week: <span id="fpl-h2h-next"></span></div>
+          <button onclick="showH2HStandings()" class="mt-2 text-xs underline text-[#00ff85]">Expand full H2H standings (FPL style)</button>
+        </div>
+
+        <!-- Cup & Challenges -->
+        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
+          <div class="font-semibold mb-2">FPL CUP &amp; CHALLENGE THIS WEEK</div>
+          <div id="fpl-cup-info" class="text-xs mb-2"></div>
+          <div id="fpl-challenge-week" class="text-sm"></div>
+          <div class="mt-2 text-xs">Squad status: <span id="fpl-squad-status"></span></div>
+        </div>
+      </div>
+
+      <!-- Sponsored Awards & Personal Beef -->
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
+          <div class="font-semibold mb-2 flex justify-between"><span>SPONSORED AWARDS (running)</span> <button onclick="showProposeAward()" class="text-xs text-[#00ff85]">Propose new</button></div>
+          <div id="fpl-sponsored" class="text-xs space-y-1"></div>
+        </div>
+        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
+          <div class="font-semibold mb-2">PERSONAL BEEF (this week)</div>
+          <div id="fpl-personal-beef" class="text-xs"></div>
+          <div class="mt-2"><button onclick="proposeBeef()" class="text-xs px-2 py-0.5 border border-[#444] rounded">Start a beef</button></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- UCL TAILORED (minimal) -->
+    <div id="ucl-tailored" class="mb-8 hidden">
+      <div class="font-bold text-xl mb-3">UCL • MD<span id="ucl-md-num2"></span></div>
+      <div id="ucl-managers-list" class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4 mb-4 space-y-1 text-sm"></div>
+      <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
+        <div class="font-semibold mb-2">UCL CHALLENGE THIS MD</div>
+        <div id="ucl-challenge" class="text-sm"></div>
+      </div>
     </div>
 
     <!-- MAIN LEADERBOARD + RACES -->
     <div class="grid lg:grid-cols-12 gap-5">
       
-      <!-- COMBINED RACE -->
-      <div class="lg:col-span-7 bg-[#121826] border border-white/10 rounded-3xl p-6">
-        <div class="flex justify-between items-baseline mb-3">
-          <div>
-            <span class="font-bold text-xl">COMBINED RACE</span>
-            <span class="ml-2 text-xs px-2 py-0.5 rounded bg-white/10">PAID BOTH</span>
-          </div>
-          <div class="text-xs text-slate-400">FPL + UCL TOTAL POINTS</div>
-        </div>
-
-        <div id="combined-race" class="space-y-2"></div>
-      </div>
+      <!-- COMBINED RACE (removed - leagues are separate) -->
+      <div class="lg:col-span-7 hidden"></div>
 
       <!-- FPL + UCL SIDE BY SIDE -->
       <div class="lg:col-span-5 grid grid-cols-1 sm:grid-cols-2 gap-5">
         <!-- FPL RACE -->
-        <div class="bg-[#121826] border border-white/10 rounded-3xl p-5">
+        <div class="bg-[#1c1c1c] border border-[#333] rounded-3xl p-5">
           <div class="flex items-center justify-between mb-3">
-            <div class="font-semibold">FPL RACE • <span class="text-emerald-400">GW<span id="fpl-gw-num"></span></span></div>
-            <div class="text-xs text-slate-400">90% POT WINNER</div>
+            <div class="font-semibold">FPL RACE • <span class="text-[#00ff85]">GW<span id="fpl-gw-num"></span></span></div>
+            <div class="text-xs text-[#888]">90% POT WINNER</div>
           </div>
           <div id="fpl-race" class="space-y-[5px] text-sm"></div>
         </div>
 
         <!-- UCL RACE -->
-        <div class="bg-[#121826] border border-white/10 rounded-3xl p-5">
+        <div class="bg-[#1c1c1c] border border-[#333] rounded-3xl p-5">
           <div class="flex items-center justify-between mb-3">
-            <div class="font-semibold">UCL RACE • <span class="text-blue-400">MD<span id="ucl-md-num"></span></span></div>
-            <div class="text-xs text-slate-400">90% POT WINNER</div>
+            <div class="font-semibold">UCL RACE • <span class="text-[#aaa]">MD<span id="ucl-md-num"></span></span></div>
+            <div class="text-xs text-[#888]">90% POT WINNER</div>
           </div>
           <div id="ucl-race" class="space-y-[5px] text-sm"></div>
         </div>
       </div>
 
-      <!-- FULL STANDINGS TABLE -->
-      <div class="lg:col-span-12 bg-[#121826] border border-white/10 rounded-3xl p-6">
-        <div class="flex justify-between items-center mb-4">
-          <div class="font-semibold text-lg">COMMUNITY STANDINGS — ALL MANAGERS</div>
-          <div class="text-xs text-slate-400">Only paid managers qualify for prizes</div>
-        </div>
-
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="text-left text-slate-400 border-b border-white/10">
-                <th class="py-2 pr-4">MANAGER</th>
-                <th class="py-2 px-3">FPL</th>
-                <th class="py-2 px-3">UCL</th>
-                <th class="py-2 px-3 font-semibold">COMBINED</th>
-                <th class="py-2 px-3">GW/MD</th>
-                <th class="py-2 px-3">FINES</th>
-                <th class="py-2 px-3">STATUS</th>
-                <th class="py-2 pl-3">WALLET</th>
-              </tr>
-            </thead>
-            <tbody id="standings-table" class="divide-y divide-white/10"></tbody>
-          </table>
-        </div>
-      </div>
+      <!-- STANDINGS TABLE (mode specific - rendered in tailored views) -->
+      <div class="lg:col-span-12 hidden"></div>
     </div>
 
     <!-- H2H + CUP + CHALLENGES GRID -->
     <div class="grid md:grid-cols-12 gap-5 mt-5">
       
       <!-- H2H -->
-      <div class="md:col-span-5 bg-[#121826] border border-white/10 rounded-3xl p-6">
+      <div class="md:col-span-5 bg-[#1c1c1c] border border-[#333] rounded-3xl p-6">
         <div class="font-semibold mb-3 flex items-center justify-between">
           <span>HEAD-TO-HEAD</span>
-          <span class="text-[10px] px-2 py-px rounded bg-amber-400/10 text-amber-400">10% TO RESERVE</span>
+          <span class="text-[10px] px-2 py-px rounded bg-[#222] text-[#00ff85]">10% TO RESERVE</span>
         </div>
         <div id="h2h-list" class="space-y-3 text-sm"></div>
       </div>
 
-      <!-- CUP BRACKET -->
-      <div class="md:col-span-4 bg-[#121826] border border-white/10 rounded-3xl p-6">
-        <div class="font-semibold mb-3">D LEAGUE CUP</div>
-        <div id="cup-bracket" class="text-sm grid grid-cols-1 gap-3"></div>
+      <!-- FPL CUP (Auto by FPL for your league) -->
+      <div class="md:col-span-4 premium-card">
+        <div class="font-semibold mb-3">FPL CUP <span class="text-xs text-[#00ff85]">(Auto-organized by FPL)</span></div>
+        <div class="text-xs">FPL will auto organize the cup for your private H2H league later in the season. Check FPL app for bracket.</div>
+        <div class="text-[10px] mt-1 text-[#00ff85]">No separate custom cup.</div>
       </div>
 
       <!-- CHALLENGES -->
-      <div class="md:col-span-3 bg-[#121826] border border-white/10 rounded-3xl p-6">
+      <div class="md:col-span-3 bg-[#1c1c1c] border border-[#333] rounded-3xl p-6">
         <div class="font-semibold mb-3">CHALLENGE ROOM</div>
         <div id="challenges-list" class="space-y-3 text-sm"></div>
       </div>
     </div>
 
-    <!-- FINES + PROJECTIONS + LEDGER TEASER -->
+    <!-- PROJECTIONS + LEDGER TEASER (no fines) -->
     <div class="grid md:grid-cols-12 gap-5 mt-5">
-      <div class="md:col-span-4 bg-[#121826] border border-white/10 rounded-3xl p-6">
-        <div class="uppercase tracking-widest text-xs mb-2 text-amber-400">FINES SYSTEM</div>
-        <div class="text-sm leading-snug">Managers scoring below official round average are automatically fined <span class="font-semibold">₦500</span>. Fines are deducted from next payout or wallet.</div>
-        <div id="fines-detail" class="mt-4 text-xs text-slate-400"></div>
-      </div>
-
-      <div class="md:col-span-5 bg-[#121826] border border-white/10 rounded-3xl p-6">
-        <div class="uppercase tracking-widest text-xs mb-2 text-emerald-400">PAYOUT PROJECTIONS</div>
+      <div class="md:col-span-5 bg-[#1c1c1c] border border-[#333] rounded-3xl p-6">
+        <div class="uppercase tracking-widest text-xs mb-2 text-[#00ff85]">PAYOUT PROJECTIONS</div>
         <div id="payout-projections" class="grid grid-cols-2 gap-4 text-sm"></div>
       </div>
 
-      <div class="md:col-span-3 bg-[#121826] border border-white/10 rounded-3xl p-6 flex flex-col">
-        <div class="font-semibold">LEDGER</div>
-        <div class="text-xs text-slate-400 flex-1">All money movement is recorded. Click wallet above to view full history.</div>
-        <button onclick="showLedgerModal()" class="text-xs mt-3 self-start underline">OPEN FULL LEDGER</button>
+      <div class="md:col-span-7 bg-[#1c1c1c] border border-[#333] rounded-3xl p-6 flex flex-col">
+        <div class="font-semibold">LEDGER &amp; TRANSACTION HISTORY</div>
+        <div class="text-xs text-[#888] flex-1">Auto-settled winnings, payments and award wins shown here with references. Click to view full history.</div>
+        <button onclick="showLedgerModal()" class="text-xs mt-3 self-start underline text-[#00ff85]">OPEN FULL LEDGER</button>
       </div>
     </div>
 
-    <!-- ENHANCED FPL & PROJECTIONS -->
-    <div class="mt-5 grid md:grid-cols-2 gap-5">
-      <div class="premium-card">
-        <div class="font-semibold mb-3 flex items-center justify-between">
-          <span>MY SQUAD & CHIPS (FPL)</span>
-          <button onclick="showSquadModal()" class="text-xs px-3 py-1 bg-emerald-500/10 text-emerald-400 rounded-full">VIEW LINEUP</button>
+    <!-- FPL SECTION -->
+    <div class="mt-5">
+      <div class="text-[#00ff85] text-xs uppercase tracking-widest mb-2">FPL • PREMIER LEAGUE</div>
+      <div class="grid md:grid-cols-2 gap-5">
+        <div class="premium-card">
+          <div class="font-semibold mb-3 flex items-center justify-between">
+            <span>MY SQUAD & CHIPS</span>
+            <button onclick="showSquadModal()" class="text-xs px-3 py-1 bg-[#00ff85]/10 text-[#00ff85] rounded-full">VIEW LINEUP</button>
+          </div>
+          <div id="squad-chips" class="text-sm space-y-2"></div>
         </div>
-        <div id="squad-chips" class="text-sm space-y-2"></div>
+        <div class="premium-card">
+          <div class="font-semibold mb-3">FPL PROJECTIONS & LIVE</div>
+          <div id="fpl-projections" class="text-sm"></div>
+        </div>
       </div>
-      <div class="premium-card">
-        <div class="font-semibold mb-3">PROJECTIONS & LIVE</div>
-        <div id="projections-live" class="text-sm"></div>
+    </div>
+
+    <!-- UCL SECTION -->
+    <div class="mt-5">
+      <div class="text-[#888] text-xs uppercase tracking-widest mb-2">UCL • CHAMPIONS LEAGUE</div>
+      <div class="grid md:grid-cols-2 gap-5">
+        <div class="premium-card">
+          <div class="font-semibold mb-3">MY UCL SQUAD</div>
+          <div id="ucl-squad" class="text-sm">UCL data via adapter (configure template)</div>
+        </div>
+        <div class="premium-card">
+          <div class="font-semibold mb-3">UCL PROJECTIONS & LIVE</div>
+          <div id="ucl-projections" class="text-sm"></div>
+        </div>
       </div>
+    </div>
+
+    <!-- LINEUP VIEWER - Premium Visual Experience -->
+    <div class="mt-5 premium-card">
+      <div class="font-semibold mb-3 flex items-center justify-between">
+        <span>LINEUP VIEWER <span class="text-xs text-[#00ff85]">(Real FPL data)</span></span>
+      </div>
+      <select id="lineup-manager-select" class="w-full p-2 bg-[#111] border border-[#333] rounded-xl text-sm mb-4 text-white">
+        <option value="">Select a manager to view lineup...</option>
+      </select>
+      <div id="lineup-viewer" class="pitch min-h-[200px] rounded-2xl p-4 relative overflow-hidden">
+        <!-- Dynamic visual lineup rendered here - exact FPL vertical + bench -->
+        <div class="text-center text-[#666] text-xs py-8">Select a manager above to see FPL-style pitch (starters), BENCH + projected points</div>
+      </div>
+      <div class="text-[10px] text-[#888] mt-2">Captain highlighted in green • Chip shown below</div>
     </div>
 
     <!-- CHALLENGE ARENA & SPONSORS -->
@@ -286,30 +401,30 @@
       <div class="premium-card">
         <div class="font-semibold mb-3 flex justify-between">
           <span>CHALLENGE ARENA</span>
-          <button onclick="showChallengeModal()" class="text-xs px-3 py-1 bg-amber-500/10 text-amber-400 rounded-full">PROPOSE BET</button>
+          <button onclick="showChallengeModal()" class="text-xs px-3 py-1 bg-[#222] text-[#00ff85] rounded-full">PROPOSE BET</button>
         </div>
         <div id="challenge-arena" class="text-sm space-y-2"></div>
       </div>
       <div class="premium-card sponsor-card">
         <div class="font-semibold mb-3">SPONSORED AWARDS</div>
         <div id="sponsored-awards" class="text-sm space-y-1"></div>
-        <button onclick="showSponsorModal()" class="mt-3 text-xs text-amber-400">+ SPONSOR AN AWARD</button>
+        <button onclick="showSponsorModal()" class="mt-3 text-xs text-[#00ff85]">+ SPONSOR AN AWARD</button>
       </div>
     </div>
 
     <!-- MANAGER SPOTLIGHT + INFO -->
-    <div class="mt-6 rounded-3xl bg-gradient-to-br from-white/5 to-transparent border border-white/10 p-6">
+    <div class="mt-6 rounded-3xl bg-[#1c1c1c] border border-[#333] p-6">
       <div class="flex items-center justify-between">
         <div>
-          <span class="uppercase text-xs tracking-[2px] text-emerald-400">MANAGER SPOTLIGHT</span>
+          <span class="uppercase text-xs tracking-[2px] text-[#00ff85]">MANAGER SPOTLIGHT</span>
           <div id="spotlight-name" class="font-black text-3xl tracking-[-1.5px]"></div>
         </div>
         <div id="spotlight-stats" class="text-right text-sm"></div>
       </div>
-      <div class="text-xs text-slate-400 mt-1">Highest combined or weekly hero. Data auto-refreshes from FPL public APIs and UCL adapter.</div>
+      <div class="text-xs text-[#888] mt-1">Highest combined or weekly hero. Data auto-refreshes from FPL public APIs and UCL adapter.</div>
     </div>
 
-    <div class="mt-8 text-center text-[10px] text-slate-500">
+    <div class="mt-8 text-center text-[10px] text-[#666]">
       Payments confirmed exclusively via Paystack <span class="font-mono">charge.success</span> webhooks.<br>
       Scores pulled from official FPL public API. Live projections configurable. No manual paid toggles.
     </div>
@@ -317,7 +432,7 @@
 
   <!-- Modals -->
   <div id="modal" onclick="if (event.target.id === 'modal') closeModal()" class="hidden fixed inset-0 bg-black/70 backdrop-blur z-[70] flex items-center justify-center p-4">
-    <div onclick="event.stopImmediatePropagation()" class="bg-[#121826] w-full max-w-xl rounded-3xl border border-white/10 shadow-2xl p-6" id="modal-content">
+    <div onclick="event.stopImmediatePropagation()" class="bg-[#1c1c1c] w-full max-w-xl rounded-3xl border border-[#333] p-6" id="modal-content">
       <!-- dynamic -->
     </div>
   </div>

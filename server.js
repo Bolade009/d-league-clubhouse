@@ -294,6 +294,31 @@ async function syncFPL(roundsToSync = null) {
 
   const eligible = getEligibleManagers("fpl");
 
+  // Fetch bootstrap once for player names and live expected if needed
+  let playerMap = {};
+  let teamMap = {};
+  try {
+    const bootstrap = await safeFetchJSON(`${FPL_BASE}/bootstrap-static/`);
+    if (bootstrap) {
+      if (bootstrap.teams) {
+        bootstrap.teams.forEach(t => {
+          teamMap[t.id] = { name: t.name, short: t.short_name, code: t.code };
+        });
+      }
+      if (bootstrap.elements) {
+        bootstrap.elements.forEach(el => {
+          const team = teamMap[el.team] || {};
+          playerMap[el.id] = {
+            name: el.web_name || `${el.first_name} ${el.second_name}`.trim(),
+            type: el.element_type, // 1=GK,2=DEF,3=MID,4=FWD
+            team: team.short || 'UNK',
+            teamColor: getTeamColor(team.code || 'DEF')
+          };
+        });
+      }
+    }
+  } catch (e) {}
+
   for (const mgr of s.managers) {
     if (!mgr.fpl || !mgr.fpl.teamId) continue;
     const teamId = mgr.fpl.teamId;
@@ -324,10 +349,40 @@ async function syncFPL(roundsToSync = null) {
             }
           }
 
-          // Extract detailed data
-          extra.captain = picksData.picks?.find(p => p.multiplier === 2 || p.multiplier === 3)?.element || null;
+          // Build per-player points map for lineup (projected or actual)
+          let pickPoints = {};
+          if (picksData.picks && live && live.elements) {
+            for (const p of picksData.picks) {
+              const el = live.elements.find(e => e.id === p.element);
+              if (el && el.stats) {
+                pickPoints[p.element] = (el.stats.total_points || 0) * (p.multiplier || 1);
+              }
+            }
+          } else if (DEMO_MODE && picksData.picks) {
+            // Demo projected points
+            picksData.picks.forEach((p, i) => {
+              pickPoints[p.element] = 2 + (i % 8) * 2 + Math.floor(Math.random() * 5);
+            });
+          }
+
+          // Extract detailed data with names
+          const capPick = picksData.picks?.find(p => p.multiplier === 2 || p.multiplier === 3);
+          extra.captain = capPick ? capPick.element : null;
+          extra.captainName = capPick && playerMap[capPick.element] ? playerMap[capPick.element].name : null;
           extra.activeChip = picksData.active_chip || null;
-          extra.picks = picksData.picks || [];
+          extra.picks = (picksData.picks || []).map(p => {
+            const info = playerMap[p.element] || {};
+            return {
+              element: p.element,
+              name: info.name || 'Player #' + p.element,
+              type: info.type || 0,
+              team: info.team || 'UNK',
+              teamColor: info.teamColor || '#4B5563',
+              position: p.position,
+              multiplier: p.multiplier,
+              points: pickPoints[p.element] != null ? pickPoints[p.element] : null
+            };
+          });
           extra.transfers = picksData.entry_history?.event_transfers || 0;
         }
 
@@ -369,6 +424,18 @@ function computeLivePointsFromPicks(picks, liveData) {
     total += pts;
   }
   return Math.round(total);
+}
+
+function getTeamColor(code) {
+  const colors = {
+    'ARS': '#EF0107', 'AVL': '#670E36', 'BRE': '#E30613', 'BHA': '#0057B8',
+    'BUR': '#6C1D45', 'CHE': '#034694', 'CRY': '#1B458F', 'EVE': '#003399',
+    'FUL': '#000000', 'LEE': '#1D428A', 'LEI': '#0033A0', 'LIV': '#C8102E',
+    'MCI': '#6CABDD', 'MUN': '#DA020E', 'NEW': '#241F20', 'NOR': '#00A650',
+    'SOU': '#D71920', 'TOT': '#132257', 'WAT': '#FBEE23', 'WHU': '#7A263A',
+    'WOL': '#FDB913', 'DEF': '#4B5563'
+  };
+  return colors[code] || '#4B5563';
 }
 
 function upsertScore(store, managerId, comp, round, points, source, isFinal, extra = {}) {
@@ -452,52 +519,13 @@ async function syncUCL(roundsToSync = null) {
   return { ok: true };
 }
 
-// ============ FINES & CALCULATIONS ============
-
-async function finalizeRoundAndApplyFines(comp, round) {
-  const s = await loadStore();
-  const avg = s.settings.roundAverages[comp] || 0;
-  const eligible = getEligibleManagers(comp);
-
-  let finesCreated = 0;
-
-  for (const mgr of eligible) {
-    const sc = getManagerScore(mgr.id, comp, round);
-    if (!sc || typeof sc.points !== "number" || !sc.isFinal) continue;
-
-    if (sc.points < avg) {
-      const fineAmount = 500;
-      const already = s.ledger.find(l => l.type === "fine" && l.managerId === mgr.id && l.round === round && l.competition === comp);
-      if (!already) {
-        s.ledger.push({
-          id: generateId("ldg"),
-          type: "fine",
-          managerId: mgr.id,
-          competition: comp,
-          round,
-          amount: -fineAmount,
-          note: `Below average (${sc.points} < ${avg})`,
-          at: nowISO()
-        });
-        finesCreated++;
-      }
-    }
-  }
-
-  await persistStore();
-  return finesCreated;
-}
+// ============ WALLET & CALCULATIONS (fines removed) ============
 
 function getWalletBalance(managerId) {
   const s = getStore();
   return s.ledger
     .filter(l => l.managerId === managerId)
     .reduce((sum, l) => sum + (l.amount || 0), 0);
-}
-
-function getManagerFines(managerId) {
-  const s = getStore();
-  return s.ledger.filter(l => l.type === "fine" && l.managerId === managerId);
 }
 
 function getProjectedPayouts() {
@@ -548,8 +576,8 @@ function buildManagerView(mgr) {
     .reduce((a, b) => a + b.points, 0);
 
   const wallet = getWalletBalance(mgr.id);
-  const fines = getManagerFines(mgr.id).reduce((a, b) => a + Math.abs(b.amount), 0);
 
+  const recentFpl = currentFpl || {};
   return {
     id: mgr.id,
     displayName: mgr.displayName,
@@ -565,8 +593,13 @@ function buildManagerView(mgr) {
     uclTotal,
     combined: fplTotal + uclTotal,
     wallet,
-    totalFines: fines,
-    eligible: fplPaid || uclPaid
+    // no fines
+    // Detailed FPL data for squad view
+    recentCaptain: recentFpl.captain || null,
+    recentCaptainName: recentFpl.captainName || null,
+    recentChip: recentFpl.activeChip || null,
+    recentPicks: recentFpl.picks || [],
+    recentTransfers: recentFpl.transfers || 0
   };
 }
 
@@ -609,14 +642,16 @@ async function seedDemoData(force = false) {
   if (s.managers.length > 0 && !force) return;
 
   const demoManagers = [
-    { displayName: "Ayo Balogun", email: "ayo@dleague.ng", code: "ayo2026", fplId: "4782912", uclId: "ucl-ayo-91" },
-    { displayName: "Chinedu Eze", email: "chinedu@dleague.ng", code: "chi2026", fplId: "3129847", uclId: "ucl-chi-47" },
-    { displayName: "Amara Okoro", email: "amara@dleague.ng", code: "ama2026", fplId: "5567341", uclId: "ucl-ama-12" },
-    { displayName: "Emeka Obi", email: "emeka@dleague.ng", code: "eme2026", fplId: "1982734", uclId: "ucl-eme-88" },
-    { displayName: "Fatima Sule", email: "fatima@dleague.ng", code: "fat2026", fplId: "6671203", uclId: "ucl-fat-55" },
-    { displayName: "Tunde Adebayo", email: "tunde@dleague.ng", code: "tun2026", fplId: "4458921", uclId: "ucl-tun-29" },
-    { displayName: "Zainab Ibrahim", email: "zainab@dleague.ng", code: "zai2026", fplId: "7783945", uclId: "ucl-zai-03" },
-    { displayName: "Chukwudi Nwosu", email: "chukwudi@dleague.ng", code: "chu2026", fplId: "2234765", uclId: "ucl-chu-71" }
+    { displayName: "Ayo Balogun", email: "ayo@dleague.ng", code: "ayo2026", fplId: "4782912", uclId: "ucl-ayo-91", club: "Ayo's Army" },
+    { displayName: "Chinedu Eze", email: "chinedu@dleague.ng", code: "chi2026", fplId: "3129847", uclId: "ucl-chi-47", club: "Chinedu FC" },
+    { displayName: "Amara Okoro", email: "amara@dleague.ng", code: "ama2026", fplId: "5567341", uclId: "ucl-ama-12", club: "Amara's Amazons" },
+    { displayName: "Emeka Obi", email: "emeka@dleague.ng", code: "eme2026", fplId: "1982734", uclId: "ucl-eme-88", club: "Emeka Elite" },
+    { displayName: "Fatima Sule", email: "fatima@dleague.ng", code: "fat2026", fplId: "6671203", uclId: "ucl-fat-55", club: "Fatima's Force" },
+    { displayName: "Tunde Adebayo", email: "tunde@dleague.ng", code: "tun2026", fplId: "4458921", uclId: "ucl-tun-29", club: "Tunde Titans" },
+    { displayName: "Zainab Ibrahim", email: "zainab@dleague.ng", code: "zai2026", fplId: "7783945", uclId: "ucl-zai-03", club: "Zainab Zest" },
+    { displayName: "Chukwudi Nwosu", email: "chukwudi@dleague.ng", code: "chu2026", fplId: "2234765", uclId: "ucl-chu-71", club: "Chukwudi Champions" },
+    { displayName: "Oluchi Nwankwo", email: "oluchi@dleague.ng", code: "olu2026", fplId: "9912345", uclId: "ucl-olu-55", club: "Oluchi Overlords" },
+    { displayName: "Babajide Okafor", email: "baba@dleague.ng", code: "baba2026", fplId: "6678912", uclId: "ucl-baba-22", club: "Baba's Brigade" }
   ];
 
   s.managers = [];
@@ -634,8 +669,10 @@ async function seedDemoData(force = false) {
       displayName: dm.displayName,
       email: dm.email,
       accessCode: dm.code,
-      fpl: { teamId: dm.fplId, teamName: dm.displayName.split(" ")[0] + " FC" },
-      ucl: { teamId: dm.uclId, teamName: dm.displayName.split(" ")[0] + " United" },
+      fpl: { teamId: dm.fplId, teamName: dm.club || (dm.displayName.split(" ")[0] + " FC") },
+      ucl: { teamId: dm.uclId, teamName: dm.club || (dm.displayName.split(" ")[0] + " United") },
+      payoutDetails: "Bank: Demo Bank • Acc: 0123456789 • Name: " + dm.displayName, // editable later
+      fplClubName: dm.club || (dm.displayName.split(" ")[0] + " FC"),
       createdAt: now
     };
     s.managers.push(mgr);
@@ -687,14 +724,21 @@ async function seedDemoData(force = false) {
     }
   });
 
-  // Some fines
-  const some = s.managers[3];
-  if (some) {
-    s.ledger.push({
-      id: generateId("ldg"), type: "fine", managerId: some.id, competition: "fpl", round: 3,
-      amount: -500, note: "Below average (GW3)", at: now
-    });
-  }
+  // Simulate rich recentPicks for lineup viewer (FPL style data)
+  s.managers.forEach((m, i) => {
+    const recentFpl = s.scores.find(sc => sc.managerId === m.id && sc.competition === "fpl" && sc.round === curF);
+    if (recentFpl) {
+      recentFpl.picks = [
+        { element: 100 + i, name: "Salah", type: 3, team: "LIV", teamColor: "#C8102E", position: 1, multiplier: 2, points: 12 + (i%5) },
+        { element: 200 + i, name: "Haaland", type: 4, team: "MCI", teamColor: "#6CABDD", position: 2, multiplier: 1, points: 8 + (i%4) },
+        { element: 300 + i, name: "Saka", type: 3, team: "ARS", teamColor: "#DB0007", position: 3, multiplier: 1, points: 6 + (i%3) },
+        // ... more for full demo squad
+      ];
+      // bench
+      recentFpl.picks.push({ element: 400 + i, name: "Bench GK", type: 1, team: "TOT", teamColor: "#132257", position: 12, multiplier: 0, points: 1 });
+      recentFpl.picks.push({ element: 500 + i, name: "Bench Def", type: 2, team: "CHE", teamColor: "#034694", position: 13, multiplier: 0, points: 2 + (i%2) });
+    }
+  });
 
   // H2H sample
   const [m1, m2, m3] = s.managers;
@@ -728,17 +772,28 @@ async function seedDemoData(force = false) {
     { match: "QF4", a: s.managers[6].displayName, b: s.managers[7].displayName, winner: null }
   ];
 
-  // Challenges
+  // Challenges (expanded for demo - plenty innovative)
   s.challenges = [
     { id: generateId("ch"), title: "Most Clean Sheets GW6", status: "open", prize: 2000, entrants: 4 },
-    { id: generateId("ch"), title: "Highest Scoring MD3 UCL", status: "settled", prize: 1500, entrants: 6, winner: s.managers[1].displayName }
+    { id: generateId("ch"), title: "Highest Scoring MD3 UCL", status: "settled", prize: 1500, entrants: 6, winner: s.managers[1].displayName },
+    { id: generateId("ch"), title: "Captain Clutch - FPL GW", status: "settled", prize: 5000, entrants: 8, winner: s.managers[0].displayName },
+    { id: generateId("ch"), title: "Bench Bandit", status: "open", prize: 3500, entrants: 5 },
+    { id: generateId("ch"), title: "Transfer Terror", status: "settled", prize: 4000, entrants: 7, winner: s.managers[2].displayName },
+    { id: generateId("ch"), title: "UCL Defensive Wall", status: "open", prize: 2500, entrants: 4 }
   ];
 
-  // Ledger seed for some payouts
+  // Ledger seed for payouts + auto settled awards/challenges (rich demo history)
   const top = s.managers[0];
+  const second = s.managers[1];
   if (top) {
     s.ledger.push({ id: generateId("ldg"), type: "pot_win", managerId: top.id, competition: "fpl", round: 2, amount: 4500, note: "GW2 winner (90%)", at: now });
     s.ledger.push({ id: generateId("ldg"), type: "reserve", managerId: top.id, competition: "fpl", round: null, amount: 1200, note: "League reserve share", at: now });
+    s.ledger.push({ id: generateId("ldg"), type: "award_win", managerId: top.id, competition: "fpl", round: curF, amount: 10000, note: "Won Captain Clutch Award - sponsored by Local Legend FC", at: now });
+    s.ledger.push({ id: generateId("ldg"), type: "challenge_win", managerId: top.id, competition: "fpl", round: curF, amount: 5000, note: "Won Captain Clutch challenge", at: now });
+  }
+  if (second) {
+    s.ledger.push({ id: generateId("ldg"), type: "award_win", managerId: second.id, competition: "fpl", round: curF, amount: 5500, note: "Won Clean Sheet King - sponsored by Defence United", at: now });
+    s.ledger.push({ id: generateId("ldg"), type: "challenge_win", managerId: second.id, competition: "ucl", round: curU, amount: 4000, note: "Won UCL Goal King", at: now });
   }
 
   s.settings.lastSyncAt = nowISO();
@@ -773,7 +828,7 @@ app.post("/api/auth/login", async (req, res) => {
   const s = await loadStore();
 
   const mgr = s.managers.find(m => m.email.toLowerCase() === String(email || "").toLowerCase());
-  if (!mgr) return res.status(404).json({ error: "Manager not found" });
+  if (!mgr) return res.status(404).json({ error: "Manager not found. Contact the league commissioner to be added and receive your access code + email." });
   if (mgr.accessCode !== code) return res.status(401).json({ error: "Invalid access code" });
 
   const token = signToken({ managerId: mgr.id, iat: Date.now() });
@@ -784,6 +839,18 @@ app.post("/api/auth/login", async (req, res) => {
     manager: view,
     message: "Welcome to the D League Clubhouse"
   });
+});
+
+app.post("/api/join-request", async (req, res) => {
+  await seedDemoData();
+  const { name, email, fplClubName, fplLeagueJoined, message } = req.body || {};
+  if (!name || !email || !fplClubName) return res.status(400).json({ error: "Name, email and FPL club name required (to confirm league join)" });
+
+  const s = await loadStore();
+  await logEvent("join_request", { name, email, fplClubName, fplLeagueJoined: !!fplLeagueJoined, message });
+
+  // In production this could email the admin or add a pending manager after verifying fplClubName matches the league
+  res.json({ ok: true, message: "Request received! The league admin will verify your FPL club name '" + fplClubName + "' and send your access code shortly." });
 });
 
 app.get("/api/me", async (req, res) => {
@@ -818,7 +885,6 @@ app.get("/api/manager/:id/full", async (req, res) => {
   const fplScores = s.scores.filter(sc => sc.managerId === mgr.id && sc.competition === "fpl");
   const uclScores = s.scores.filter(sc => sc.managerId === mgr.id && sc.competition === "ucl");
   const ledger = s.ledger.filter(l => l.managerId === mgr.id);
-  const fines = getManagerFines(mgr.id);
   const h2h = getH2HForManager(mgr.id);
 
   res.json({
@@ -826,7 +892,6 @@ app.get("/api/manager/:id/full", async (req, res) => {
     fplScores,
     uclScores,
     ledger,
-    fines,
     h2h,
     eligibleFpl: isFullyPaidFor(mgr, "fpl"),
     eligibleUcl: isFullyPaidFor(mgr, "ucl")
@@ -981,14 +1046,7 @@ app.post("/api/sync/run", requireSyncAuth, async (req, res) => {
   if (!comp || comp === "fpl") result = await syncFPL();
   if (comp === "ucl") result = await syncUCL();
 
-  // After sync attempt to finalize previous round fines
   const s = await loadStore();
-  const curF = s.settings.currentRound.fpl;
-  const curU = s.settings.currentRound.ucl;
-
-  await finalizeRoundAndApplyFines("fpl", curF - 1);
-  await finalizeRoundAndApplyFines("ucl", curU - 1);
-
   res.json({ ok: true, result, lastSyncAt: s.settings.lastSyncAt });
 });
 
@@ -1022,7 +1080,7 @@ app.get("/api/community", async (req, res) => {
       combined: m.combined,
       currentFpl: m.currentFpl,
       currentUcl: m.currentUcl,
-      fines: m.totalFines,
+      // no fines
       wallet: m.wallet
     }))
   });
@@ -1060,7 +1118,7 @@ app.get("/api/ticker", async (req, res) => {
     `GW${s.settings.currentRound.fpl} live projections updating`,
     "Paystack webhooks are the only source of truth for payments",
     `UCL MD${s.settings.currentRound.ucl} — 8 managers eligible`,
-    "Fines auto-deducted from next pot payout",
+    "No fines - removed per rules",
     "Cup QF live — check bracket"
   ];
   res.json({ messages, lastSync: s.settings.lastSyncAt });
@@ -1077,7 +1135,7 @@ app.get("/api/admin/overview", async (req, res) => {
     paidFpl,
     paidUcl,
     totalPaymentsConfirmed: s.payments.filter(p => p.status === "confirmed").length,
-    totalFines: s.ledger.filter(l => l.type === "fine").length,
+    totalFines: 0, // fines removed
     lastSync: s.settings.lastSyncAt,
     reserveEstimate: getProjectedPayouts()
   });
