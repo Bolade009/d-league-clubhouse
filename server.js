@@ -1724,8 +1724,8 @@ app.get("/api/admin/overview", async (req, res) => {
   const paidFpl = getEligibleManagers("fpl").length;
   const paidUcl = getEligibleManagers("ucl").length;
 
-  const recentLedger = (s.ledger || []).slice(0, 20);
-  const recentEvents = (s.events || []).slice(0, 15);
+  const recentLedger = (s.ledger || []).slice(0, 30);
+  const recentEvents = (s.events || []).slice(0, 50); // more for admin cockpit history
   const allChallenges = (s.challenges || []);
   const sponsorships = (s.sponsorships || []);
   const totalHouseCommission = (s.ledger || []).filter(l => l.type === "house_commission").reduce((sum, l) => sum + Math.abs(l.amount || 0), 0);

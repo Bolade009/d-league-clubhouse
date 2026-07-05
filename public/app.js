@@ -180,10 +180,10 @@ async function loadAdminOverview() {
       if (m.email) managersByEmail[m.email.toLowerCase()] = m;
     });
 
-    // Show recent join requests, with status if already approved
+    // Show recent join requests - they stay visible even after approval (historical)
     const joinRequests = events
       .filter(e => e.type === 'join_request')
-      .slice(0, 8);
+      .slice(0, 15); // more history
 
     let joinsHtml = '';
     if (joinRequests.length) {
@@ -192,26 +192,27 @@ async function loadAdminOverview() {
         const email = (p.email || '').toLowerCase();
         const when = (e.at || '').slice(11,16);
         const existing = managersByEmail[email];
-        let status = '';
+        let action = '';
         if (existing) {
-          status = `<span class="text-[#00ff85] font-bold">APPROVED</span> <span class="font-mono">code: ${existing.accessCode || '—'}</span>`;
+          const code = existing.accessCode || '—';
+          action = `<div class="text-right"><span class="text-[#00ff85] font-bold">APPROVED</span><br><span class="font-mono text-xs">${code}</span> <button onclick="navigator.clipboard.writeText('${code}');alert('Code copied!')" class="ml-1 text-[10px] px-1 bg-[#333] rounded">copy</button></div>`;
         } else {
-          status = `<button data-name="${(p.name || '').replace(/"/g, '&quot;')}" data-email="${(p.email || '').replace(/"/g, '&quot;')}" data-club="${(p.fplClubName || '').replace(/"/g, '&quot;')}"
+          action = `<button data-name="${(p.name || '').replace(/"/g, '&quot;')}" data-email="${(p.email || '').replace(/"/g, '&quot;')}" data-club="${(p.fplClubName || '').replace(/"/g, '&quot;')}"
                     onclick="approveJoinRequestFromBtn(this)" 
-                    class="px-3 py-0.5 bg-[#00ff85] text-black font-bold rounded text-xs hover:bg-white">Approve</button>`;
+                    class="px-4 py-1 bg-[#00ff85] text-black font-bold rounded text-sm hover:bg-white">Approve</button>`;
         }
         return `
-          <div class="flex items-center justify-between bg-[#1a1a1a] p-2 rounded mb-1">
+          <div class="flex justify-between items-start bg-[#1c1c1c] border border-[#333] p-3 rounded-xl mb-2">
             <div>
-              <strong>${p.name || ''}</strong> &lt;${p.email || ''}&gt;<br>
-              <span class="font-mono text-[#00ff85]">${p.fplClubName || ''}</span>
-              <span class="text-[#666] text-[10px]"> (${when})</span>
+              <div class="font-semibold">${p.name || 'Unknown'} <span class="text-xs text-[#888]">• ${when}</span></div>
+              <div class="text-sm">${p.email || ''}</div>
+              <div class="text-[#00ff85] font-mono text-sm">${p.fplClubName || ''}</div>
             </div>
-            <div>${status}</div>
+            <div class="text-right min-w-[120px]">${action}</div>
           </div>`;
       }).join('');
     } else {
-      joinsHtml = '<div class="text-[#666] py-1">No join requests yet</div>';
+      joinsHtml = '<div class="text-[#666] p-3">No join requests in recent history.</div>';
     }
 
     const otherEvents = events.filter(e => e.type !== 'join_request').slice(0, 5);
@@ -225,27 +226,27 @@ async function loadAdminOverview() {
       return `<div class="text-[#aaa] py-0.5 text-[10px]">${e.type} — ${detail} <span class="text-[#666]">(${when})</span></div>`;
     }).join('') || '<div class="text-[#666]">No other recent activity</div>';
 
-    // Challenges section with cancel
+    // Challenges - table style for better management
     let challengesHtml = (data.challenges || []).map(ch => {
-      const statusColor = ch.status === 'open' ? 'text-[#00ff85]' : (ch.status === 'cancelled' ? 'text-red-400' : 'text-[#888]');
+      const statusColor = ch.status === 'open' ? '#00ff85' : (ch.status === 'cancelled' ? '#ff6b6b' : '#888');
       let actions = '';
       if (ch.status === 'open') {
-        actions = `<button onclick="cancelChallenge('${ch.id}', '${ch.title.replace(/'/g, "\\'")}')" class="px-2 py-0.5 text-[10px] bg-red-900 hover:bg-red-800 rounded">Cancel</button>`;
+        actions = `<button onclick="cancelChallenge('${ch.id}', '${ch.title.replace(/'/g, "\\'")}')" class="text-[10px] px-2 py-0.5 bg-red-900 hover:bg-red-800 rounded">Cancel</button> <button onclick="forceSettleChallenge('${ch.id}')" class="text-[10px] px-2 py-0.5 bg-[#00ff85] text-black rounded">Force Settle</button>`;
       }
-      return `<div class="text-[10px] py-0.5 flex justify-between"><span><span class="${statusColor}">${ch.status}</span> ${ch.title} (₦${ch.prize}) ${ch.winner ? '→ ' + ch.winner : ''}</span> ${actions}</div>`;
-    }).join('') || '<div class="text-[#666]">No challenges</div>';
+      return `<tr class="border-b border-[#333]"><td class="py-1 pr-2">${ch.title}</td><td class="py-1 pr-2 text-right">₦${ch.prize}</td><td class="py-1 text-center" style="color:${statusColor}">${ch.status}</td><td class="py-1 pl-2 text-right">${actions}</td></tr>`;
+    }).join('') || '<tr><td colspan="4" class="py-2 text-[#666]">No challenges</td></tr>';
 
-    // Sponsored awards
+    // Sponsored
     let sponsorsHtml = (data.sponsorships || []).map(sp => {
-      return `<div class="text-[10px] py-0.5">${sp.sponsor || 'Sponsor'} - ₦${sp.amount} for ${sp.target || 'general'} <button onclick="cancelSponsorship('${sp.id}')" class="ml-2 px-1 text-[9px] bg-red-900 rounded">Cancel</button></div>`;
-    }).join('') || '<div class="text-[#666]">No active sponsorships</div>';
+      return `<tr class="border-b border-[#333]"><td class="py-1">${sp.sponsor || 'Sponsor'} → ${sp.target || 'general'}</td><td class="py-1 text-right">₦${sp.amount}</td><td class="py-1 pl-2 text-right"><button onclick="cancelSponsorship('${sp.id}')" class="text-[10px] px-2 py-0.5 bg-red-900 hover:bg-red-800 rounded">Cancel</button></td></tr>`;
+    }).join('') || '<tr><td colspan="3" class="py-2 text-[#666]">No active sponsorships</td></tr>';
 
-    // Managers overview with access codes (admin only)
-    let mgrsHtml = (data.managers || []).slice(0, 12).map(m => {
-      const paid = (m.fplPaid ? 'F' : '') + (m.uclPaid ? 'U' : '') || '—';
+    // Managers table with easy copy
+    let mgrsHtml = (data.managers || []).map(m => {
+      const paid = (m.fplPaid ? '✅ FPL' : '❌ FPL') + ' ' + (m.uclPaid ? '✅ UCL' : '❌ UCL');
       const code = m.accessCode || '—';
-      return `<div class="text-[9px]">${m.displayName} <span class="text-[#666]">(${paid})</span> ${m.fplClubName ? '• ' + m.fplClubName : ''} <span class="font-mono text-[#00ff85]">code: ${code}</span></div>`;
-    }).join('') || 'None';
+      return `<tr class="border-b border-[#333] text-sm"><td class="py-1.5 font-medium">${m.displayName}</td><td class="py-1.5 text-[#888]">${m.email}</td><td class="py-1.5">${m.fplClubName || '—'}</td><td class="py-1.5 text-right font-mono">${paid}</td><td class="py-1.5"><button onclick="navigator.clipboard.writeText('${code}'); alert('Copied: ${code}')" class="text-xs bg-[#222] hover:bg-[#333] px-2 py-0.5 rounded">${code}</button></td></tr>`;
+    }).join('') || '<tr><td colspan="5" class="py-3 text-[#666]">No managers yet</td></tr>';
 
     // Nice stats cards
     const statsHtml = `
@@ -270,94 +271,108 @@ async function loadAdminOverview() {
     `;
 
     panel.innerHTML = `
-      <div class="flex justify-between items-center mb-4 border-b border-[#222] pb-3">
-        <div class="flex items-center gap-3">
-          <span class="font-black text-3xl tracking-tight text-[#00ff85]">ADMIN COCKPIT</span>
-          <span class="text-xs bg-[#222] text-[#00ff85] px-3 py-1 rounded-full font-medium">bolade.oladejo@gmail.com</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <button onclick="loadAdminOverview()" class="px-5 py-2 bg-[#222] hover:bg-[#333] active:bg-[#444] rounded-2xl text-sm font-medium transition">⟳ REFRESH</button>
-          <button onclick="promptAddManager()" class="px-5 py-2 bg-[#00ff85] hover:bg-[#00e676] active:bg-[#00cc66] text-black font-bold rounded-2xl text-sm transition">+ ADD NEW MANAGER</button>
-          <button onclick="triggerSettle()" class="px-5 py-2 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white font-bold rounded-2xl text-sm transition">TRIGGER SETTLE &amp; PAYOUTS</button>
-        </div>
-      </div>
-
-      <!-- Live Stats -->
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
-          <div class="uppercase text-[10px] tracking-widest text-[#888]">TOTAL MANAGERS</div>
-          <div class="text-4xl font-black mt-1">${data.totalManagers}</div>
-        </div>
-        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
-          <div class="uppercase text-[10px] tracking-widest text-[#888]">PAID STATUS</div>
-          <div class="mt-1">
-            <span class="font-bold text-lg">FPL: ${data.paidFpl}</span> 
-            <span class="text-[#666] mx-1">|</span> 
-            <span class="font-bold text-lg">UCL: ${data.paidUcl}</span>
-          </div>
-          <div class="text-xs text-[#00ff85] mt-1">Confirmed Payments: ${data.totalPaymentsConfirmed}</div>
-        </div>
-        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
-          <div class="uppercase text-[10px] tracking-widest text-[#888]">HOUSE COMMISSION</div>
-          <div class="text-4xl font-black mt-1 text-[#00ff85]">₦${data.totalHouseCommission || 0}</div>
-        </div>
-        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
-          <div class="uppercase text-[10px] tracking-widest text-[#888]">LAST SYNC</div>
-          <div class="text-lg font-medium mt-1">${data.lastSync || '—'}</div>
-          <button onclick="loadAdminOverview()" class="text-xs underline text-[#888] mt-1">force refresh data</button>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 xl:grid-cols-2 gap-5">
-        <!-- Join Requests Cockpit -->
+      <div class="flex justify-between items-center mb-4 pb-3 border-b border-[#222]">
         <div>
-          <div class="flex items-center gap-2 mb-2">
-            <span class="font-semibold text-lg">JOIN REQUESTS</span>
-            <span class="text-xs px-2 py-0.5 bg-[#00ff85] text-black rounded-full font-bold">${joinRequests.length} recent</span>
+          <span class="font-black text-4xl text-[#00ff85] tracking-[-1.5px]">ADMIN COCKPIT</span>
+          <div class="text-xs text-[#888] mt-0.5">Live from disk • bolade.oladejo@gmail.com</div>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="loadAdminOverview()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">REFRESH ALL</button>
+          <button onclick="promptAddManager()" class="px-6 py-2 bg-[#00ff85] text-black font-bold rounded-2xl hover:bg-white">+ ADD MANAGER</button>
+          <button onclick="triggerSettle()" class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl">SETTLE &amp; PAYOUTS</button>
+        </div>
+      </div>
+
+      <!-- Stats Dashboard -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
+          <div class="text-xs uppercase tracking-widest text-[#888]">MANAGERS</div>
+          <div class="text-5xl font-black mt-1">${data.totalManagers}</div>
+          <div class="text-sm mt-1">FPL paid: ${data.paidFpl} • UCL paid: ${data.paidUcl}</div>
+        </div>
+        <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
+          <div class="text-xs uppercase tracking-widest text-[#888]">PAYMENTS</div>
+          <div class="text-5xl font-black mt-1 text-[#00ff85]">${data.totalPaymentsConfirmed}</div>
+          <div class="text-sm mt-1">Confirmed</div>
+        </div>
+        <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
+          <div class="text-xs uppercase tracking-widest text-[#888]">HOUSE CUT</div>
+          <div class="text-5xl font-black mt-1">₦${data.totalHouseCommission || 0}</div>
+          <div class="text-sm mt-1">Total commission collected</div>
+        </div>
+        <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
+          <div class="text-xs uppercase tracking-widest text-[#888]">SYNC</div>
+          <div class="text-xl font-medium mt-1">${data.lastSync || 'Never'}</div>
+          <button onclick="loadAdminOverview()" class="mt-2 text-xs px-3 py-1 border border-[#333] rounded hover:bg-[#222]">Refresh Data</button>
+        </div>
+      </div>
+
+      <!-- Main Management Grid -->
+      <div class="grid grid-cols-1 xl:grid-cols-5 gap-4">
+        
+        <!-- Join Requests - Historical, never hides -->
+        <div class="xl:col-span-3 bg-[#161616] border border-[#222] rounded-3xl p-5">
+          <div class="flex justify-between items-center mb-3">
+            <div class="font-semibold text-xl">Join Requests <span class="text-sm text-[#888]">(${joinRequests.length} recent)</span></div>
+            <div class="text-xs text-[#888]">These stay forever for your records</div>
           </div>
-          <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4 min-h-[140px] max-h-[220px] overflow-auto">
+          <div class="max-h-[280px] overflow-auto pr-2 space-y-2">
             ${joinsHtml}
           </div>
-          <div class="text-[10px] text-[#666] mt-1">Requests stay visible. Status updates to APPROVED + code once processed.</div>
         </div>
 
-        <!-- Managers with easy code access -->
-        <div>
-          <div class="font-semibold text-lg mb-2">MANAGERS &amp; ACCESS CODES</div>
-          <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4 min-h-[140px] max-h-[220px] overflow-auto text-sm">
-            ${mgrsHtml}
+        <!-- Quick Managers -->
+        <div class="xl:col-span-2 bg-[#161616] border border-[#222] rounded-3xl p-5">
+          <div class="font-semibold text-xl mb-3">Managers &amp; Codes</div>
+          <div class="max-h-[280px] overflow-auto text-sm">
+            <table class="w-full">
+              <thead class="text-xs text-[#888]">
+                <tr><th class="text-left pb-2">Name</th><th class="text-left pb-2">Email</th><th class="text-right pb-2">Code</th></tr>
+              </thead>
+              <tbody>
+                ${mgrsHtml}
+              </tbody>
+            </table>
           </div>
-          <div class="text-[10px] text-[#00ff85] mt-1">Codes are shown here for quick copy-paste to new managers.</div>
+          <div class="text-xs text-[#666] mt-2">Click any code button to copy. All managers listed.</div>
         </div>
 
-        <!-- Challenges & Awards -->
-        <div class="xl:col-span-2">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <div class="font-semibold text-lg mb-2 flex items-center gap-2">CHALLENGES</div>
-              <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-3 text-sm max-h-[160px] overflow-auto">
-                ${challengesHtml}
-              </div>
-            </div>
-            <div>
-              <div class="font-semibold text-lg mb-2 flex items-center gap-2">SPONSORED AWARDS</div>
-              <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-3 text-sm max-h-[160px] overflow-auto">
-                ${sponsorsHtml}
-              </div>
-            </div>
+        <!-- Challenges -->
+        <div class="xl:col-span-3 bg-[#161616] border border-[#222] rounded-3xl p-5">
+          <div class="font-semibold text-xl mb-3">Challenges Management</div>
+          <div class="max-h-[220px] overflow-auto">
+            <table class="w-full text-sm">
+              <thead class="text-xs text-[#888]"><tr><th class="text-left">Title</th><th class="text-right">Prize</th><th class="text-center">Status</th><th class="text-right">Action</th></tr></thead>
+              <tbody>${challengesHtml}</tbody>
+            </table>
           </div>
         </div>
+
+        <!-- Sponsored -->
+        <div class="xl:col-span-2 bg-[#161616] border border-[#222] rounded-3xl p-5">
+          <div class="font-semibold text-xl mb-3">Sponsored Awards</div>
+          <div class="max-h-[220px] overflow-auto">
+            <table class="w-full text-sm">
+              <thead class="text-xs text-[#888]"><tr><th class="text-left">Sponsor</th><th class="text-right">Amount</th><th class="text-right">Action</th></tr></thead>
+              <tbody>${sponsorsHtml}</tbody>
+            </table>
+          </div>
+        </div>
+
       </div>
 
-      <div class="mt-5 pt-4 border-t border-[#333]">
-        <div class="font-semibold mb-2">RECENT ACTIVITY LOG</div>
-        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4 text-xs max-h-[120px] overflow-auto leading-relaxed">
+      <!-- Activity -->
+      <div class="mt-5 bg-[#161616] border border-[#222] rounded-3xl p-5">
+        <div class="font-semibold text-xl mb-3">Activity Log</div>
+        <div class="max-h-[160px] overflow-auto text-xs bg-black/30 p-4 rounded-2xl font-mono leading-snug">
           ${otherHtml}
         </div>
       </div>
 
-      <div class="mt-4 text-center text-xs text-[#555]">
-        This is your live command center. All data is pulled from the persistent disk. Use the top buttons for quick actions.
+      <div class="mt-4 text-center">
+        <div class="inline-flex items-center gap-2 text-xs text-[#666] bg-[#161616] px-4 py-1 rounded-full">
+          Persistent disk • All data safe across deploys • Last updated: ${new Date().toLocaleTimeString()}
+        </div>
       </div>
     `;
 
@@ -466,6 +481,21 @@ async function promptAddManager() {
     loadAdminOverview();
   } catch (e) {
     alert('Add failed: ' + e.message);
+  }
+}
+
+async function forceSettleChallenge(id) {
+  const winner = prompt('Winner display name or manager ID (leave blank to cancel):');
+  if (winner === null) return;
+  try {
+    await fetchJSON('/api/admin/settle-challenge', {
+      method: 'POST',
+      body: JSON.stringify({ id, winnerName: winner || undefined })
+    });
+    alert('Challenge settled.');
+    loadAdminOverview();
+  } catch (e) {
+    alert('Settle failed: ' + e.message);
   }
 }
 
