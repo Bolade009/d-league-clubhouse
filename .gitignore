@@ -5,6 +5,8 @@ node_modules/
 data/
 data/*.json
 data/*.tmp
+data/dleague.db
+data/dleague.db-*
 
 # Env files
 .env

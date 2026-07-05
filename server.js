@@ -7,6 +7,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const https = require("node:https");
 const nodemailer = require("nodemailer");
+const Database = require("better-sqlite3");
 
 const app = express();
 
@@ -142,26 +143,92 @@ function createEmptyStore() {
 
 let storeCache = null;
 let storeWriteLock = false;
+let db = null;
+
+function initSQLite() {
+  if (db) return db;
+  const dbPath = path.join(DATA_DIR, "dleague.db");
+  db = new Database(dbPath);
+  db.pragma("journal_mode = WAL"); // better durability
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS store (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `);
+  console.log(`[store] SQLite initialized at ${dbPath}`);
+  return db;
+}
 
 async function loadStore() {
   if (storeCache) return storeCache;
+
   try {
-    const raw = await fs.readFile(STORE_FILE, "utf8");
-    storeCache = JSON.parse(raw);
+    if (!db) initSQLite();
+
+    const rows = db.prepare("SELECT key, value FROM store").all();
+    storeCache = {};
+
+    for (const row of rows) {
+      storeCache[row.key] = JSON.parse(row.value);
+    }
+
+    // Ensure required keys exist
+    const defaults = createEmptyStore();
+    let needsPersist = false;
+    for (const [k, v] of Object.entries(defaults)) {
+      if (!(k in storeCache)) {
+        storeCache[k] = v;
+        needsPersist = true;
+      }
+    }
+
+    console.log(`[store] Loaded from SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
+
+    if (needsPersist) await persistStore();
+
+    // One-time migration from old store.json (if exists and SQLite is empty)
+    const oldStorePath = STORE_FILE;
+    if (Object.keys(storeCache).length <= Object.keys(defaults).length && fsSync.existsSync(oldStorePath)) {
+      try {
+        const raw = fsSync.readFileSync(oldStorePath, "utf8");
+        const oldData = JSON.parse(raw);
+        storeCache = { ...defaults, ...oldData };
+        await persistStore();
+        console.log("[store] Migrated data from old store.json to SQLite");
+        // Optionally rename old file
+        try { fsSync.renameSync(oldStorePath, oldStorePath + ".migrated"); } catch {}
+      } catch (migErr) {
+        console.warn("[store] Old store.json migration failed:", migErr.message);
+      }
+    }
+
+    return storeCache;
   } catch (e) {
+    console.warn(`[store] SQLite load failed: ${e.message}. Starting fresh.`);
     storeCache = createEmptyStore();
     await persistStore();
+    return storeCache;
   }
-  return storeCache;
 }
 
 async function persistStore() {
   if (storeWriteLock) return;
   storeWriteLock = true;
   try {
-    const tmp = STORE_FILE + ".tmp";
-    await fs.writeFile(tmp, JSON.stringify(storeCache, null, 2));
-    await fs.rename(tmp, STORE_FILE);
+    if (!db) initSQLite();
+
+    const insert = db.prepare("INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)");
+    const tx = db.transaction((store) => {
+      for (const [key, value] of Object.entries(store)) {
+        insert.run(key, JSON.stringify(value));
+      }
+    });
+
+    tx(storeCache);
+    console.log(`[store] Persisted to SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
+  } catch (e) {
+    console.error("[store] Persist failed:", e.message);
   } finally {
     storeWriteLock = false;
   }
@@ -169,10 +236,13 @@ async function persistStore() {
 
 function getStore() {
   if (!storeCache) {
-    // synchronous fallback for early calls
     try {
-      const raw = fsSync.readFileSync(STORE_FILE, "utf8");
-      storeCache = JSON.parse(raw);
+      if (!db) initSQLite();
+      const rows = db.prepare("SELECT key, value FROM store").all();
+      storeCache = {};
+      for (const row of rows) {
+        storeCache[row.key] = JSON.parse(row.value);
+      }
     } catch {
       storeCache = createEmptyStore();
     }
@@ -1050,16 +1120,16 @@ async function seedDemoData(force = false) {
 }
 
 async function ensureAdminManager() {
-  // On live (non-demo), ensure ONLY the real admin exists (no fake dleague.ng accounts)
+  // On live (non-demo), ensure the real admin exists. NEVER wipe user data.
   const s = await loadStore();
 
-  // Purge any leftover demo/fake managers on live
+  // Purge ONLY leftover demo/fake managers on live. Real users are untouched.
   if (!DEMO_MODE) {
     const before = s.managers.length;
     s.managers = s.managers.filter(m => !String(m.email || "").includes("dleague.ng"));
     if (s.managers.length !== before) {
       await persistStore();
-      console.log(`[live] Purged ${before - s.managers.length} demo accounts`);
+      console.log(`[live] Purged ${before - s.managers.length} demo accounts (real data preserved)`);
     }
   }
 
@@ -1073,7 +1143,7 @@ async function ensureAdminManager() {
     return;
   }
 
-  // Create the real admin manager (first time or after purge)
+  // Create the real admin manager ONLY if missing. Never resets existing users.
   const id = generateId("mgr");
   const now = nowISO();
   const adminMgr = {
@@ -1085,7 +1155,8 @@ async function ensureAdminManager() {
     ucl: { teamId: "", teamName: "" },
     payoutDetails: "",
     fplClubName: "Bolade's Brigade",
-    createdAt: now
+    createdAt: now,
+    isAdmin: true
   };
   s.managers.push(adminMgr);
   await persistStore();
@@ -1725,7 +1796,9 @@ app.get("*", (req, res) => {
 // ============ BOOT ============
 
 async function boot() {
-  await loadStore();
+  const store = await loadStore();
+  console.log(`[BOOT] Store loaded with ${store.managers?.length || 0} managers (non-demo: protected mode)`);
+
   if (DEMO_MODE) {
     await seedDemoData();
   } else {

@@ -17,8 +17,11 @@ RUN npm run build:css
 # Remove dev dependencies to keep image small
 RUN npm prune --production
 
-# Create data folder
-RUN mkdir -p /app/data
+# Declare persistent data volume (Render disk mounts here at runtime)
+VOLUME /app/data
+
+# Data dir is created at runtime by the app (with backups)
+# Do NOT bake data into the image
 
 ENV NODE_ENV=production
 ENV PORT=4174
