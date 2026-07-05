@@ -30,6 +30,17 @@ const UCL_TEMPLATE = process.env.UCL_FANTASY_API_TEMPLATE || "";
 const ADMIN_EMAIL = "bolade.oladejo@gmail.com";
 const ADMIN_ACCESS_CODE = "DLeagueAdmin!2026@*";
 
+// Real paid managers that must NEVER be wiped (user-reported paid users)
+const PROTECTED_REAL_PAID = [
+  {
+    email: "Princebest4us@gmail.com",
+    displayName: "Princebest",
+    fplClubName: "Beezy",
+    // These get a confirmed UCL payment on ensure if missing
+    defaultPaid: ["ucl"]
+  }
+];
+
 const FPL_BASE = "https://fantasy.premierleague.com/api";
 
 // Optional email transport (set SMTP_* in env on Render for real emails)
@@ -1176,90 +1187,117 @@ async function ensureAdminManager() {
   console.log(`✅ Admin account ready: ${ADMIN_EMAIL} (code: ${ADMIN_ACCESS_CODE})`);
 }
 
+async function ensureProtectedRealPaidManagers() {
+  const s = await loadStore();
+  let changed = false;
+
+  for (const real of PROTECTED_REAL_PAID) {
+    let mgr = s.managers.find(m => m.email && m.email.toLowerCase() === real.email.toLowerCase());
+
+    if (!mgr) {
+      // Create the real paid user (lost previously)
+      mgr = {
+        id: "mgr_real_" + real.email.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) + "_" + Date.now().toString(36).slice(-5),
+        displayName: real.displayName || real.email.split("@")[0],
+        email: real.email,
+        accessCode: real.defaultCode || `BEEZY-UCL-2026`,  // safe default, admin will change
+        fpl: { teamId: "", teamName: "" },
+        ucl: { teamId: "", teamName: "" },
+        payoutDetails: "",
+        fplClubName: real.fplClubName || "",
+        createdAt: nowISO(),
+        _protectedRealPaid: true
+      };
+      s.managers.push(mgr);
+      changed = true;
+      console.log(`✅ PROTECTED REAL PAID MANAGER RESTORED: ${real.email} (${real.fplClubName})`);
+      console.log(`   >>> TEMP ACCESS CODE FOR ${real.email}: ${mgr.accessCode}  (use reclaim to change it)`);
+    } else {
+      // Ensure fields are correct
+      if (real.fplClubName && mgr.fplClubName !== real.fplClubName) {
+        mgr.fplClubName = real.fplClubName;
+        changed = true;
+      }
+      mgr._protectedRealPaid = true;
+      console.log(`✅ Protected real paid present: ${real.email} / ${real.fplClubName}  code: ${mgr.accessCode}`);
+    }
+
+    // Ensure they have confirmed payments for the comps they paid
+    for (const comp of (real.defaultPaid || [])) {
+      const hasPay = (s.payments || []).some(p =>
+        p.managerId === mgr.id &&
+        p.competition === comp &&
+        p.status === "confirmed"
+      );
+      if (!hasPay) {
+        const compInfo = COMPETITIONS[comp] || { seasonFee: comp === "ucl" ? 15000 : 30000 };
+        (s.payments = s.payments || []).push({
+          id: "pay_protected_" + mgr.id + "_" + comp,
+          managerId: mgr.id,
+          competition: comp,
+          amount: compInfo.seasonFee,
+          reference: `protected-${comp}-${mgr.id.slice(-6)}`,
+          status: "confirmed",
+          confirmedAt: nowISO(),
+          note: "Protected real payment (Princebest / Beezy UCL)"
+        });
+        changed = true;
+        console.log(`   Ensured ${comp.toUpperCase()} payment for protected ${real.email}`);
+      }
+    }
+  }
+
+  if (changed) {
+    await persistStore();
+    console.log("✅ Protected real paid managers ensured (no demo data touched)");
+  }
+}
+
 async function recoverOrphanedPaidManagers() {
   const s = getStore();
   let changed = false;
 
-  // 1. Find all managerIds that have confirmed payments OR strong activity (scores + ledger wins) 
-  //    Activity implies they were participating and likely paid.
-  const activityById = {};
-  (s.scores || []).forEach(sc => {
-    if (!activityById[sc.managerId]) activityById[sc.managerId] = {fpl:0, ucl:0};
-    activityById[sc.managerId][sc.competition]++;
-  });
-  (s.ledger || []).forEach(l => {
-    if (!activityById[l.managerId]) activityById[l.managerId] = {fpl:0, ucl:0};
-    if (l.competition) activityById[l.managerId][l.competition] = (activityById[l.managerId][l.competition]||0) + 1;
-  });
+  // Never re-create demo data (@dleague.ng or old demo patterns)
+  const looksLikeDemo = (idOrEmail) => {
+    if (!idOrEmail) return false;
+    const str = String(idOrEmail);
+    return str.includes("@dleague.ng") || str.includes("recovered-") || str.includes("demo_");
+  };
 
-  const confirmed = (s.payments || []).filter(p => p.status === "confirmed");
-  const paidIdsFromPayments = new Set(confirmed.map(p => p.managerId));
-
-  // All candidates: have payment OR significant activity
-  const candidateIds = new Set([
-    ...paidIdsFromPayments,
-    ...Object.keys(activityById).filter(id => (activityById[id].fpl + activityById[id].ucl) >= 2)
-  ]);
+  const confirmed = (s.payments || []).filter(p => p.status === "confirmed" && !looksLikeDemo(p.managerId));
 
   const existing = new Set(s.managers.map(m => m.id));
+  const realPaidIds = [...new Set(confirmed.map(p => p.managerId))].filter(id => !looksLikeDemo(id));
 
   const recovered = [];
-  for (const mid of candidateIds) {
+  for (const mid of realPaidIds) {
     if (!existing.has(mid)) {
       const short = mid.slice(-6);
       const stub = {
         id: mid,
-        displayName: `Recovered Paid ${short}`,
-        email: `recovered-${short}@d-league.local`,
-        accessCode: `RECOVER-${short.toUpperCase()}`,
+        displayName: `Paid Manager ${short}`,
+        email: `paid-${short}@d-league.local`,
+        accessCode: `PAID-${short.toUpperCase()}`,
         fpl: { teamId: "", teamName: "" },
         ucl: { teamId: "", teamName: "" },
         payoutDetails: "",
-        fplClubName: `Recovered Club ${short}`,
+        fplClubName: "",
         createdAt: nowISO(),
-        _recoveredFromPayments: true,
-        recoveredAt: nowISO()
+        _recoveredFromPayments: true
       };
       s.managers.push(stub);
       existing.add(mid);
       recovered.push({ id: mid, email: stub.email, code: stub.accessCode });
-      await logEvent("manager_recovered_from_orphan_payments", { managerId: mid, tempEmail: stub.email, tempCode: stub.accessCode });
+      await logEvent("manager_recovered_from_orphan_payments", { managerId: mid, tempEmail: stub.email });
       changed = true;
     }
-  }
-
-  // 2. For any recovered/active manager, ensure a confirmed payment record exists for comps they have activity in.
-  //    This restores the "PAID" badge for the competitions they clearly participated in.
-  for (const mid of candidateIds) {
-    const act = activityById[mid] || {fpl:0, ucl:0};
-    ["fpl", "ucl"].forEach(comp => {
-      if (act[comp] >= 1) {
-        const hasPay = confirmed.some(p => p.managerId === mid && p.competition === comp);
-        if (!hasPay) {
-          const compInfo = COMPETITIONS[comp];
-          const amount = (compInfo && compInfo.seasonFee) || (comp === "fpl" ? 30000 : 15000);
-          s.payments.push({
-            id: "pay_recover_" + mid + "_" + comp,
-            managerId: mid,
-            competition: comp,
-            amount,
-            reference: "recovered-historical-" + Date.now() + "-" + mid.slice(-4),
-            status: "confirmed",
-            confirmedAt: nowISO(),
-            note: "Recovered from historical scores/ledger (payment record was lost in prior update)"
-          });
-          changed = true;
-          console.log(`[recover] Synthesized ${comp.toUpperCase()} payment record for ${mid} based on activity`);
-        }
-      }
-    });
   }
 
   if (recovered.length > 0 || changed) {
     await persistStore();
     if (recovered.length > 0) {
-      console.log("🚨 RECOVERED ORPHAN PAID MANAGERS (payments/activity were source of truth):");
-      recovered.forEach(r => console.log("   ", r.id, "temp login:", r.email, "/", r.code));
+      console.log("🚨 Recovered real paid managers (demo data explicitly ignored):");
+      recovered.forEach(r => console.log("   ", r.id));
     }
   }
   return recovered;
@@ -1977,6 +2015,7 @@ async function boot() {
     await seedDemoData();
   } else {
     await ensureAdminManager();
+    await ensureProtectedRealPaidManagers();  // Princebest4us / Beezy etc. - never lose real paid users
   }
 
   // Run recovery again after possible demo seed (demo seed can wipe but we heal paid)

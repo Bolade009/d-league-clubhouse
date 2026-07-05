@@ -332,13 +332,13 @@ async function loadAdminOverview() {
       const code = m.accessCode || '—';
       const isAdmin = m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com';
       const club = m.fplClubName || (isAdmin ? 'Admin (no team)' : '—');
-      const isRecovered = !!(m._recoveredFromPayments || m._restored || (m.email && m.email.includes('recovered-')));
-      const recoveredBadge = isRecovered ? '<span class="text-[9px] bg-orange-900 text-orange-300 px-1 rounded ml-1">RECOVERED - RECLAIM</span>' : '';
-      const reclaimBtn = isRecovered ? `<button onclick="reclaimPaidManager('${m.id}', '${(m.displayName||'').replace(/'/g,'\\\'')}', '${(m.fplClubName||'').replace(/'/g,'\\\'')}')" class="mt-1 block text-[9px] px-2 py-0.5 bg-orange-600 hover:bg-orange-500 text-white rounded">Reclaim + fix real details</button>` : '';
+      const isProtected = !!(m._protectedRealPaid || m._recoveredFromPayments || m._restored || (m.email && (m.email.includes('recovered-') || m.email.includes('paid-'))));
+      const protectedBadge = isProtected ? '<span class="text-[9px] bg-orange-900 text-orange-300 px-1 rounded ml-1">REAL PAID - RECLAIM</span>' : '';
+      const reclaimBtn = isProtected ? `<button onclick="reclaimPaidManager('${m.id}', '${(m.displayName||'').replace(/'/g,'\\\'')}', '${(m.fplClubName||'').replace(/'/g,'\\\'')}')" class="mt-1 block text-[9px] px-2 py-0.5 bg-orange-600 hover:bg-orange-500 text-white rounded">Reclaim / change code</button>` : '';
       return `
         <div class="flex justify-between items-center bg-[#1c1c1c] border border-[#333] p-3 rounded-2xl mb-2">
           <div>
-            <div class="font-semibold">${m.displayName} ${isAdmin ? '<span class="text-xs bg-[#003322] text-[#00ff85] px-1 rounded">ADMIN</span>' : ''} ${recoveredBadge}</div>
+            <div class="font-semibold">${m.displayName} ${isAdmin ? '<span class="text-xs bg-[#003322] text-[#00ff85] px-1 rounded">ADMIN</span>' : ''} ${protectedBadge}</div>
             <div class="text-xs text-[#888]">${m.email}</div>
             <div class="text-xs text-[#00ff85] mt-0.5">${club}</div>
             <div class="text-xs text-[#666]">FPL: ${fplStatus} | UCL: ${uclStatus}</div>
