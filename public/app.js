@@ -171,34 +171,103 @@ async function loadAdminOverview() {
     panel.className = 'mt-4 p-4 bg-[#111] border-2 border-[#00ff85] rounded-2xl text-xs';
 
     const events = data.recentEvents || [];
-    let eventsHtml = events.slice(0, 8).map(e => {
+    const joinRequests = events.filter(e => e.type === 'join_request').slice(0, 6);
+
+    let joinsHtml = '';
+    if (joinRequests.length) {
+      joinsHtml = joinRequests.map(e => {
+        const p = e.payload || {};
+        const when = (e.at || '').slice(11,16);
+        // Escape for safe data attributes
+        const safeName = (p.name || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
+        const safeEmail = (p.email || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
+        const safeClub = (p.fplClubName || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
+        return `
+          <div class="flex items-center justify-between bg-[#1a1a1a] p-2 rounded mb-1">
+            <div>
+              <strong>${p.name || ''}</strong> &lt;${p.email || ''}&gt;<br>
+              <span class="font-mono text-[#00ff85]">${p.fplClubName || ''}</span>
+              <span class="text-[#666] text-[10px]"> (${when})</span>
+            </div>
+            <button data-name="${safeName}" data-email="${safeEmail}" data-club="${safeClub}"
+                    onclick="approveJoinRequestFromBtn(this)" 
+                    class="px-3 py-1 bg-[#00ff85] text-black font-bold rounded text-xs hover:bg-white">Approve</button>
+          </div>`;
+      }).join('');
+    } else {
+      joinsHtml = '<div class="text-[#666] py-1">No pending join requests</div>';
+    }
+
+    const otherEvents = events.filter(e => e.type !== 'join_request').slice(0, 5);
+    let otherHtml = otherEvents.map(e => {
       const p = e.payload || {};
       const when = (e.at || '').slice(11,16);
-      if (e.type === 'join_request') {
-        return `<div class="py-0.5"><span class="text-[#00ff85] font-semibold">JOIN REQUEST</span> — ${p.name || ''} &lt;${p.email || ''}&gt; • FPL club: <span class="font-mono">${p.fplClubName || ''}</span> <span class="text-[#888]">(${when})</span></div>`;
+      return `<div class="text-[#aaa] py-0.5 text-[10px]">${e.type} — ${p.name || p.email || JSON.stringify(p).slice(0,50)} <span class="text-[#666]">(${when})</span></div>`;
+    }).join('') || '<div class="text-[#666]">No other recent activity</div>';
+
+    // Challenges section with cancel
+    let challengesHtml = (data.challenges || []).map(ch => {
+      const statusColor = ch.status === 'open' ? 'text-[#00ff85]' : (ch.status === 'cancelled' ? 'text-red-400' : 'text-[#888]');
+      let actions = '';
+      if (ch.status === 'open') {
+        actions = `<button onclick="cancelChallenge('${ch.id}', '${ch.title.replace(/'/g, "\\'")}')" class="px-2 py-0.5 text-[10px] bg-red-900 hover:bg-red-800 rounded">Cancel</button>`;
       }
-      if (e.type === 'manager_added') {
-        return `<div class="py-0.5"><span class="text-[#00ff85]">MANAGER ADDED</span> — ${p.name || p.email} <span class="text-[#888]">(${when})</span></div>`;
-      }
-      return `<div class="text-[#aaa] py-0.5">${e.type} ${Object.keys(p).length ? JSON.stringify(p).slice(0,60) : ''} <span class="text-[#888]">(${when})</span></div>`;
-    }).join('') || '<div class="text-[#666]">No recent events</div>';
+      return `<div class="text-[10px] py-0.5 flex justify-between"><span><span class="${statusColor}">${ch.status}</span> ${ch.title} (₦${ch.prize}) ${ch.winner ? '→ ' + ch.winner : ''}</span> ${actions}</div>`;
+    }).join('') || '<div class="text-[#666]">No challenges</div>';
+
+    // Sponsored awards
+    let sponsorsHtml = (data.sponsorships || []).map(sp => {
+      return `<div class="text-[10px] py-0.5">${sp.sponsor || 'Sponsor'} - ₦${sp.amount} for ${sp.target || 'general'} <button onclick="cancelSponsorship('${sp.id}')" class="ml-2 px-1 text-[9px] bg-red-900 rounded">Cancel</button></div>`;
+    }).join('') || '<div class="text-[#666]">No active sponsorships</div>';
+
+    // Managers overview (basic)
+    let mgrsHtml = (data.managers || []).slice(0, 12).map(m => {
+      const paid = (m.fplPaid ? 'F' : '') + (m.uclPaid ? 'U' : '') || '—';
+      return `<div class="text-[9px]">${m.displayName} <span class="text-[#666]">(${paid})</span> ${m.fplClubName ? '• ' + m.fplClubName : ''}</div>`;
+    }).join('') || 'None';
 
     panel.innerHTML = `
       <div class="font-bold text-[#00ff85] mb-1 flex items-center justify-between">
-        <span>BACKEND ADMIN VIEW</span>
-        <span class="text-[10px] text-[#888]">bolade.oladejo@gmail.com</span>
+        <span>BACKEND ADMIN VIEW — FULL CONTROL</span>
+        <span class="text-[10px] text-[#888]">bolade.oladejo@gmail.com (non-competing admin)</span>
       </div>
-      <div class="mb-1">Managers: <span class="font-semibold">${data.totalManagers}</span> • Paid FPL: ${data.paidFpl} • UCL: ${data.paidUcl}</div>
-      <div>Confirmed payments: ${data.totalPaymentsConfirmed} • House commission total: ₦${data.totalHouseCommission || 0}</div>
-      <div class="text-[#888] mb-1">Last sync: ${data.lastSync || '—'}</div>
-      <div class="border-t border-[#333] pt-1 mt-1">
-        <div class="font-semibold mb-0.5">Recent events (join requests shown first):</div>
-        <div class="max-h-28 overflow-auto leading-snug">${eventsHtml}</div>
+      <div class="mb-1 text-sm">Managers: <span class="font-semibold">${data.totalManagers}</span> • Paid FPL: ${data.paidFpl} • UCL: ${data.paidUcl} • Payments: ${data.totalPaymentsConfirmed} • House: ₦${data.totalHouseCommission || 0}</div>
+      <div class="text-[#888] mb-1 text-[10px]">Last sync: ${data.lastSync || '—'} | Reserve est: see projections</div>
+
+      <div class="border-t border-[#333] pt-2 mt-2">
+        <div class="font-semibold text-[#00ff85] mb-1">Pending Join Requests</div>
+        <div>${joinsHtml}</div>
       </div>
-      <button onclick="triggerSettle()" class="mt-2 px-3 py-1 bg-[#00ff85] hover:bg-white text-black font-bold rounded text-xs">TRIGGER SETTLE &amp; PAYOUTS</button>
-      <div class="text-[10px] text-[#888] mt-1">Use this to auto-settle pots + challenges + initiate Paystack transfers (10% commission logged).</div>
+
+      <div class="border-t border-[#333] pt-2 mt-2 grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <div class="font-semibold mb-1">Challenges (all)</div>
+          <div class="max-h-24 overflow-auto text-xs">${challengesHtml}</div>
+        </div>
+        <div>
+          <div class="font-semibold mb-1">Sponsored Awards</div>
+          <div class="max-h-24 overflow-auto text-xs">${sponsorsHtml}</div>
+        </div>
+      </div>
+
+      <div class="border-t border-[#333] pt-2 mt-2">
+        <div class="font-semibold mb-1">Managers Overview (first 12)</div>
+        <div class="text-xs">${mgrsHtml}</div>
+      </div>
+
+      <div class="border-t border-[#333] pt-2 mt-2">
+        <div class="font-semibold mb-1">Recent Activity (incl. bets/awards)</div>
+        <div class="max-h-16 overflow-auto text-[10px]">${otherHtml}</div>
+      </div>
+
+      <div class="mt-3 flex flex-wrap gap-2 text-xs">
+        <button onclick="triggerSettle()" class="px-3 py-1 bg-[#00ff85] hover:bg-white text-black font-bold rounded">SETTLE &amp; PAYOUTS</button>
+        <button onclick="loadAdminOverview()" class="px-3 py-1 bg-[#222] hover:bg-[#333] rounded">REFRESH</button>
+        <button onclick="promptAddManager()" class="px-3 py-1 bg-[#222] hover:bg-[#333] rounded">ADD MANAGER MANUAL</button>
+      </div>
+      <div class="text-[10px] text-[#888] mt-1">Full admin: cancel challenges/awards, approve joins, settle, add mgrs. Admin account excluded from comps.</div>
     `;
-    // Insert prominently right after league selector so it's immediately visible
+
     const dash = document.getElementById('dashboard');
     const after = document.getElementById('league-selector');
     if (dash && after && after.parentNode) {
@@ -207,6 +276,101 @@ async function loadAdminOverview() {
       dash.appendChild(panel);
     }
   } catch(e) { console.warn('admin overview failed', e); }
+}
+
+async function approveJoinRequestFromBtn(btn) {
+  const name = btn.dataset.name || '';
+  const email = btn.dataset.email || '';
+  const fplClubName = btn.dataset.club || '';
+  if (!email) return alert('Missing email');
+
+  const suggested = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) + Math.floor(1000 + Math.random() * 9000);
+  const accessCode = prompt(`Access code for ${name} (edit if you want):`, suggested);
+  if (!accessCode) return;
+
+  const fplId = prompt('Optional FPL team ID for lineup (leave blank for test):', '');
+
+  try {
+    const res = await fetchJSON('/api/admin/add-manager', {
+      method: 'POST',
+      body: JSON.stringify({
+        name,
+        email,
+        accessCode,
+        fplId: fplId || '',
+        fplClubName
+      })
+    });
+
+    let msg = `✅ Manager approved!\n\n` +
+              `Email: ${email}\n` +
+              `Access Code: ${accessCode}\n\n` +
+              `Copy the code and send it to them.\n`;
+
+    if (res.message) msg += res.message + '\n';
+
+    try {
+      await navigator.clipboard.writeText(accessCode);
+      msg += '\n✅ Code copied to clipboard!';
+    } catch {}
+
+    alert(msg);
+
+    loadAdminOverview(); // refresh the panel
+  } catch (e) {
+    alert('Approve failed: ' + (e.message || e));
+  }
+}
+
+async function cancelChallenge(id, title) {
+  if (!confirm(`Cancel challenge "${title}"?`)) return;
+  const reason = prompt('Reason (optional):', 'Admin cancelled') || 'Admin cancelled';
+  try {
+    await fetchJSON('/api/admin/cancel-challenge', {
+      method: 'POST',
+      body: JSON.stringify({ id, reason })
+    });
+    alert('Challenge cancelled.');
+    loadAdminOverview();
+  } catch (e) {
+    alert('Cancel failed: ' + e.message);
+  }
+}
+
+async function cancelSponsorship(id) {
+  if (!confirm('Cancel this sponsorship?')) return;
+  try {
+    await fetchJSON('/api/admin/cancel-sponsorship', {
+      method: 'POST',
+      body: JSON.stringify({ id })
+    });
+    alert('Sponsorship cancelled.');
+    loadAdminOverview();
+  } catch (e) {
+    alert('Cancel failed: ' + e.message);
+  }
+}
+
+async function promptAddManager() {
+  const name = prompt('Manager name:');
+  if (!name) return;
+  const email = prompt('Email:');
+  if (!email) return;
+  const accessCode = prompt('Access code to give them:');
+  if (!accessCode) return;
+  const fplClubName = prompt('FPL club name:') || '';
+  const fplId = prompt('FPL team ID (optional):') || '';
+
+  try {
+    const res = await fetchJSON('/api/admin/add-manager', {
+      method: 'POST',
+      body: JSON.stringify({ name, email, accessCode, fplId, fplClubName })
+    });
+    alert(`Added! Code: ${accessCode}\n\n${res.message || ''}`);
+    loadAdminOverview();
+  } catch (e) {
+    alert('Add failed: ' + e.message);
+  }
 }
 
 async function triggerSettle() {

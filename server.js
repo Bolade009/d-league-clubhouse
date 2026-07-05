@@ -1171,7 +1171,18 @@ app.post("/api/admin/add-manager", async (req, res) => {
   if (!name || !email || !accessCode) return res.status(400).json({ error: "name, email, accessCode required" });
 
   const s = await loadStore();
-  if (s.managers.find(m => m.email.toLowerCase() === email.toLowerCase())) {
+  const existing = s.managers.find(m => m.email.toLowerCase() === email.toLowerCase());
+  if (existing) {
+    if (email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+      // Admin re-registering as participant - update his profile
+      if (fplId) existing.fpl = { teamId: fplId, teamName: fplClubName || existing.fpl?.teamName || '' };
+      if (uclId) existing.ucl = { teamId: uclId, teamName: fplClubName || existing.ucl?.teamName || '' };
+      if (fplClubName) existing.fplClubName = fplClubName;
+      existing.accessCode = accessCode; // allow reset code if needed
+      await persistStore();
+      await logEvent("admin_registered_as_manager", { email, name, fplClubName });
+      return res.json({ ok: true, manager: { id: existing.id, displayName: name, email, accessCode }, message: "Admin profile updated as manager. Share the accessCode." });
+    }
     return res.status(409).json({ error: "Manager with this email already exists" });
   }
 
@@ -1189,9 +1200,160 @@ app.post("/api/admin/add-manager", async (req, res) => {
   };
   s.managers.push(mgr);
   await persistStore();
-  await logEvent("manager_added", { email, name, fplClubName, by: "admin" });
+  await logEvent("manager_added", { email, name, fplClubName, by: "admin", accessCode });
+
+  // Auto-send access code email if SMTP is configured
+  if (mailer) {
+    try {
+      await mailer.sendMail({
+        from: process.env.FROM_EMAIL || ADMIN_EMAIL,
+        to: email,
+        subject: "D League Clubhouse - Welcome! Your Access Code",
+        text: `Hi ${name},\n\nYour join request has been approved.\n\nLogin with:\nEmail: ${email}\nAccess Code: ${accessCode}\n\nFPL Club: ${fplClubName || ''}\n\nWelcome to the D League Clubhouse!`
+      });
+    } catch (e) {
+      console.error("Failed to send access code email:", e.message);
+    }
+  }
 
   res.json({ ok: true, manager: { id, displayName: name, email, accessCode }, message: "Manager added. Share the accessCode with them." });
+});
+
+// Admin cancel challenge
+app.post("/api/admin/cancel-challenge", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(403).json({ error: "Unauthorized" });
+  }
+
+  const { id, reason } = req.body || {};
+  if (!id) return res.status(400).json({ error: "challenge id required" });
+
+  const s = await loadStore();
+  const ch = s.challenges.find(c => c.id === id);
+  if (!ch) return res.status(404).json({ error: "Challenge not found" });
+  if (ch.status !== "open") return res.status(400).json({ error: "Challenge is not open" });
+
+  ch.status = "cancelled";
+  ch.cancelReason = reason || "Cancelled by admin";
+  await persistStore();
+  await logEvent("challenge_cancelled", { id, title: ch.title, reason: ch.cancelReason, by: "admin" });
+
+  res.json({ ok: true, message: `Challenge "${ch.title}" cancelled.` });
+});
+
+// Admin cancel sponsorship / award
+app.post("/api/admin/cancel-sponsorship", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(403).json({ error: "Unauthorized" });
+  }
+
+  const { id, reason } = req.body || {};
+  if (!id) return res.status(400).json({ error: "sponsorship id required" });
+
+  const s = await loadStore();
+  const idx = (s.sponsorships || []).findIndex(sp => sp.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Sponsorship not found" });
+
+  const removed = s.sponsorships.splice(idx, 1)[0];
+  await persistStore();
+  await logEvent("sponsorship_cancelled", { id, sponsor: removed.sponsor, amount: removed.amount, reason: reason || "Cancelled by admin", by: "admin" });
+
+  res.json({ ok: true, message: `Sponsorship by ${removed.sponsor} cancelled.` });
+});
+
+// Admin force settle a specific challenge (pick winner or cancel)
+app.post("/api/admin/settle-challenge", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(403).json({ error: "Unauthorized" });
+  }
+
+  const { id, winnerManagerId, winnerName } = req.body || {};
+  if (!id) return res.status(400).json({ error: "challenge id required" });
+
+  const s = await loadStore();
+  const ch = s.challenges.find(c => c.id === id);
+  if (!ch || ch.status !== "open") return res.status(404).json({ error: "Open challenge not found" });
+
+  let winnerDisplay = winnerName;
+  if (winnerManagerId) {
+    const w = s.managers.find(m => m.id === winnerManagerId);
+    if (w) winnerDisplay = w.displayName;
+  }
+
+  const commission = Math.floor(ch.prize * 0.1);
+  const winnerShare = ch.prize - commission;
+
+  s.ledger.push({
+    id: generateId("ldg"),
+    type: "challenge_win",
+    managerId: winnerManagerId || "manual",
+    competition: "fpl",
+    round: s.settings.currentRound.fpl,
+    amount: winnerShare,
+    note: `Forced settle: ${ch.title} - Winner: ${winnerDisplay} (90%)`,
+    at: nowISO()
+  });
+  s.ledger.push({
+    id: generateId("ldg"),
+    type: "house_commission",
+    managerId: "house",
+    competition: "fpl",
+    round: s.settings.currentRound.fpl,
+    amount: -commission,
+    note: `House 10% from forced ${ch.title}`,
+    at: nowISO()
+  });
+
+  ch.status = "settled";
+  ch.winner = winnerDisplay;
+  ch.forced = true;
+
+  await persistStore();
+  await logEvent("challenge_settled", { id, title: ch.title, winner: winnerDisplay, by: "admin" });
+
+  res.json({ ok: true, message: `Challenge settled. Winner: ${winnerDisplay}` });
 });
 
 app.get("/api/me", async (req, res) => {
@@ -1491,10 +1653,23 @@ app.get("/api/admin/overview", async (req, res) => {
   const paidFpl = getEligibleManagers("fpl").length;
   const paidUcl = getEligibleManagers("ucl").length;
 
-  const recentLedger = (s.ledger || []).slice(0, 10);
-  const recentEvents = (s.events || []).slice(0, 10);
-  const pendingChallenges = (s.challenges || []).filter(c => c.status === "open");
+  const recentLedger = (s.ledger || []).slice(0, 20);
+  const recentEvents = (s.events || []).slice(0, 15);
+  const allChallenges = (s.challenges || []);
+  const sponsorships = (s.sponsorships || []);
   const totalHouseCommission = (s.ledger || []).filter(l => l.type === "house_commission").reduce((sum, l) => sum + Math.abs(l.amount || 0), 0);
+
+  // Full managers summary for admin insight (no sensitive payout details)
+  const managersSummary = s.managers.map(m => ({
+    id: m.id,
+    displayName: m.displayName,
+    email: m.email,
+    fplClubName: m.fplClubName || '',
+    fplPaid: !!s.payments.find(p => p.managerId === m.id && p.competition === 'fpl' && p.status === 'confirmed'),
+    uclPaid: !!s.payments.find(p => p.managerId === m.id && p.competition === 'ucl' && p.status === 'confirmed'),
+    fplTeam: m.fpl || {},
+    uclTeam: m.ucl || {}
+  }));
 
   res.json({
     totalManagers: s.managers.length,
@@ -1506,7 +1681,9 @@ app.get("/api/admin/overview", async (req, res) => {
     reserveEstimate: getProjectedPayouts(),
     recentLedger,
     recentEvents,
-    pendingChallenges,
+    challenges: allChallenges,
+    sponsorships,
+    managers: managersSummary,
     totalHouseCommission
   });
 });
