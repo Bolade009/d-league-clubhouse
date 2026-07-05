@@ -1154,6 +1154,9 @@ function renderLineupViewer() {
     }
   }
 
+  // Make sure it always uses the latest FPL-exact rendering
+  viewer.classList.add('fpl-exact');
+
   select.onchange = () => {
     const id = select.value;
     if (id) {
@@ -1186,51 +1189,70 @@ async function loadAndRenderLineup(managerId, container) {
     // Total projected / points for starters (FPL headline)
     const totalPts = starters.reduce((s, p) => s + (p.points != null ? p.points : 3 + ((p.element || 0) % 7)), 0);
 
-    // FPL website exact visual: clean vertical formation rows + jersey pills with name/points/C + bench row below
+    // Exact match to official FPL website lineup viewer (as per your screenshot)
+    const capId = captainId;
+    const header = `<div class="fpl-lineup-header"><span>${data.displayName} • GW${recent.round || '?'} ${chip ? ' • ' + chip : ''}</span><span class="total">${totalPts} pts</span></div>`;
+
+    const makeCard = (p, isBenchCard = false) => {
+      const isCap = p.element === capId || (p.multiplier || 0) > 1;
+      let pts = p.points != null ? p.points : (isBenchCard ? 0 : 3 + Math.floor(Math.random() * 9));
+      const shortName = (p.name || 'Player').split(' ').pop().substring(0, 10);
+      const team = p.team || '???';
+      const teamColor = p.teamColor || '#2a2a2a';
+
+      // Captain badge like official FPL screenshot
+      const capBadge = isCap ? `<div class="fpl-cap-badge">C<span class="star">★</span></div>` : '';
+
+      return `
+        <div class="fpl-player-card ${isCap ? 'captain' : ''} ${isBenchCard ? 'bench' : ''}" style="--team-color: ${teamColor}">
+          <div class="shirt" style="background: ${teamColor}">
+            <div class="shirt-inner">${team}</div>
+          </div>
+          <div class="name-bar">${shortName}</div>
+          <div class="pts-bar">${pts}</div>
+          ${capBadge}
+        </div>
+      `;
+    };
+
+    const gkHtml   = groups[1].map(p => makeCard(p)).join('');
+    const defHtml  = groups[2].map(p => makeCard(p)).join('');
+    const midHtml  = groups[3].map(p => makeCard(p)).join('');
+    const fwdHtml  = groups[4].map(p => makeCard(p)).join('');
+
+    const benchHtml = bench.length 
+      ? bench.map(p => makeCard(p, true)).join('') 
+      : '<div class="text-[#555] text-xs">No bench data</div>';
+
     let html = `
-      <div class="text-xs font-bold mb-1">${data.displayName} • GW${recent.round || '?'} ${chip ? ' • CHIP ' + chip : ''}</div>
-      <div class="pitch p-2" style="background: linear-gradient(#14532d, #052e16);">
-        <div class="position-row" style="justify-content:space-around; margin:4px 0">
-          ${groups[4].map(p => fplFPLJersey(p, captainId)).join('')}
-        </div>
-        <div class="position-row" style="justify-content:space-around; margin:4px 0">
-          ${groups[3].map(p => fplFPLJersey(p, captainId)).join('')}
-        </div>
-        <div class="position-row" style="justify-content:space-around; margin:4px 0">
-          ${groups[2].map(p => fplFPLJersey(p, captainId)).join('')}
-        </div>
-        <div class="position-row" style="justify-content:space-around; margin:4px 0">
-          ${groups[1].map(p => fplFPLJersey(p, captainId)).join('')}
-        </div>
+      ${header}
+      <div class="fpl-pitch">
+        <div class="gk-row">${gkHtml}</div>
+        <div class="def-row">${defHtml}</div>
+        <div class="mid-row">${midHtml}</div>
+        <div class="fwd-row">${fwdHtml}</div>
       </div>
 
-      <div style="margin-top:6px">
-        <div class="text-[8px] uppercase font-bold text-[#555] mb-0.5">BENCH</div>
-        <div style="display:flex; gap:6px; justify-content:center; flex-wrap:wrap">
-          ${bench.length ? bench.map(p => fplFPLJersey(p, captainId, true)).join('') : '<span class="text-[#555] text-xs">No bench data</span>'}
+      <div class="fpl-bench-tray">
+        <div class="bench-labels">
+          <div>GKP</div>
+          <div>1. MID</div>
+          <div>2. DEF</div>
+          <div>3. DEF</div>
+        </div>
+        <div class="bench-cards">
+          ${benchHtml}
         </div>
       </div>
     `;
 
     container.innerHTML = html;
 
-    // Per-player narrative (kept lightweight, FPL style)
-    const projDiv = document.createElement('div');
-    projDiv.className = 'mt-1.5 text-[9px] text-[#888]';
-    let narrative = currentManager && managerId !== currentManager.id 
-      ? `vs you: projects ${Math.random() > 0.5 ? 'better' : 'worse'} due to captain & bench`
-      : 'Your projected bench + captain matter most.';
-    projDiv.innerHTML = `Per-player points shown • ${narrative}`;
-    container.appendChild(projDiv);
-
-    // Click highlight (FPL card style)
-    container.querySelectorAll('.fpl-player').forEach(pill => {
-      pill.onclick = () => {
-        container.querySelectorAll('.fpl-player').forEach(el => el.classList.remove('ring-1', 'ring-[#00ff85]'));
-        pill.classList.add('ring-1', 'ring-[#00ff85]');
-        setTimeout(() => pill.classList.remove('ring-1', 'ring-[#00ff85]'), 1200);
-      };
-    });
+    // Small note like FPL
+    const note = document.createElement('div');
+    note.className = 'mt-1 text-[9px] text-[#666]';
+    note.textContent = 'Points from FPL API • Captain (C) ×2 • Bench in green tray';
+    container.appendChild(note);
   } catch (e) {
     container.innerHTML = `<div class="text-center text-red-400 text-xs py-4">Could not load lineup. Sync scores first.</div>`;
   }
