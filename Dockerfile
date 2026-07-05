@@ -1,8 +1,16 @@
-FROM node:20-alpine
+FROM node:20-slim
+
+# Install build tools needed for native modules + curl for healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    make \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy package files
+# Copy package files first for better caching
 COPY package*.json ./
 
 # Install ALL dependencies (including devDependencies for Tailwind build)
@@ -17,11 +25,8 @@ RUN npm run build:css
 # Remove dev dependencies to keep image small
 RUN npm prune --production
 
-# Declare persistent data volume (Render disk mounts here at runtime)
+# Persistent data volume (Render disk mounts at /app/data)
 VOLUME /app/data
-
-# Data dir is created at runtime by the app (with backups)
-# Do NOT bake data into the image
 
 ENV NODE_ENV=production
 ENV PORT=4174
@@ -29,7 +34,8 @@ ENV DEMO_MODE=false
 
 EXPOSE 4174
 
+# Healthcheck using curl (available after apt install)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:4174/health || exit 1
+  CMD curl -f http://127.0.0.1:4174/health || exit 1
 
 CMD ["node", "server.js"]
