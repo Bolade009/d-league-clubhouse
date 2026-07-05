@@ -1124,19 +1124,9 @@ async function ensureAdminManager() {
   // On live (non-demo), ensure the real admin exists. NEVER wipe user data.
   const s = await loadStore();
 
-  // Purge ONLY leftover demo/fake managers on live. NEVER remove real managers (especially those who paid or have access).
-  if (!DEMO_MODE) {
-    const before = s.managers.length;
-    s.managers = s.managers.filter(m => {
-      const isDemo = String(m.email || "").includes("dleague.ng");
-      const hasAnyPayment = s.payments.some(p => p.managerId === m.id && p.status === "confirmed");
-      return !isDemo || hasAnyPayment;
-    });
-    if (s.managers.length !== before) {
-      await persistStore();
-      console.log(`[live] Purged demo accounts only (real/paid managers preserved)`);
-    }
-  }
+  // In prod, do NOT purge or touch existing managers at all. Only add the admin account if missing.
+  // This ensures paid managers and their data (including FPL ID, payments) are never removed on deploys or updates.
+  // Real managers stay forever.
 
   const existing = s.managers.find(m => m.email && m.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
   if (existing) {

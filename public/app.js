@@ -119,30 +119,31 @@ function showDashboard() {
   const status = $('manager-status-line');
   status.innerHTML = `<span class="text-xs text-[#888]">Pay FPL for FPL access. Pay UCL for UCL access. No partials for full.</span>`;
 
-  // Separate clear payment sections for FPL and UCL. Pay one to unlock that part only. Clearly labelled.
+  // Exactly two lines/blocks: FPL and UCL. Clearly labelled. Pay FPL only = FPL access. Pay UCL only = UCL access.
   const payContainer = document.createElement('div');
   payContainer.className = 'mb-6 p-4 bg-[#1c1c1c] border border-[#00ff85] rounded-2xl';
-  let payHtml = `<div class="font-bold text-[#00ff85] mb-2">PAY SEPARATELY — FPL OR UCL OR BOTH</div>`;
-  if (!currentManager.fplPaid) {
-    payHtml += `
-      <div class="mb-3 p-3 bg-[#222] rounded-xl border border-[#00ff85]">
+  let payHtml = `<div class="font-bold text-[#00ff85] mb-2">PAY TO PARTICIPATE</div>`;
+
+  // FPL block always
+  payHtml += currentManager.fplPaid 
+    ? `<div class="mb-2 p-2 bg-[#003322] rounded">✓ FPL PAID — FPL features unlocked</div>`
+    : `
+      <div class="mb-2 p-2 bg-[#222] rounded border border-[#00ff85]">
         <div class="font-semibold">FPL Season Fee</div>
-        <div class="text-xs">Pay this to unlock FPL standings, H2H, lineup viewer, squad, projections.</div>
-        <button onclick="initiatePayment('fpl')" class="mt-2 px-4 py-1.5 bg-[#00ff85] text-black font-bold rounded text-sm">PAY FOR FPL ONLY</button>
+        <div class="text-xs">Pay to unlock FPL standings, H2H, lineup viewer, projections.</div>
+        <button onclick="initiatePayment('fpl')" class="mt-1 px-4 py-1 bg-[#00ff85] text-black font-bold rounded text-sm">PAY FOR FPL</button>
       </div>`;
-  } else {
-    payHtml += `<div class="text-sm text-[#00ff85] mb-2">✓ FPL PAID — FPL features unlocked</div>`;
-  }
-  if (!currentManager.uclPaid) {
-    payHtml += `
-      <div class="p-3 bg-[#222] rounded-xl border border-[#00ff85]">
+
+  // UCL block always
+  payHtml += currentManager.uclPaid 
+    ? `<div class="p-2 bg-[#003322] rounded">✓ UCL PAID — UCL features unlocked</div>`
+    : `
+      <div class="p-2 bg-[#222] rounded border border-[#00ff85]">
         <div class="font-semibold">UCL Season Fee</div>
-        <div class="text-xs">Pay this to unlock UCL standings, challenges, projections.</div>
-        <button onclick="initiatePayment('ucl')" class="mt-2 px-4 py-1.5 bg-[#00ff85] text-black font-bold rounded text-sm">PAY FOR UCL ONLY</button>
+        <div class="text-xs">Pay to unlock UCL standings, challenges, projections.</div>
+        <button onclick="initiatePayment('ucl')" class="mt-1 px-4 py-1 bg-[#00ff85] text-black font-bold rounded text-sm">PAY FOR UCL</button>
       </div>`;
-  } else {
-    payHtml += `<div class="text-sm text-[#00ff85]">✓ UCL PAID — UCL features unlocked</div>`;
-  }
+
   payContainer.innerHTML = payHtml;
   const actionsDiv = document.querySelector('#dashboard .mb-6');
   if (actionsDiv) actionsDiv.after(payContainer);
@@ -339,7 +340,7 @@ async function loadAdminOverview() {
         </div>
         <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">PAID</div>
-          <div class="text-2xl font-black">FPL Paid: ${data.paidFpl} | UCL Paid: ${data.paidUcl}</div>
+          <div class="text-2xl font-black">FPL: ${data.paidFpl} | UCL: ${data.paidUcl}</div>
         </div>
         <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">CONFIRMED PAYMENTS</div>
@@ -370,7 +371,7 @@ async function loadAdminOverview() {
         <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
           <div class="text-xs uppercase tracking-widest text-[#888]">MANAGERS</div>
           <div class="text-5xl font-black mt-1">${data.totalManagers}</div>
-          <div class="text-sm mt-1">FPL Paid: ${data.paidFpl} | UCL Paid: ${data.paidUcl}</div>
+          <div class="text-sm mt-1">FPL: ${data.paidFpl} | UCL: ${data.paidUcl}</div>
         </div>
         <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
           <div class="text-xs uppercase tracking-widest text-[#888]">PAYMENTS</div>
@@ -1240,13 +1241,7 @@ async function initiatePayment(comp) {
   }
 }
 
-function initiateFullPayment() {
-  // Full payment required for all seasons - no partials. Pay FPL then UCL.
-  alert('Full season payment required (FPL + UCL). Complete both to unlock participation.');
-  initiatePayment('fpl');
-  // Small delay for UX; real flow may combine or user completes sequentially
-  setTimeout(() => initiatePayment('ucl'), 1200);
-}
+
 
 function loadPaystackScript() {
   return new Promise((resolve, reject) => {
