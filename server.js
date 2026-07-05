@@ -818,7 +818,22 @@ async function syncUCL(roundsToSync = null) {
   const current = s.settings.currentRound.ucl;
   const rounds = roundsToSync || [current - 1, current].filter(Boolean);
 
-  const eligible = getEligibleManagers("ucl");
+  // Simple UCL player pool for demo (real names + teams from UCL)
+  const uclDemoPlayers = [
+    { id: 101, name: "Mbappé", team: "PSG", pos: 4 },
+    { id: 102, name: "Haaland", team: "MCI", pos: 4 },
+    { id: 103, name: "Vinícius", team: "RMA", pos: 4 },
+    { id: 104, name: "Kane", team: "BAY", pos: 4 },
+    { id: 201, name: "Musiala", team: "BAY", pos: 3 },
+    { id: 202, name: "Bellingham", team: "RMA", pos: 3 },
+    { id: 203, name: "Pedri", team: "BAR", pos: 3 },
+    { id: 204, name: "Valverde", team: "RMA", pos: 3 },
+    { id: 301, name: "Saliba", team: "ARS", pos: 2 },
+    { id: 302, name: "van Dijk", team: "LIV", pos: 2 },
+    { id: 303, name: "Araújo", team: "BAR", pos: 2 },
+    { id: 401, name: "Maignan", team: "MIL", pos: 1 },
+    { id: 402, name: "Courtois", team: "RMA", pos: 1 }
+  ];
 
   for (const mgr of s.managers) {
     if (!mgr.ucl || !mgr.ucl.teamId) continue;
@@ -827,6 +842,7 @@ async function syncUCL(roundsToSync = null) {
     for (const r of rounds) {
       let points = null;
       let source = "pending";
+      let extra = {};
 
       if (UCL_TEMPLATE) {
         const url = UCL_TEMPLATE
@@ -834,22 +850,65 @@ async function syncUCL(roundsToSync = null) {
           .replace("{round}", r);
         try {
           const data = await safeFetchJSON(url);
-          if (data && typeof data.points === "number") {
-            points = data.points;
+          if (data) {
+            if (typeof data.points === "number") points = data.points;
+            if (data.picks) extra.picks = data.picks;
+            if (data.captain) extra.captain = data.captain;
+            if (data.activeChip) extra.activeChip = data.activeChip;
             source = "ucl-api";
           }
         } catch (e) {}
       }
 
-      // Demo / fallback. UCL Fantasy public picks API is limited (gaming.uefa.com - often login or manual). Use template or third-party like sportmonks if available. Current adapter supports points via UCL_TEMPLATE.
       if (points === null && DEMO_MODE) {
-        const base = 48 + Math.floor(Math.random() * 28);
-        points = base;
+        // Generate realistic UCL squad data for demo
+        const shuffled = [...uclDemoPlayers].sort(() => Math.random() - 0.5);
+        const starters = shuffled.slice(0, 11);
+        const bench = shuffled.slice(11, 15);
+
+        const capPick = starters[Math.floor(Math.random() * starters.length)];
+
+        const pickPoints = {};
+        starters.forEach((p, i) => {
+          pickPoints[p.id] = 3 + Math.floor(Math.random() * 12);
+        });
+        bench.forEach((p, i) => {
+          pickPoints[p.id] = Math.floor(Math.random() * 6);
+        });
+
+        points = Object.values(pickPoints).reduce((a, b) => a + b, 0) + (Math.random() > 0.7 ? 8 : 0);
+
+        extra = {
+          captain: capPick.id,
+          captainName: capPick.name,
+          activeChip: Math.random() > 0.85 ? "3xC" : null,
+          picks: [
+            ...starters.map((p, idx) => ({
+              element: p.id,
+              name: p.name,
+              team: p.team,
+              type: p.pos,
+              position: idx + 1,
+              multiplier: p.id === capPick.id ? 2 : 1,
+              points: pickPoints[p.id]
+            })),
+            ...bench.map((p, idx) => ({
+              element: p.id,
+              name: p.name,
+              team: p.team,
+              type: p.pos,
+              position: idx + 12,
+              multiplier: 0,
+              points: pickPoints[p.id]
+            }))
+          ]
+        };
+
         source = "ucl-adapter-demo";
       }
 
       const isFinal = r < current || (r === current && source !== "pending");
-      upsertScore(s, mgr.id, "ucl", r, points, source, isFinal);
+      upsertScore(s, mgr.id, "ucl", r, points, source, isFinal, extra);
     }
   }
 
@@ -919,6 +978,7 @@ function buildManagerView(mgr) {
   const wallet = getWalletBalance(mgr.id);
 
   const recentFpl = currentFpl || {};
+  const recentUcl = currentUcl || {};
   return {
     id: mgr.id,
     displayName: mgr.displayName,
@@ -941,7 +1001,12 @@ function buildManagerView(mgr) {
     recentCaptainName: recentFpl.captainName || null,
     recentChip: recentFpl.activeChip || null,
     recentPicks: recentFpl.picks || [],
-    recentTransfers: recentFpl.transfers || 0
+    recentTransfers: recentFpl.transfers || 0,
+    // UCL equivalent data (now wired via template or demo)
+    recentUclCaptain: recentUcl.captain || null,
+    recentUclCaptainName: recentUcl.captainName || null,
+    recentUclChip: recentUcl.activeChip || null,
+    recentUclPicks: recentUcl.picks || []
   };
 }
 

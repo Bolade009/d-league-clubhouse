@@ -1170,28 +1170,33 @@ function renderLineupViewer() {
 async function loadAndRenderLineup(managerId, container) {
   try {
     const data = await fetchJSON(`/api/manager/${managerId}/full`);
-    const recent = data.fplScores && data.fplScores.length ? data.fplScores[data.fplScores.length-1] : {};
-    const allPicks = recent.picks || [];
-    const captainId = recent.captain;
-    const chip = recent.activeChip;
-    const isProj = !recent.isFinal;
 
-    // Split exactly like FPL: starters (multi > 0) on pitch, bench (multi === 0) below
+    // Support both FPL and UCL wiring
+    const isUclMode = (currentLeagueMode === 'ucl') || (!data.fplScores?.length && data.uclScores?.length);
+    const scores = isUclMode ? (data.uclScores || []) : (data.fplScores || []);
+    const recent = scores.length ? scores[scores.length - 1] : {};
+
+    const allPicks = recent.picks || (isUclMode ? data.recentUclPicks : data.recentPicks) || [];
+    const captainId = recent.captain || (isUclMode ? data.recentUclCaptain : data.recentCaptain);
+    const chip = recent.activeChip || (isUclMode ? data.recentUclChip : data.recentChip);
+    const compLabel = isUclMode ? 'MD' : 'GW';
+
+    // Split: starters (multi > 0) on pitch, bench (multi === 0) below
     const starters = allPicks.filter(p => (p.multiplier || 0) > 0);
     const bench = allPicks.filter(p => (p.multiplier || 0) === 0);
 
-    // Group only starters by type for vertical pitch rows
+    // Group by type for pitch rows (works for both FPL and UCL)
     const groups = {1: [], 2: [], 3: [], 4: []};
     starters.forEach(p => {
       if (groups[p.type]) groups[p.type].push(p);
     });
 
-    // Total projected / points for starters (FPL headline)
+    // Total points headline
     const totalPts = starters.reduce((s, p) => s + (p.points != null ? p.points : 3 + ((p.element || 0) % 7)), 0);
 
-    // Exact match to official FPL website lineup viewer (as per your screenshot)
+    // Lineup viewer now supports both FPL (exact match to official site) and UCL
     const capId = captainId;
-    const header = `<div class="fpl-lineup-header"><span>${data.displayName} • GW${recent.round || '?'} ${chip ? ' • ' + chip : ''}</span><span class="total">${totalPts} pts</span></div>`;
+    const header = `<div class="fpl-lineup-header"><span>${data.displayName} • ${compLabel}${recent.round || '?'} ${chip ? ' • ' + chip : ''}</span><span class="total">${totalPts} pts</span></div>`;
 
     const makeCard = (p, isBenchCard = false) => {
       const isCap = p.element === capId || (p.multiplier || 0) > 1;
@@ -1248,10 +1253,12 @@ async function loadAndRenderLineup(managerId, container) {
 
     container.innerHTML = html;
 
-    // Small note like FPL
+    // Small note
     const note = document.createElement('div');
     note.className = 'mt-1 text-[9px] text-[#666]';
-    note.textContent = 'Points from FPL API • Captain (C) ×2 • Bench in green tray';
+    note.textContent = isUclMode 
+      ? 'UCL data (template or demo) • Captain (C) ×2' 
+      : 'Points from FPL public API • Captain (C) ×2 • Bench shown';
     container.appendChild(note);
   } catch (e) {
     container.innerHTML = `<div class="text-center text-red-400 text-xs py-4">Could not load lineup. Sync scores first.</div>`;
@@ -1661,17 +1668,37 @@ function renderUclTailored() {
     uclList.forEach(m => {
       const isMe = m.id === currentManager?.id;
       const row = document.createElement('div');
-      row.className = `flex justify-between px-3 py-1 rounded ${isMe ? 'bg-[#222]' : ''}`;
-      row.innerHTML = `<div>${m.displayName} ${isMe ? '(YOU)' : ''}</div><div>${m.uclTotal ?? '—'} pts</div>`;
-      row.onclick = () => alert(`UCL lineup for ${m.displayName} (minimal view): Use FPL viewer for detail or sync more.`);
+      row.className = `flex justify-between items-center px-3 py-1.5 rounded-xl cursor-pointer ${isMe ? 'bg-[#222]' : 'hover:bg-[#1c1c1c]'}`;
+      row.innerHTML = `
+        <div>${m.displayName} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
+        <div class="font-mono font-bold">${m.uclTotal ?? '—'} pts</div>
+      `;
+      row.onclick = () => {
+        // Now loads into the shared lineup viewer (will show UCL squad)
+        loadAndRenderLineup(m.id, $('lineup-viewer'));
+      };
       list.appendChild(row);
     });
+  }
+
+  // Squad status for current user (UCL)
+  const statusEl = $('ucl-squad-status') || $('fpl-squad-status'); // reuse if no dedicated
+  if (statusEl && currentManager) {
+    const hasUclSquad = currentManager.recentUclPicks && currentManager.recentUclPicks.length > 0;
+    if (statusEl.id === 'ucl-squad-status' || statusEl) {
+      statusEl.innerHTML = hasUclSquad 
+        ? `<span class="text-[#00ff85]">Squad set for MD${md}</span>` 
+        : `<span class="text-red-400">No UCL squad data yet (sync needed)</span>`;
+    }
   }
 
   if ($('ucl-challenge')) {
     const chs = UCL_CHALLENGES.map(ch => `<div>⚔️ <strong>${ch.title}</strong>: ${ch.desc} <span class="text-[#00ff85]">₦${ch.prize}</span></div>`).join('');
     $('ucl-challenge').innerHTML = chs;
   }
+
+  // Make sure lineup viewer can show UCL data
+  if (typeof renderLineupViewer === 'function') setTimeout(renderLineupViewer, 100);
 }
 
 function showManagerSquadWithInsight(managerId) {
