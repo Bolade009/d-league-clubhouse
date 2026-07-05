@@ -175,25 +175,31 @@ async function loadAdminOverview() {
     panel.className = 'mt-4 p-6 bg-[#111] border-2 border-[#00ff85] rounded-3xl text-sm';
 
     const events = data.recentEvents || [];
-    const existingEmails = new Set((data.managers || []).map(m => (m.email || '').toLowerCase()));
+    const managersByEmail = {};
+    (data.managers || []).forEach(m => {
+      if (m.email) managersByEmail[m.email.toLowerCase()] = m;
+    });
 
-    // Only show join requests that haven't been approved yet
+    // Show recent join requests, with status if already approved
     const joinRequests = events
       .filter(e => e.type === 'join_request')
-      .filter(e => {
-        const email = (e.payload?.email || '').toLowerCase();
-        return email && !existingEmails.has(email);
-      })
-      .slice(0, 6);
+      .slice(0, 8);
 
     let joinsHtml = '';
     if (joinRequests.length) {
       joinsHtml = joinRequests.map(e => {
         const p = e.payload || {};
+        const email = (p.email || '').toLowerCase();
         const when = (e.at || '').slice(11,16);
-        const safeName = (p.name || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
-        const safeEmail = (p.email || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
-        const safeClub = (p.fplClubName || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
+        const existing = managersByEmail[email];
+        let status = '';
+        if (existing) {
+          status = `<span class="text-[#00ff85] font-bold">APPROVED</span> <span class="font-mono">code: ${existing.accessCode || '—'}</span>`;
+        } else {
+          status = `<button data-name="${(p.name || '').replace(/"/g, '&quot;')}" data-email="${(p.email || '').replace(/"/g, '&quot;')}" data-club="${(p.fplClubName || '').replace(/"/g, '&quot;')}"
+                    onclick="approveJoinRequestFromBtn(this)" 
+                    class="px-3 py-0.5 bg-[#00ff85] text-black font-bold rounded text-xs hover:bg-white">Approve</button>`;
+        }
         return `
           <div class="flex items-center justify-between bg-[#1a1a1a] p-2 rounded mb-1">
             <div>
@@ -201,13 +207,11 @@ async function loadAdminOverview() {
               <span class="font-mono text-[#00ff85]">${p.fplClubName || ''}</span>
               <span class="text-[#666] text-[10px]"> (${when})</span>
             </div>
-            <button data-name="${safeName}" data-email="${safeEmail}" data-club="${safeClub}"
-                    onclick="approveJoinRequestFromBtn(this)" 
-                    class="px-3 py-1 bg-[#00ff85] text-black font-bold rounded text-xs hover:bg-white">Approve</button>
+            <div>${status}</div>
           </div>`;
       }).join('');
     } else {
-      joinsHtml = '<div class="text-[#666] py-1">No pending join requests</div>';
+      joinsHtml = '<div class="text-[#666] py-1">No join requests yet</div>';
     }
 
     const otherEvents = events.filter(e => e.type !== 'join_request').slice(0, 5);
@@ -266,57 +270,94 @@ async function loadAdminOverview() {
     `;
 
     panel.innerHTML = `
-      <div class="flex items-center justify-between mb-3">
-        <div>
-          <span class="font-black text-xl text-[#00ff85]">ADMIN COCKPIT</span>
-          <span class="ml-2 text-xs px-2 py-0.5 bg-[#222] rounded text-[#888]">bolade.oladejo@gmail.com</span>
+      <div class="flex justify-between items-center mb-4 border-b border-[#222] pb-3">
+        <div class="flex items-center gap-3">
+          <span class="font-black text-3xl tracking-tight text-[#00ff85]">ADMIN COCKPIT</span>
+          <span class="text-xs bg-[#222] text-[#00ff85] px-3 py-1 rounded-full font-medium">bolade.oladejo@gmail.com</span>
         </div>
-        <div class="flex gap-2">
-          <button onclick="loadAdminOverview()" class="px-4 py-1.5 bg-[#222] hover:bg-[#333] rounded-xl text-sm">REFRESH</button>
-          <button onclick="triggerSettle()" class="px-4 py-1.5 bg-[#00ff85] text-black font-bold rounded-xl hover:bg-white">SETTLE &amp; PAYOUTS</button>
-          <button onclick="promptAddManager()" class="px-4 py-1.5 bg-[#222] hover:bg-[#333] rounded-xl text-sm">+ ADD MANAGER</button>
+        <div class="flex items-center gap-2">
+          <button onclick="loadAdminOverview()" class="px-5 py-2 bg-[#222] hover:bg-[#333] active:bg-[#444] rounded-2xl text-sm font-medium transition">⟳ REFRESH</button>
+          <button onclick="promptAddManager()" class="px-5 py-2 bg-[#00ff85] hover:bg-[#00e676] active:bg-[#00cc66] text-black font-bold rounded-2xl text-sm transition">+ ADD NEW MANAGER</button>
+          <button onclick="triggerSettle()" class="px-5 py-2 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white font-bold rounded-2xl text-sm transition">TRIGGER SETTLE &amp; PAYOUTS</button>
         </div>
       </div>
 
-      ${statsHtml}
-
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <!-- Join Requests -->
-        <div class="bg-[#1a1a1a] p-4 rounded-2xl border border-[#333]">
-          <div class="font-semibold text-[#00ff85] mb-2 flex items-center gap-2">
-            PENDING JOIN REQUESTS
-            <span class="text-xs bg-[#00ff85] text-black px-1.5 py-0 rounded">${joinRequests.length}</span>
+      <!-- Live Stats -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
+          <div class="uppercase text-[10px] tracking-widest text-[#888]">TOTAL MANAGERS</div>
+          <div class="text-4xl font-black mt-1">${data.totalManagers}</div>
+        </div>
+        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
+          <div class="uppercase text-[10px] tracking-widest text-[#888]">PAID STATUS</div>
+          <div class="mt-1">
+            <span class="font-bold text-lg">FPL: ${data.paidFpl}</span> 
+            <span class="text-[#666] mx-1">|</span> 
+            <span class="font-bold text-lg">UCL: ${data.paidUcl}</span>
           </div>
-          <div class="space-y-1 max-h-44 overflow-auto">${joinsHtml}</div>
+          <div class="text-xs text-[#00ff85] mt-1">Confirmed Payments: ${data.totalPaymentsConfirmed}</div>
         </div>
-
-        <!-- Managers -->
-        <div class="bg-[#1a1a1a] p-4 rounded-2xl border border-[#333]">
-          <div class="font-semibold mb-2">MANAGERS (with codes)</div>
-          <div class="text-xs space-y-1 max-h-44 overflow-auto">${mgrsHtml}</div>
-          <div class="text-[10px] text-[#666] mt-2">Access codes shown for easy sharing. Click Refresh after approvals.</div>
+        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
+          <div class="uppercase text-[10px] tracking-widest text-[#888]">HOUSE COMMISSION</div>
+          <div class="text-4xl font-black mt-1 text-[#00ff85]">₦${data.totalHouseCommission || 0}</div>
         </div>
-
-        <!-- Challenges -->
-        <div class="bg-[#1a1a1a] p-4 rounded-2xl border border-[#333]">
-          <div class="font-semibold mb-2">CHALLENGES</div>
-          <div class="text-xs space-y-1 max-h-44 overflow-auto">${challengesHtml}</div>
-        </div>
-
-        <!-- Sponsored Awards -->
-        <div class="bg-[#1a1a1a] p-4 rounded-2xl border border-[#333]">
-          <div class="font-semibold mb-2">SPONSORED AWARDS</div>
-          <div class="text-xs space-y-1 max-h-44 overflow-auto">${sponsorsHtml}</div>
+        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
+          <div class="uppercase text-[10px] tracking-widest text-[#888]">LAST SYNC</div>
+          <div class="text-lg font-medium mt-1">${data.lastSync || '—'}</div>
+          <button onclick="loadAdminOverview()" class="text-xs underline text-[#888] mt-1">force refresh data</button>
         </div>
       </div>
 
-      <div class="border-t border-[#333] pt-3 mt-4">
-        <div class="font-semibold mb-1">RECENT ACTIVITY</div>
-        <div class="max-h-28 overflow-auto text-xs bg-[#1a1a1a] p-3 rounded-xl border border-[#333]">${otherHtml}</div>
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-5">
+        <!-- Join Requests Cockpit -->
+        <div>
+          <div class="flex items-center gap-2 mb-2">
+            <span class="font-semibold text-lg">JOIN REQUESTS</span>
+            <span class="text-xs px-2 py-0.5 bg-[#00ff85] text-black rounded-full font-bold">${joinRequests.length} recent</span>
+          </div>
+          <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4 min-h-[140px] max-h-[220px] overflow-auto">
+            ${joinsHtml}
+          </div>
+          <div class="text-[10px] text-[#666] mt-1">Requests stay visible. Status updates to APPROVED + code once processed.</div>
+        </div>
+
+        <!-- Managers with easy code access -->
+        <div>
+          <div class="font-semibold text-lg mb-2">MANAGERS &amp; ACCESS CODES</div>
+          <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4 min-h-[140px] max-h-[220px] overflow-auto text-sm">
+            ${mgrsHtml}
+          </div>
+          <div class="text-[10px] text-[#00ff85] mt-1">Codes are shown here for quick copy-paste to new managers.</div>
+        </div>
+
+        <!-- Challenges & Awards -->
+        <div class="xl:col-span-2">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <div class="font-semibold text-lg mb-2 flex items-center gap-2">CHALLENGES</div>
+              <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-3 text-sm max-h-[160px] overflow-auto">
+                ${challengesHtml}
+              </div>
+            </div>
+            <div>
+              <div class="font-semibold text-lg mb-2 flex items-center gap-2">SPONSORED AWARDS</div>
+              <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-3 text-sm max-h-[160px] overflow-auto">
+                ${sponsorsHtml}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div class="mt-4 text-[10px] text-[#666]">
-        Full control panel — approve joins, cancel challenges/awards, add managers, trigger settlements. Data is live from the disk.
+      <div class="mt-5 pt-4 border-t border-[#333]">
+        <div class="font-semibold mb-2">RECENT ACTIVITY LOG</div>
+        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4 text-xs max-h-[120px] overflow-auto leading-relaxed">
+          ${otherHtml}
+        </div>
+      </div>
+
+      <div class="mt-4 text-center text-xs text-[#555]">
+        This is your live command center. All data is pulled from the persistent disk. Use the top buttons for quick actions.
       </div>
     `;
 
