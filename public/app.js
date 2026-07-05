@@ -24,6 +24,10 @@ function initTailwind() {
 async function fetchJSON(url, opts = {}) {
   const headers = opts.headers || {};
   if (currentToken) headers['Authorization'] = `Bearer ${currentToken}`;
+  // Auto-set JSON content type for POST/PUT with string body (fixes admin add-manager etc.)
+  if (opts.body && typeof opts.body === 'string' && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
   const res = await fetch(url, { ...opts, headers });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -282,7 +286,10 @@ async function approveJoinRequestFromBtn(btn) {
   const name = btn.dataset.name || '';
   const email = btn.dataset.email || '';
   const fplClubName = btn.dataset.club || '';
-  if (!email) return alert('Missing email');
+  if (!name || !email) {
+    alert('Invalid join request data (missing name or email). Refresh the admin panel and try again.');
+    return;
+  }
 
   const suggested = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) + Math.floor(1000 + Math.random() * 9000);
   const accessCode = prompt(`Access code for ${name} (edit if you want):`, suggested);
