@@ -104,7 +104,7 @@ function showDashboard() {
     <div class="flex items-center gap-3">
       <div class="hidden md:block text-right">
         <div class="text-sm font-semibold text-white">${currentManager.displayName}</div>
-        <div class="text-[10px] text-[#00ff85] -mt-0.5">${currentManager.fplPaid && currentManager.uclPaid ? 'FULLY PAID' : 'NOT PAID — PAY FULL TO PARTICIPATE'}</div>
+        <div class="text-[10px] text-[#00ff85] -mt-0.5">FPL: ${currentManager.fplPaid ? 'PAID' : 'NOT PAID'} | UCL: ${currentManager.uclPaid ? 'PAID' : 'NOT PAID'}</div>
       </div>
       <div class="w-9 h-9 rounded-2xl bg-black border border-[#333] flex items-center justify-center text-[#00ff85] font-black text-lg">
         ${currentManager.displayName[0]}
@@ -115,22 +115,37 @@ function showDashboard() {
   $('welcome-line').textContent = `WELCOME BACK, MANAGER • ${new Date().getFullYear()}`;
   $('manager-name').textContent = currentManager.displayName;
 
-  // Status line - clean (only paid managers are in the app)
+  // Status line - clean (paid per competition)
   const status = $('manager-status-line');
-  status.innerHTML = `<span class="text-xs text-[#888]">Full payment required for participation (no partials)</span>`;
+  status.innerHTML = `<span class="text-xs text-[#888]">Pay FPL for FPL access. Pay UCL for UCL access. No partials for full.</span>`;
 
-  // If not fully paid, show prominent pay prompt for new managers (only access to pay until full)
-  if (!currentManager.fplPaid || !currentManager.uclPaid) {
-    const payPrompt = document.createElement('div');
-    payPrompt.className = 'mb-6 p-4 bg-[#1c1c1c] border border-[#00ff85] rounded-2xl';
-    payPrompt.innerHTML = `
-      <div class="font-bold text-[#00ff85]">PAY FULL SEASON FEE (FPL + UCL) TO PARTICIPATE</div>
-      <div class="text-sm">No partial payments allowed. Pay the total to unlock full access, standings, lineup viewer, and eligibility. Login is only for payment now.</div>
-      <button onclick="initiateFullPayment()" class="mt-2 px-4 py-2 bg-[#00ff85] text-black font-bold rounded-xl">PAY FULL VIA PAYSTACK</button>
-    `;
-    const actionsDiv = document.querySelector('#dashboard .mb-6');
-    if (actionsDiv) actionsDiv.after(payPrompt);
+  // Separate clear payment sections for FPL and UCL. Pay one to unlock that part only. Clearly labelled.
+  const payContainer = document.createElement('div');
+  payContainer.className = 'mb-6 p-4 bg-[#1c1c1c] border border-[#00ff85] rounded-2xl';
+  let payHtml = `<div class="font-bold text-[#00ff85] mb-2">PAY SEPARATELY — FPL OR UCL OR BOTH</div>`;
+  if (!currentManager.fplPaid) {
+    payHtml += `
+      <div class="mb-3 p-3 bg-[#222] rounded-xl border border-[#00ff85]">
+        <div class="font-semibold">FPL Season Fee</div>
+        <div class="text-xs">Pay this to unlock FPL standings, H2H, lineup viewer, squad, projections.</div>
+        <button onclick="initiatePayment('fpl')" class="mt-2 px-4 py-1.5 bg-[#00ff85] text-black font-bold rounded text-sm">PAY FOR FPL ONLY</button>
+      </div>`;
+  } else {
+    payHtml += `<div class="text-sm text-[#00ff85] mb-2">✓ FPL PAID — FPL features unlocked</div>`;
   }
+  if (!currentManager.uclPaid) {
+    payHtml += `
+      <div class="p-3 bg-[#222] rounded-xl border border-[#00ff85]">
+        <div class="font-semibold">UCL Season Fee</div>
+        <div class="text-xs">Pay this to unlock UCL standings, challenges, projections.</div>
+        <button onclick="initiatePayment('ucl')" class="mt-2 px-4 py-1.5 bg-[#00ff85] text-black font-bold rounded text-sm">PAY FOR UCL ONLY</button>
+      </div>`;
+  } else {
+    payHtml += `<div class="text-sm text-[#00ff85]">✓ UCL PAID — UCL features unlocked</div>`;
+  }
+  payContainer.innerHTML = payHtml;
+  const actionsDiv = document.querySelector('#dashboard .mb-6');
+  if (actionsDiv) actionsDiv.after(payContainer);
 
   // Populate hero stats immediately from the data we already have
   renderManagerHero();
@@ -295,10 +310,8 @@ async function loadAdminOverview() {
 
     // Managers as clean cards with copy code
     let mgrsHtml = (data.managers || []).map(m => {
-      const paid = [];
-      if (m.fplPaid) paid.push('FPL');
-      if (m.uclPaid) paid.push('UCL');
-      const paidStr = paid.length ? paid.join(' + ') : 'Not paid';
+      const fplStatus = m.fplPaid ? '✅ PAID' : '❌ NOT PAID';
+      const uclStatus = m.uclPaid ? '✅ PAID' : '❌ NOT PAID';
       const code = m.accessCode || '—';
       const isAdmin = m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com';
       const club = m.fplClubName || (isAdmin ? 'Admin (no team)' : '—');
@@ -308,11 +321,11 @@ async function loadAdminOverview() {
             <div class="font-semibold">${m.displayName} ${isAdmin ? '<span class="text-xs bg-[#003322] text-[#00ff85] px-1 rounded">ADMIN</span>' : ''}</div>
             <div class="text-xs text-[#888]">${m.email}</div>
             <div class="text-xs text-[#00ff85] mt-0.5">${club}</div>
-            <div class="text-xs text-[#666]">${paidStr}</div>
+            <div class="text-xs text-[#666]">FPL: ${fplStatus} | UCL: ${uclStatus}</div>
           </div>
           <div class="text-right">
             <div class="font-mono text-sm">${code}</div>
-            <button onclick="navigator.clipboard.writeText('${code}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500)" class="mt-1 text-[10px] px-3 py-0.5 bg-[#222] hover:bg-[#333] rounded">Copy</button>
+            <button onclick="navigator.clipboard.writeText('${code}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500)" class="mt-1 text-[10px] px-3 py-0.5 bg-[#222] hover:bg-[#333] rounded">Copy Code</button>
           </div>
         </div>`;
     }).join('') || '<div class="text-[#666] p-4">No managers</div>';
@@ -326,7 +339,7 @@ async function loadAdminOverview() {
         </div>
         <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">PAID</div>
-          <div class="text-2xl font-black">Full paid: ${Math.min(data.paidFpl, data.paidUcl) || 0} (both required)</div>
+          <div class="text-2xl font-black">FPL Paid: ${data.paidFpl} | UCL Paid: ${data.paidUcl}</div>
         </div>
         <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">CONFIRMED PAYMENTS</div>
@@ -357,7 +370,7 @@ async function loadAdminOverview() {
         <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
           <div class="text-xs uppercase tracking-widest text-[#888]">MANAGERS</div>
           <div class="text-5xl font-black mt-1">${data.totalManagers}</div>
-          <div class="text-sm mt-1">Fully paid (both): ${Math.min(data.paidFpl, data.paidUcl) || 0}</div>
+          <div class="text-sm mt-1">FPL Paid: ${data.paidFpl} | UCL Paid: ${data.paidUcl}</div>
         </div>
         <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
           <div class="text-xs uppercase tracking-widest text-[#888]">PAYMENTS</div>
