@@ -20,9 +20,8 @@ npm start
 Visit: http://localhost:4174
 
 **Demo accounts** (only shown when DEMO_MODE=true):
-- ayo@dleague.ng / ayo2026
-- chinedu@dleague.ng / chi2026
-- amara@dleague.ng / ama2026
+- bolade.oladejo@gmail.com / DLeagueAdmin!2026@*
+  (this is the ONLY admin account with backend view access)
 - etc.
 
 In demo mode use the **Simulate Paystack Success** button.

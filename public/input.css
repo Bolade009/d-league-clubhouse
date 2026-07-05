@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom brand overrides for D League (blue/white/light-green only) */
+:root {
+  --brand-green: #00ff85;
+}
+
+.pitch {
+  background: linear-gradient(#14532d, #052e16);
+  border: 3px solid #166534;
+}
+
+.position-row {
+  display: flex;
+  justify-content: space-around;
+  margin: 6px 0;
+}
+
+/* Keep some existing custom from styles.css taking precedence */

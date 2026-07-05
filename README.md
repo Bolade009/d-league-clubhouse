@@ -59,9 +59,7 @@ The login form should appear. Use the demo credentials shown on screen.
 
 **Demo logins (visible only when DEMO_MODE=true):**
 
-- Ayo Balogun — ayo@dleague.ng — code: `ayo2026`
-- Chinedu Eze — chinedu@dleague.ng — code: `chi2026`
-- Amara Okoro — amara@dleague.ng — code: `ama2026`
+- Bolade Oladejo — bolade.oladejo@gmail.com — code: `DLeagueAdmin!2026@*` (ADMIN - backend view)
 - And others (see seeded data)
 
 In demo mode you can simulate full payments with the "Simulate Paystack Success" button.

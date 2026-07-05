@@ -6,6 +6,7 @@ const fsSync = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const https = require("node:https");
+const nodemailer = require("nodemailer");
 
 const app = express();
 
@@ -24,7 +25,28 @@ const PAYSTACK_CALLBACK = process.env.PAYSTACK_CALLBACK_URL || "";
 const LIVE_FPL_TEMPLATE = process.env.LIVE_FPL_API_TEMPLATE || "";
 const UCL_TEMPLATE = process.env.UCL_FANTASY_API_TEMPLATE || "";
 
+// Live admin (only this email can see backend admin view + trigger protected actions)
+const ADMIN_EMAIL = "bolade.oladejo@gmail.com";
+const ADMIN_ACCESS_CODE = "DLeagueAdmin!2026@*";
+
 const FPL_BASE = "https://fantasy.premierleague.com/api";
+
+// Optional email transport (set SMTP_* in env on Render for real emails)
+let mailer = null;
+if (process.env.SMTP_HOST) {
+  try {
+    mailer = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: process.env.SMTP_SECURE === "true",
+      auth: process.env.SMTP_USER ? {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS
+      } : undefined
+    });
+    console.log("[mailer] Email transport configured");
+  } catch (e) { console.warn("Mailer setup failed", e.message); }
+}
 
 // Security & limits
 app.use(helmet({
@@ -209,6 +231,37 @@ async function logEvent(type, payload) {
   s.events.unshift({ id: generateId("evt"), type, payload, at: nowISO() });
   if (s.events.length > 200) s.events.length = 200;
   await persistStore();
+}
+
+async function notifyAdminOfJoinRequest(join) {
+  console.log("\n========================================");
+  console.log("📨 NEW JOIN REQUEST - ACTION REQUIRED");
+  console.log("Send access code to the user's real email:");
+  console.log("  Name:   ", join.name);
+  console.log("  Email:  ", join.email);
+  console.log("  FPL Club:", join.fplClubName);
+  console.log("  Time:   ", new Date().toISOString());
+  console.log("Use /api/admin/add-manager (with your admin token or login as admin) to generate code + add them.");
+  console.log("========================================\n");
+
+  const subject = "D League Clubhouse - Access Request Received";
+  const text = `Hi ${join.name},\n\nWe received your join request for FPL club "${join.fplClubName}".\nThe commissioner will verify and email you the access code + instructions shortly.\n\nThank you,\nD League Clubhouse`;
+
+  // Send to the requester (confirmation) + BCC to admin
+  if (mailer) {
+    try {
+      await mailer.sendMail({
+        from: process.env.FROM_EMAIL || ADMIN_EMAIL,
+        to: join.email,
+        bcc: ADMIN_EMAIL,
+        subject,
+        text
+      });
+      console.log("[email] Join notification sent to", join.email);
+    } catch (e) {
+      console.error("[email] Failed to send:", e.message);
+    }
+  }
 }
 
 // ============ MANAGER & PAYMENT LOGIC ============
@@ -772,6 +825,7 @@ function buildManagerView(mgr) {
   return {
     id: mgr.id,
     displayName: mgr.displayName,
+    email: mgr.email,
     fplTeam: mgr.fpl || {},
     uclTeam: mgr.ucl || {},
     fplPaid,
@@ -829,9 +883,11 @@ function safeFetchJSON(url, timeoutMs = 8000) {
 // ============ DEMO SEED ============
 
 async function seedDemoData(force = false) {
+  if (!DEMO_MODE && !force) return; // Never auto-seed fake managers in live/prod
   const s = await loadStore();
   if (s.managers.length > 0 && !force) return;
 
+  // Only seed demo fakes when explicitly in DEMO_MODE (for local testing)
   const demoManagers = [
     { displayName: "Ayo Balogun", email: "ayo@dleague.ng", code: "ayo2026", fplId: "4782912", uclId: "ucl-ayo-91", club: "Ayo's Army" },
     { displayName: "Chinedu Eze", email: "chinedu@dleague.ng", code: "chi2026", fplId: "3129847", uclId: "ucl-chi-47", club: "Chinedu FC" },
@@ -993,6 +1049,50 @@ async function seedDemoData(force = false) {
   await logEvent("demo_seeded", { count: s.managers.length });
 }
 
+async function ensureAdminManager() {
+  // On live (non-demo), ensure ONLY the real admin exists (no fake dleague.ng accounts)
+  const s = await loadStore();
+
+  // Purge any leftover demo/fake managers on live
+  if (!DEMO_MODE) {
+    const before = s.managers.length;
+    s.managers = s.managers.filter(m => !String(m.email || "").includes("dleague.ng"));
+    if (s.managers.length !== before) {
+      await persistStore();
+      console.log(`[live] Purged ${before - s.managers.length} demo accounts`);
+    }
+  }
+
+  const existing = s.managers.find(m => m.email && m.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+  if (existing) {
+    // Make sure the code matches what we want for the admin
+    if (existing.accessCode !== ADMIN_ACCESS_CODE) {
+      existing.accessCode = ADMIN_ACCESS_CODE;
+      await persistStore();
+    }
+    return;
+  }
+
+  // Create the real admin manager (first time or after purge)
+  const id = generateId("mgr");
+  const now = nowISO();
+  const adminMgr = {
+    id,
+    displayName: "Bolade Oladejo",
+    email: ADMIN_EMAIL,
+    accessCode: ADMIN_ACCESS_CODE,
+    fpl: { teamId: "", teamName: "" },
+    ucl: { teamId: "", teamName: "" },
+    payoutDetails: "",
+    fplClubName: "Bolade's Brigade",
+    createdAt: now
+  };
+  s.managers.push(adminMgr);
+  await persistStore();
+  await logEvent("admin_bootstrapped", { email: ADMIN_EMAIL });
+  console.log(`✅ Admin account ready: ${ADMIN_EMAIL} (code: ${ADMIN_ACCESS_CODE})`);
+}
+
 // Expose for scripts
 exports.seedDemoIfNeeded = seedDemoData;
 
@@ -1014,7 +1114,7 @@ app.get("/api/config", (req, res) => {
 });
 
 app.post("/api/auth/login", async (req, res) => {
-  await seedDemoData();
+  if (DEMO_MODE) await seedDemoData();
   const { email, code } = req.body || {};
   const s = await loadStore();
 
@@ -1033,21 +1133,39 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 app.post("/api/join-request", async (req, res) => {
-  await seedDemoData();
+  if (DEMO_MODE) await seedDemoData();
   const { name, email, fplClubName, fplLeagueJoined, message } = req.body || {};
   if (!name || !email || !fplClubName) return res.status(400).json({ error: "Name, email and FPL club name required (to confirm league join)" });
 
   const s = await loadStore();
   await logEvent("join_request", { name, email, fplClubName, fplLeagueJoined: !!fplLeagueJoined, message });
+  await notifyAdminOfJoinRequest({ name, email, fplClubName });
 
-  // In production this could email the admin or add a pending manager after verifying fplClubName matches the league
-  res.json({ ok: true, message: "Request received! The league admin will verify your FPL club name '" + fplClubName + "' and send your access code shortly." });
+  // Real emails: the console above shows the details. Admin checks /api/admin/overview or events.
+  // In future: wire nodemailer with your SMTP (Gmail app password, SendGrid etc).
+  res.json({ ok: true, message: "Request received! Check your email (" + email + "). The commissioner will send your access code shortly." });
 });
 
 // Admin endpoint to add a new manager (protected with SYNC_TOKEN as X-Admin-Token for simplicity)
 app.post("/api/admin/add-manager", async (req, res) => {
-  if (req.headers['x-admin-token'] !== SYNC_TOKEN && !DEMO_MODE) {
-    return res.status(401).json({ error: "Unauthorized" });
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
   }
   const { name, email, accessCode, fplId, uclId, fplClubName, payoutDetails } = req.body || {};
   if (!name || !email || !accessCode) return res.status(400).json({ error: "name, email, accessCode required" });
@@ -1088,7 +1206,7 @@ app.get("/api/me", async (req, res) => {
 });
 
 app.get("/api/standings", async (req, res) => {
-  await seedDemoData();
+  if (DEMO_MODE) await seedDemoData();
   const lb = getFullLeaderboard();
   const s = getStore();
   res.json({
@@ -1261,8 +1379,27 @@ app.post("/api/paystack/webhook", async (req, res) => {
   res.status(200).send("OK");
 });
 
-// Protected sync
-app.post("/api/sync/run", requireSyncAuth, async (req, res) => {
+// Protected sync (commissioner can also trigger via their login token)
+app.post("/api/sync/run", async (req, res) => {
+  if (!DEMO_MODE) {
+    const syncTok = req.headers["x-sync-token"] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && syncTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+  }
   const { comp } = req.body || {};
   let result;
 
@@ -1284,7 +1421,7 @@ app.get("/api/export/full", requireExportAuth, async (req, res) => {
 
 // Get all managers (paid view for community)
 app.get("/api/community", async (req, res) => {
-  await seedDemoData();
+  if (DEMO_MODE) await seedDemoData();
   const lb = getFullLeaderboard();
   const s = getStore();
   res.json({
@@ -1375,7 +1512,27 @@ app.get("/api/admin/overview", async (req, res) => {
 });
 
 // Trigger settlement (protected, for admin/commissioner)
-app.post("/api/settle/run", requireSyncAuth, async (req, res) => {
+app.post("/api/settle/run", async (req, res) => {
+  if (!DEMO_MODE) {
+    const syncTok = req.headers["x-sync-token"] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && syncTok === SYNC_TOKEN);
+    if (!allowed) {
+      // allow logged-in commissioner (the ayo account) using their normal login Bearer token
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+  }
   const { comp } = req.body || {};
   await autoSettleIfNeeded();
   if (comp === "fpl" || !comp) await settleWeeklyPot("fpl", (await loadStore()).settings.currentRound.fpl);
@@ -1394,6 +1551,8 @@ async function boot() {
   await loadStore();
   if (DEMO_MODE) {
     await seedDemoData();
+  } else {
+    await ensureAdminManager();
   }
   app.listen(PORT, () => {
     console.log(`\n✅  D League Clubhouse is running!`);

@@ -107,6 +107,13 @@ function showDashboard() {
   // Populate hero stats immediately from the data we already have
   renderManagerHero();
 
+  // Show backend admin view ASAP for commissioner (in case later loads have issues)
+  const isComm = currentManager && currentManager.email &&
+    currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com';
+  if (isComm) {
+    loadAdminOverview();
+  }
+
   // Start in FPL separate flow
   setTimeout(() => {
     const sel = $('league-selector');
@@ -145,8 +152,10 @@ async function loadAllData() {
   if (fplBtn) fplBtn.onclick = () => switchLeague('fpl');
   if (uclBtn) uclBtn.onclick = () => switchLeague('ucl');
 
-  // Admin backend view for commissioner
-  if (currentManager && currentManager.email.includes('ayo')) {
+  // Admin backend view ONLY for the real commissioner
+  const isCommissioner = currentManager && currentManager.email &&
+    currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com';
+  if (isCommissioner) {
     loadAdminOverview();
   }
 }
@@ -154,21 +163,50 @@ async function loadAllData() {
 async function loadAdminOverview() {
   try {
     const data = await fetchJSON('/api/admin/overview');
+    const prev = document.getElementById('admin-overview-panel');
+    if (prev) prev.remove();
+
     const panel = document.createElement('div');
-    panel.className = 'mt-6 p-4 bg-[#1c1c1c] border border-[#00ff85] rounded-2xl text-xs';
+    panel.id = 'admin-overview-panel';
+    panel.className = 'mt-4 p-4 bg-[#111] border-2 border-[#00ff85] rounded-2xl text-xs';
+
+    const events = data.recentEvents || [];
+    let eventsHtml = events.slice(0, 8).map(e => {
+      const p = e.payload || {};
+      const when = (e.at || '').slice(11,16);
+      if (e.type === 'join_request') {
+        return `<div class="py-0.5"><span class="text-[#00ff85] font-semibold">JOIN REQUEST</span> — ${p.name || ''} &lt;${p.email || ''}&gt; • FPL club: <span class="font-mono">${p.fplClubName || ''}</span> <span class="text-[#888]">(${when})</span></div>`;
+      }
+      if (e.type === 'manager_added') {
+        return `<div class="py-0.5"><span class="text-[#00ff85]">MANAGER ADDED</span> — ${p.name || p.email} <span class="text-[#888]">(${when})</span></div>`;
+      }
+      return `<div class="text-[#aaa] py-0.5">${e.type} ${Object.keys(p).length ? JSON.stringify(p).slice(0,60) : ''} <span class="text-[#888]">(${when})</span></div>`;
+    }).join('') || '<div class="text-[#666]">No recent events</div>';
+
     panel.innerHTML = `
-      <div class="font-bold text-[#00ff85] mb-2">BACKEND ADMIN VIEW</div>
-      <div>Managers: ${data.totalManagers} | Paid FPL: ${data.paidFpl} UCL: ${data.paidUcl}</div>
-      <div>Confirmed Payments: ${data.totalPaymentsConfirmed}</div>
-      <div>House Commission Total: ₦${data.totalHouseCommission || 0}</div>
-      <div>Last Sync: ${data.lastSync}</div>
-      <div class="mt-2">Recent Events: ${JSON.stringify(data.recentEvents || []).slice(0,200)}...</div>
-      <button onclick="triggerSettle()" class="mt-2 px-3 py-1 bg-[#00ff85] text-black rounded text-xs">TRIGGER SETTLE & PAYOUTS</button>
+      <div class="font-bold text-[#00ff85] mb-1 flex items-center justify-between">
+        <span>BACKEND ADMIN VIEW</span>
+        <span class="text-[10px] text-[#888]">bolade.oladejo@gmail.com</span>
+      </div>
+      <div class="mb-1">Managers: <span class="font-semibold">${data.totalManagers}</span> • Paid FPL: ${data.paidFpl} • UCL: ${data.paidUcl}</div>
+      <div>Confirmed payments: ${data.totalPaymentsConfirmed} • House commission total: ₦${data.totalHouseCommission || 0}</div>
+      <div class="text-[#888] mb-1">Last sync: ${data.lastSync || '—'}</div>
+      <div class="border-t border-[#333] pt-1 mt-1">
+        <div class="font-semibold mb-0.5">Recent events (join requests shown first):</div>
+        <div class="max-h-28 overflow-auto leading-snug">${eventsHtml}</div>
+      </div>
+      <button onclick="triggerSettle()" class="mt-2 px-3 py-1 bg-[#00ff85] hover:bg-white text-black font-bold rounded text-xs">TRIGGER SETTLE &amp; PAYOUTS</button>
+      <div class="text-[10px] text-[#888] mt-1">Use this to auto-settle pots + challenges + initiate Paystack transfers (10% commission logged).</div>
     `;
-    // append to dashboard or fpl
+    // Insert prominently right after league selector so it's immediately visible
     const dash = document.getElementById('dashboard');
-    if (dash) dash.appendChild(panel);
-  } catch(e) {}
+    const after = document.getElementById('league-selector');
+    if (dash && after && after.parentNode) {
+      after.parentNode.insertBefore(panel, after.nextSibling);
+    } else if (dash) {
+      dash.appendChild(panel);
+    }
+  } catch(e) { console.warn('admin overview failed', e); }
 }
 
 async function triggerSettle() {
@@ -181,16 +219,15 @@ async function triggerSettle() {
 
 async function loadStandings() {
   standingsData = await fetchJSON('/api/standings');
-  renderCombinedRace();
-  renderFPLRace();
-  renderUCLRace();
-  renderFullTable();
+  // Legacy combined/old race + table renders removed (their containers no longer exist after separate FPL/UCL UI cleanup).
+  // standingsData.fpl / .ucl / .all are still used by renderFplTailored, renderUclTailored, lineup viewer, etc.
   // Auto switch to current mode after load
   if (currentLeagueMode) switchLeague(currentLeagueMode);
 }
 
 function renderCombinedRace() {
   const container = $('combined-race');
+  if (!container) return;
   container.innerHTML = '';
   const list = standingsData.combined || [];
 
@@ -221,7 +258,9 @@ function renderCombinedRace() {
 
 function renderFPLRace() {
   const wrap = $('fpl-race');
-  $('fpl-gw-num').textContent = standingsData.currentRound.fpl;
+  if (!wrap) return;
+  const gwNum = $('fpl-gw-num');
+  if (gwNum) gwNum.textContent = standingsData.currentRound.fpl;
   wrap.innerHTML = '';
   const list = standingsData.fpl || [];
 
@@ -249,7 +288,9 @@ function renderFPLRace() {
 
 function renderUCLRace() {
   const wrap = $('ucl-race');
-  $('ucl-md-num').textContent = standingsData.currentRound.ucl;
+  if (!wrap) return;
+  const mdNum = $('ucl-md-num');
+  if (mdNum) mdNum.textContent = standingsData.currentRound.ucl;
   wrap.innerHTML = '';
   const list = standingsData.ucl || [];
 
@@ -277,6 +318,7 @@ function renderUCLRace() {
 
 function renderFullTable() {
   const tbody = $('standings-table');
+  if (!tbody) return;
   tbody.innerHTML = '';
 
   const all = standingsData.all || [];
@@ -380,33 +422,30 @@ async function showManagerProfile(managerId) {
 
 function renderManagerHero() {
   if (!currentManager) return;
-  $('fpl-status').innerHTML = currentManager.fplPaid ? 
-    `<span class="text-[#00ff85]">PAID • ELIGIBLE</span>` : 
-    `<span class="text-red-500">UNPAID</span>`;
-  $('ucl-status').innerHTML = currentManager.uclPaid ? 
-    `<span class="text-[#aaa]">PAID • ELIGIBLE</span>` : 
-    `<span class="text-red-500">UNPAID</span>`;
 
   const round = (standingsData && standingsData.currentRound) || {fpl: '?', ucl: '?'};
-  $('fpl-current').innerHTML = currentManager.currentFpl != null ? 
-    `GW${round.fpl} • ${currentManager.currentFpl} pts <span class="source-label">${currentManager.currentFplSource || ''}</span>` : '—';
-  $('ucl-current').innerHTML = currentManager.currentUcl != null ? 
-    `MD${round.ucl} • ${currentManager.currentUcl} pts` : '—';
 
-  // Compute combined rank from current standings
-  const list = (standingsData && standingsData.all) || [];
-  const sorted = [...list].sort((a,b) => (b.combined || 0) - (a.combined || 0));
-  const rank = sorted.findIndex(x => x.id === currentManager.id) + 1;
-  $('combined-rank').innerHTML = rank ? `#${rank}` : '—';
+  // Only touch elements that still exist in the cleaned-up dashboard
+  const fplCur = $('fpl-current');
+  if (fplCur) {
+    fplCur.innerHTML = currentManager.currentFpl != null ? 
+      `GW${round.fpl} • ${currentManager.currentFpl} pts <span class="source-label">${currentManager.currentFplSource || ''}</span>` : '—';
+  }
 
-  // no fines display
-  $('wallet-balance').textContent = `₦${currentManager.wallet || 0}`;
+  const uclCur = $('ucl-current');
+  if (uclCur) {
+    uclCur.innerHTML = currentManager.currentUcl != null ? 
+      `MD${round.ucl} • ${currentManager.currentUcl} pts` : '—';
+  }
+
+  // Removed in UI cleanup: fpl-status, ucl-status, combined-rank, wallet-balance — no longer set
 }
 
 async function loadTicker() {
   try {
     const t = await fetchJSON('/api/ticker');
     const el = $('ticker-content');
+    if (!el) return;
     el.innerHTML = '';
     t.messages.forEach((msg, i) => {
       const span = document.createElement('span');
@@ -495,7 +534,7 @@ async function loadProjections() {
 
 function renderSquadChips() {
   const wrap = $('squad-chips');
-  if (!currentManager) return;
+  if (!currentManager || !wrap) return;
   const m = currentManager;
   wrap.innerHTML = `
     <div>Captain: <span class="font-semibold">${m.recentCaptainName || (m.recentCaptain ? 'Player #' + m.recentCaptain : 'N/A')}</span></div>
@@ -528,6 +567,7 @@ let playerChallenges = [];
 
 function renderChallengeArena() {
   const wrap = $('challenge-arena');
+  if (!wrap) return;
   wrap.innerHTML = '';
   if (playerChallenges.length === 0) {
     wrap.innerHTML = `<div class="text-xs">No active challenges. Propose one!</div>`;
@@ -597,6 +637,7 @@ function acceptChallenge(i) {
 
 function renderSponsoredAwards() {
   const wrap = $('sponsored-awards');
+  if (!wrap) return;
   wrap.innerHTML = `
     <div>Best Captain GW5 - Sponsored by "Local Legend FC" +₦10,000</div>
     <div class="text-xs">Total sponsored this season: ₦45,000</div>
@@ -671,8 +712,10 @@ function renderSpotlight() {
   const top = sorted[0];
   if (!top) return;
 
-  $('spotlight-name').innerHTML = top.displayName;
-  $('spotlight-stats').innerHTML = `
+  const sn = $('spotlight-name');
+  const ss = $('spotlight-stats');
+  if (sn) sn.innerHTML = top.displayName;
+  if (ss) ss.innerHTML = `
     <div class="font-bold text-lg">${top.combined} pts</div>
     <div class="text-xs">FPL ${top.fplTotal} • UCL ${top.uclTotal}</div>
   `;
@@ -861,7 +904,7 @@ async function handlePaystackInline(res, comp) {
     await loadPaystackScript();
     const handler = PaystackPop.setup({
       key: window.__PAYSTACK_KEY__ || 'pk_test_demo',
-      email: currentManager.email || 'manager@dleague.ng',
+      email: currentManager.email || 'manager@example.com',
       amount: (comp === 'fpl' ? 20000 : 10000) * 100,
       ref: res.reference,
       callback: function (response) {
@@ -1014,7 +1057,9 @@ async function bootstrap() {
       if (hint) hint.style.display = 'block';
     } else {
       const hint = document.getElementById('demo-hint');
-      if (hint) hint.textContent = 'Production mode • Demo accounts disabled';
+      if (hint) hint.style.display = 'none';
+      const serverWarning = document.getElementById('server-warning');
+      if (serverWarning) serverWarning.style.display = 'none';
     }
   } catch (e) {
     if (warning) {

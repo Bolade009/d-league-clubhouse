@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>D League Clubhouse • Manager Command Center</title>
   <meta name="description" content="Premium private fantasy football community. FPL + UCL Fantasy. Transparent pots, H2H, cups, awards and challenges.">
-  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/tailwind.css">
   <link rel="stylesheet" href="/styles.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏆</text></svg>">
 </head>
@@ -57,12 +57,12 @@
       <div class="space-y-4">
         <div>
           <label class="text-xs uppercase tracking-[1px] text-[#888]">Email</label>
-          <input id="login-email" type="email" value="ayo@dleague.ng"
+          <input id="login-email" type="email" placeholder="your@email.com"
                  class="w-full bg-[#111] border border-[#444] focus:border-[#00ff85] outline-none rounded-2xl px-4 py-3 text-lg">
         </div>
         <div>
           <label class="text-xs uppercase tracking-[1px] text-[#888]">Access Code</label>
-          <input id="login-code" type="text" value="ayo2026"
+          <input id="login-code" type="text" placeholder="access-code"
                  class="w-full bg-[#111] border border-[#444] focus:border-[#00ff85] outline-none rounded-2xl px-4 py-3 text-lg tracking-widest font-mono">
         </div>
 
@@ -79,7 +79,7 @@
       </div>
 
       <div id="demo-hint" class="mt-6 text-center text-[11px] text-[#666]">
-        Demo mode active • Try other managers: chinedu@dleague.ng / chi2026
+        Use your real email + access code provided by the commissioner
       </div>
     </div>
 
