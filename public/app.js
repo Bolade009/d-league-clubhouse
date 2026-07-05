@@ -104,7 +104,7 @@ function showDashboard() {
     <div class="flex items-center gap-3">
       <div class="hidden md:block text-right">
         <div class="text-sm font-semibold text-white">${currentManager.displayName}</div>
-        <div class="text-[10px] text-[#00ff85] -mt-0.5">${currentManager.fplPaid && currentManager.uclPaid ? 'FULLY PAID' : 'PARTIALLY PAID'}</div>
+        <div class="text-[10px] text-[#00ff85] -mt-0.5">${currentManager.fplPaid && currentManager.uclPaid ? 'FULLY PAID' : 'NOT PAID — PAY FULL TO PARTICIPATE'}</div>
       </div>
       <div class="w-9 h-9 rounded-2xl bg-black border border-[#333] flex items-center justify-center text-[#00ff85] font-black text-lg">
         ${currentManager.displayName[0]}
@@ -117,7 +117,20 @@ function showDashboard() {
 
   // Status line - clean (only paid managers are in the app)
   const status = $('manager-status-line');
-  status.innerHTML = `<span class="text-xs text-[#888]">Separate FPL & UCL flows</span>`;
+  status.innerHTML = `<span class="text-xs text-[#888]">Full payment required for participation (no partials)</span>`;
+
+  // If not fully paid, show prominent pay prompt for new managers (only access to pay until full)
+  if (!currentManager.fplPaid || !currentManager.uclPaid) {
+    const payPrompt = document.createElement('div');
+    payPrompt.className = 'mb-6 p-4 bg-[#1c1c1c] border border-[#00ff85] rounded-2xl';
+    payPrompt.innerHTML = `
+      <div class="font-bold text-[#00ff85]">PAY FULL SEASON FEE (FPL + UCL) TO PARTICIPATE</div>
+      <div class="text-sm">No partial payments allowed. Pay the total to unlock full access, standings, lineup viewer, and eligibility. Login is only for payment now.</div>
+      <button onclick="initiateFullPayment()" class="mt-2 px-4 py-2 bg-[#00ff85] text-black font-bold rounded-xl">PAY FULL VIA PAYSTACK</button>
+    `;
+    const actionsDiv = document.querySelector('#dashboard .mb-6');
+    if (actionsDiv) actionsDiv.after(payPrompt);
+  }
 
   // Populate hero stats immediately from the data we already have
   renderManagerHero();
@@ -214,7 +227,7 @@ async function loadAdminOverview() {
               <button onclick="navigator.clipboard.writeText('${code}');this.textContent='copied!'" class="mt-1 text-[10px] px-2 py-0.5 bg-[#00ff85] text-black rounded">copy code</button>
             </div>`;
         } else {
-          actionHtml = `<button data-name="${(p.name || '').replace(/"/g, '&quot;')}" data-email="${(p.email || '').replace(/"/g, '&quot;')}" data-club="${(p.fplClubName || '').replace(/"/g, '&quot;')}"
+          actionHtml = `<button data-name="${(p.name || '').replace(/"/g, '&quot;')}" data-email="${(p.email || '').replace(/"/g, '&quot;')}" data-club="${(p.fplClubName || '').replace(/"/g, '&quot;')}" data-fplid="${(p.fplId || '').replace(/"/g, '&quot;')}"
                     onclick="approveJoinRequestFromBtn(this)" 
                     class="px-4 py-1.5 bg-[#00ff85] text-black font-bold rounded-xl text-sm hover:bg-white active:scale-[0.985]">Approve & Generate Code</button>`;
         }
@@ -313,7 +326,7 @@ async function loadAdminOverview() {
         </div>
         <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">PAID</div>
-          <div class="text-2xl font-black">FPL: ${data.paidFpl} &nbsp; UCL: ${data.paidUcl}</div>
+          <div class="text-2xl font-black">Full paid: ${Math.min(data.paidFpl, data.paidUcl) || 0} (both required)</div>
         </div>
         <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">CONFIRMED PAYMENTS</div>
@@ -344,7 +357,7 @@ async function loadAdminOverview() {
         <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
           <div class="text-xs uppercase tracking-widest text-[#888]">MANAGERS</div>
           <div class="text-5xl font-black mt-1">${data.totalManagers}</div>
-          <div class="text-sm mt-1">FPL paid: ${data.paidFpl} • UCL paid: ${data.paidUcl}</div>
+          <div class="text-sm mt-1">Fully paid (both): ${Math.min(data.paidFpl, data.paidUcl) || 0}</div>
         </div>
         <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
           <div class="text-xs uppercase tracking-widest text-[#888]">PAYMENTS</div>
@@ -434,7 +447,8 @@ async function approveJoinRequestFromBtn(btn) {
   const accessCode = prompt(`Access code for ${name} (edit if you want):`, suggested);
   if (!accessCode) return;
 
-  const fplId = prompt('Optional FPL team ID for lineup (leave blank for test):', '');
+  const suggestedFplId = btn ? btn.dataset.fplid || '' : '';
+  const fplId = prompt('FPL team ID (prefilled from request):', suggestedFplId);
 
   try {
     const res = await fetchJSON('/api/admin/add-manager', {
@@ -1213,6 +1227,14 @@ async function initiatePayment(comp) {
   }
 }
 
+function initiateFullPayment() {
+  // Full payment required for all seasons - no partials. Pay FPL then UCL.
+  alert('Full season payment required (FPL + UCL). Complete both to unlock participation.');
+  initiatePayment('fpl');
+  // Small delay for UX; real flow may combine or user completes sequentially
+  setTimeout(() => initiatePayment('ucl'), 1200);
+}
+
 function loadPaystackScript() {
   return new Promise((resolve, reject) => {
     if (window.PaystackPop) return resolve();
@@ -1694,24 +1716,47 @@ function switchLeague(mode) {
 
 // Simple request access (posts to server for admin to see)
 // Now asks for FPL club name to confirm league membership
-async function submitJoinRequest() {
-  const name = prompt('Your full name:');
-  if (!name) return;
-  const email = prompt('Your email (the one you will use to login):');
-  if (!email) return;
-  const fplClub = prompt('Your FPL club/team name (to verify you joined the D League):');
-  if (!fplClub) return;
-  const joinedFpl = confirm('Have you already joined the official FPL D League with the code provided?');
+// New seamless 2026 form (no sequential prompts)
+function showJoinModal() {
+  const m = $('join-modal');
+  if (m) m.classList.remove('hidden');
+  // prefill if possible
+}
+
+function closeJoinModal() {
+  const m = $('join-modal');
+  if (m) m.classList.add('hidden');
+}
+
+async function submitJoinForm(ev) {
+  ev.preventDefault();
+  const name = $('join-name').value.trim();
+  const email = $('join-email').value.trim();
+  const fplClub = $('join-club').value.trim();
+  const fplId = $('join-fplid').value.trim();
+  if (!name || !email || !fplClub || !fplId) {
+    alert('All fields including FPL ID required.');
+    return;
+  }
   try {
     const res = await fetch('/api/join-request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email, fplClubName: fplClub, fplLeagueJoined: joinedFpl, message: 'Requested via login page' })
+      body: JSON.stringify({ 
+        name, 
+        email, 
+        fplClubName: fplClub, 
+        fplId: fplId,
+        fplLeagueJoined: true, 
+        message: 'Requested via form' 
+      })
     });
     const data = await res.json();
-    alert(data.message || 'Request sent! Admin will verify your FPL club and send access code.');
+    closeJoinModal();
+    alert(data.message || 'Request sent! Admin will review and send access code via email or panel.');
   } catch (e) {
-    alert('Request logged locally. Please also message the commissioner directly with your FPL club name.');
+    closeJoinModal();
+    alert('Request logged. Please message the commissioner with your details if needed.');
   }
 }
 

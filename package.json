@@ -1,7 +1,7 @@
 {
   "name": "d-league-clubhouse",
   "version": "1.0.0",
-  "description": "D League Clubhouse — Premium manager-centric fantasy football community app for FPL, UCL Fantasy, H2H, cups, fines, and transparent payouts.",
+  "description": "D League Clubhouse — Premium manager-centric fantasy football community app for FPL + UCL. Full payment required (no partials), join form, admin cockpit, transparent payouts via Paystack webhooks.",
   "private": true,
   "type": "commonjs",
   "main": "server.js",

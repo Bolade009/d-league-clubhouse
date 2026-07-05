@@ -92,14 +92,14 @@
         <div><strong>1. Join the official FPL league</strong> — Ask the commissioner for the <strong>league code</strong> or join link. Go to <a href="https://fantasy.premierleague.com" target="_blank" class="underline text-[#00ff85]">fantasy.premierleague.com</a> and join using the code.</div>
         <div><strong>2. Get your Clubhouse invite</strong> — The admin adds you and sends your <strong>email + Access Code</strong>.</div>
         <div><strong>3. Login here</strong> using the email + code.</div>
-        <div><strong>4. Pay</strong> the season fees (FPL + UCL) via the buttons after login.</div>
+        <div><strong>4. Pay FULL</strong> (FPL + UCL — no partial payments) via the buttons after login. You must pay both to participate.</div>
         <div><strong>5. Sync &amp; play</strong> — Use Lineup Viewer (sees your real FPL squad), standings, money, etc.</div>
       </div>
       <div class="flex gap-2 mt-3">
         <button onclick="showJoinGuideModal()" class="flex-1 py-2 text-xs rounded-xl border border-[#444] hover:bg-[#222] text-[#00ff85]">
           FULL WALKTHROUGH
         </button>
-        <button onclick="submitJoinRequest()" class="flex-1 py-2 text-xs rounded-xl bg-[#222] hover:bg-[#2a2a2a] text-[#00ff85]">
+        <button onclick="showJoinModal()" class="flex-1 py-2 text-xs rounded-xl bg-[#222] hover:bg-[#2a2a2a] text-[#00ff85]">
           REQUEST ACCESS
         </button>
       </div>
@@ -385,6 +385,39 @@
   <div id="modal" onclick="if (event.target.id === 'modal') closeModal()" class="hidden fixed inset-0 bg-black/70 backdrop-blur z-[70] flex items-center justify-center p-4">
     <div onclick="event.stopImmediatePropagation()" class="bg-[#1c1c1c] w-full max-w-xl rounded-3xl border border-[#333] p-6" id="modal-content">
       <!-- dynamic -->
+    </div>
+  </div>
+
+  <!-- Join Request Form Modal (2026 seamless form, not sequential prompts) -->
+  <div id="join-modal" onclick="if (event.target.id === 'join-modal') closeJoinModal()" class="hidden fixed inset-0 bg-black/70 backdrop-blur z-[80] flex items-center justify-center p-4">
+    <div onclick="event.stopImmediatePropagation()" class="bg-[#1c1c1c] w-full max-w-md rounded-3xl border border-[#00ff85] p-6">
+      <div class="font-bold text-xl mb-4 text-[#00ff85]">Request Access - D League Clubhouse</div>
+      <form id="join-form" onsubmit="submitJoinForm(event)">
+        <div class="space-y-3">
+          <div>
+            <label class="text-xs text-[#888]">Full Name</label>
+            <input id="join-name" type="text" required class="w-full bg-[#111] border border-[#444] rounded-xl px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label class="text-xs text-[#888]">Email (for login & access code)</label>
+            <input id="join-email" type="email" required class="w-full bg-[#111] border border-[#444] rounded-xl px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label class="text-xs text-[#888]">Your FPL Club / Team Name</label>
+            <input id="join-club" type="text" required class="w-full bg-[#111] border border-[#444] rounded-xl px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label class="text-xs text-[#888]">Your FPL Team ID (for lineup & standings sync)</label>
+            <input id="join-fplid" type="text" placeholder="e.g. 1234567" required class="w-full bg-[#111] border border-[#444] rounded-xl px-3 py-2 text-sm">
+            <div class="text-[10px] text-[#666]">Find in FPL app: My Team > Share > Team ID or URL</div>
+          </div>
+        </div>
+        <div class="mt-4 flex gap-2">
+          <button type="button" onclick="closeJoinModal()" class="flex-1 py-2 border border-[#333] rounded-xl text-sm">Cancel</button>
+          <button type="submit" class="flex-1 py-2 bg-[#00ff85] text-black font-bold rounded-xl text-sm">SUBMIT REQUEST</button>
+        </div>
+      </form>
+      <div class="text-[10px] text-[#666] mt-2">Admin will review & send access code. Full payment required after login.</div>
     </div>
   </div>
 

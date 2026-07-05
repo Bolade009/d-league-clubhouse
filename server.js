@@ -310,12 +310,13 @@ async function notifyAdminOfJoinRequest(join) {
   console.log("  Name:   ", join.name);
   console.log("  Email:  ", join.email);
   console.log("  FPL Club:", join.fplClubName);
+  console.log("  FPL ID: ", join.fplId || 'not provided');
   console.log("  Time:   ", new Date().toISOString());
   console.log("Use /api/admin/add-manager (with your admin token or login as admin) to generate code + add them.");
   console.log("========================================\n");
 
   const subject = "D League Clubhouse - Access Request Received";
-  const text = `Hi ${join.name},\n\nWe received your join request for FPL club "${join.fplClubName}".\nThe commissioner will verify and email you the access code + instructions shortly.\n\nThank you,\nD League Clubhouse`;
+  const text = `Hi ${join.name},\n\nWe received your join request for FPL club "${join.fplClubName}" (FPL ID: ${join.fplId || 'N/A'}).\nThe commissioner will verify and email you the access code + instructions shortly.\n\nThank you,\nD League Clubhouse`;
 
   // Send to the requester (confirmation) + BCC to admin
   if (mailer) {
@@ -1135,6 +1136,13 @@ async function ensureAdminManager() {
 
   const existing = s.managers.find(m => m.email && m.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
   if (existing) {
+    // Ensure admin has no team (unless they registered separately)
+    if (existing.fplClubName || existing.fpl?.teamId || existing.ucl?.teamId) {
+      existing.fplClubName = "";
+      existing.fpl = { teamId: "", teamName: "" };
+      existing.ucl = { teamId: "", teamName: "" };
+      await persistStore();
+    }
     // Make sure the code matches what we want for the admin
     if (existing.accessCode !== ADMIN_ACCESS_CODE) {
       existing.accessCode = ADMIN_ACCESS_CODE;
@@ -1154,7 +1162,7 @@ async function ensureAdminManager() {
     fpl: { teamId: "", teamName: "" },
     ucl: { teamId: "", teamName: "" },
     payoutDetails: "",
-    fplClubName: "Bolade's Brigade",
+    fplClubName: "",  // Admin has no team/club unless they explicitly register as a competing manager using this email
     createdAt: now,
     isAdmin: true
   };
@@ -1205,12 +1213,12 @@ app.post("/api/auth/login", async (req, res) => {
 
 app.post("/api/join-request", async (req, res) => {
   if (DEMO_MODE) await seedDemoData();
-  const { name, email, fplClubName, fplLeagueJoined, message } = req.body || {};
+  const { name, email, fplClubName, fplId, fplLeagueJoined, message } = req.body || {};
   if (!name || !email || !fplClubName) return res.status(400).json({ error: "Name, email and FPL club name required (to confirm league join)" });
 
   const s = await loadStore();
-  await logEvent("join_request", { name, email, fplClubName, fplLeagueJoined: !!fplLeagueJoined, message });
-  await notifyAdminOfJoinRequest({ name, email, fplClubName });
+  await logEvent("join_request", { name, email, fplClubName, fplId: fplId || '', fplLeagueJoined: !!fplLeagueJoined, message });
+  await notifyAdminOfJoinRequest({ name, email, fplClubName, fplId: fplId || '' });
 
   // Real emails: the console above shows the details. Admin checks /api/admin/overview or events.
   // In future: wire nodemailer with your SMTP (Gmail app password, SendGrid etc).
