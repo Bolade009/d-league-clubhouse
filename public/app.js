@@ -180,10 +180,11 @@ async function loadAdminOverview() {
       if (m.email) managersByEmail[m.email.toLowerCase()] = m;
     });
 
-    // Show recent join requests - they stay visible even after approval (historical)
+    // Join requests: always show recent ones (historical, never hide previous)
+    // They stay until events age out. Status shown if approved.
     const joinRequests = events
       .filter(e => e.type === 'join_request')
-      .slice(0, 15); // more history
+      .slice(0, 20); // keep more history visible
 
     let joinsHtml = '';
     if (joinRequests.length) {
@@ -192,27 +193,33 @@ async function loadAdminOverview() {
         const email = (p.email || '').toLowerCase();
         const when = (e.at || '').slice(11,16);
         const existing = managersByEmail[email];
-        let action = '';
+        let actionHtml = '';
         if (existing) {
           const code = existing.accessCode || '—';
-          action = `<div class="text-right"><span class="text-[#00ff85] font-bold">APPROVED</span><br><span class="font-mono text-xs">${code}</span> <button onclick="navigator.clipboard.writeText('${code}');alert('Code copied!')" class="ml-1 text-[10px] px-1 bg-[#333] rounded">copy</button></div>`;
+          actionHtml = `
+            <div class="text-right">
+              <div><span class="px-2 py-0.5 text-xs rounded bg-[#003322] text-[#00ff85]">APPROVED</span></div>
+              <div class="font-mono text-sm mt-1">${code}</div>
+              <button onclick="navigator.clipboard.writeText('${code}');this.textContent='copied!'" class="mt-1 text-[10px] px-2 py-0.5 bg-[#00ff85] text-black rounded">copy code</button>
+            </div>`;
         } else {
-          action = `<button data-name="${(p.name || '').replace(/"/g, '&quot;')}" data-email="${(p.email || '').replace(/"/g, '&quot;')}" data-club="${(p.fplClubName || '').replace(/"/g, '&quot;')}"
+          actionHtml = `<button data-name="${(p.name || '').replace(/"/g, '&quot;')}" data-email="${(p.email || '').replace(/"/g, '&quot;')}" data-club="${(p.fplClubName || '').replace(/"/g, '&quot;')}"
                     onclick="approveJoinRequestFromBtn(this)" 
-                    class="px-4 py-1 bg-[#00ff85] text-black font-bold rounded text-sm hover:bg-white">Approve</button>`;
+                    class="px-4 py-1.5 bg-[#00ff85] text-black font-bold rounded-xl text-sm hover:bg-white active:scale-[0.985]">Approve & Generate Code</button>`;
         }
         return `
-          <div class="flex justify-between items-start bg-[#1c1c1c] border border-[#333] p-3 rounded-xl mb-2">
-            <div>
-              <div class="font-semibold">${p.name || 'Unknown'} <span class="text-xs text-[#888]">• ${when}</span></div>
-              <div class="text-sm">${p.email || ''}</div>
-              <div class="text-[#00ff85] font-mono text-sm">${p.fplClubName || ''}</div>
+          <div class="flex justify-between gap-4 items-start bg-[#1c1c1c] border border-[#333] p-4 rounded-2xl mb-2">
+            <div class="flex-1 min-w-0">
+              <div class="font-semibold text-base">${p.name || 'Unknown'}</div>
+              <div class="text-sm text-[#00ff85] truncate">${p.email || ''}</div>
+              <div class="text-sm font-mono text-[#888] mt-0.5">${p.fplClubName || ''}</div>
+              <div class="text-[10px] text-[#666] mt-1">${when}</div>
             </div>
-            <div class="text-right min-w-[120px]">${action}</div>
+            <div class="flex-shrink-0">${actionHtml}</div>
           </div>`;
       }).join('');
     } else {
-      joinsHtml = '<div class="text-[#666] p-3">No join requests in recent history.</div>';
+      joinsHtml = '<div class="text-[#666] p-4 bg-[#1c1c1c] border border-[#333] rounded-2xl">No join requests in history.</div>';
     }
 
     const otherEvents = events.filter(e => e.type !== 'join_request').slice(0, 5);
@@ -226,27 +233,64 @@ async function loadAdminOverview() {
       return `<div class="text-[#aaa] py-0.5 text-[10px]">${e.type} — ${detail} <span class="text-[#666]">(${when})</span></div>`;
     }).join('') || '<div class="text-[#666]">No other recent activity</div>';
 
-    // Challenges - table style for better management
+    // Challenges as cards
     let challengesHtml = (data.challenges || []).map(ch => {
-      const statusColor = ch.status === 'open' ? '#00ff85' : (ch.status === 'cancelled' ? '#ff6b6b' : '#888');
+      const status = ch.status;
+      let color = '#888';
+      if (status === 'open') color = '#00ff85';
+      if (status === 'cancelled') color = '#ff6b6b';
       let actions = '';
-      if (ch.status === 'open') {
-        actions = `<button onclick="cancelChallenge('${ch.id}', '${ch.title.replace(/'/g, "\\'")}')" class="text-[10px] px-2 py-0.5 bg-red-900 hover:bg-red-800 rounded">Cancel</button> <button onclick="forceSettleChallenge('${ch.id}')" class="text-[10px] px-2 py-0.5 bg-[#00ff85] text-black rounded">Force Settle</button>`;
+      if (status === 'open') {
+        actions = `<div class="mt-2 flex gap-2"><button onclick="cancelChallenge('${ch.id}', '${ch.title.replace(/'/g,'\\'')}')" class="text-xs px-2 py-1 bg-red-900 hover:bg-red-800 rounded">Cancel</button><button onclick="forceSettleChallenge('${ch.id}')" class="text-xs px-2 py-1 bg-[#00ff85] text-black rounded">Force Settle</button></div>`;
       }
-      return `<tr class="border-b border-[#333]"><td class="py-1 pr-2">${ch.title}</td><td class="py-1 pr-2 text-right">₦${ch.prize}</td><td class="py-1 text-center" style="color:${statusColor}">${ch.status}</td><td class="py-1 pl-2 text-right">${actions}</td></tr>`;
-    }).join('') || '<tr><td colspan="4" class="py-2 text-[#666]">No challenges</td></tr>';
+      return `
+        <div class="bg-[#1c1c1c] border border-[#333] p-3 rounded-2xl mb-2">
+          <div class="flex justify-between">
+            <div>
+              <div class="font-medium">${ch.title}</div>
+              <div class="text-xs" style="color:${color}">${status.toUpperCase()} • ₦${ch.prize}</div>
+              ${ch.winner ? `<div class="text-xs text-[#888]">Winner: ${ch.winner}</div>` : ''}
+            </div>
+          </div>
+          ${actions}
+        </div>`;
+    }).join('') || '<div class="text-[#666] p-4">No challenges</div>';
 
-    // Sponsored
+    // Sponsored as cards
     let sponsorsHtml = (data.sponsorships || []).map(sp => {
-      return `<tr class="border-b border-[#333]"><td class="py-1">${sp.sponsor || 'Sponsor'} → ${sp.target || 'general'}</td><td class="py-1 text-right">₦${sp.amount}</td><td class="py-1 pl-2 text-right"><button onclick="cancelSponsorship('${sp.id}')" class="text-[10px] px-2 py-0.5 bg-red-900 hover:bg-red-800 rounded">Cancel</button></td></tr>`;
-    }).join('') || '<tr><td colspan="3" class="py-2 text-[#666]">No active sponsorships</td></tr>';
+      return `
+        <div class="bg-[#1c1c1c] border border-[#333] p-3 rounded-2xl mb-2 flex justify-between items-center">
+          <div>
+            <div class="font-medium">${sp.sponsor || 'Sponsor'}</div>
+            <div class="text-xs text-[#888]">₦${sp.amount} for ${sp.target || 'general'}</div>
+          </div>
+          <button onclick="cancelSponsorship('${sp.id}')" class="text-xs px-2 py-1 bg-red-900 hover:bg-red-800 rounded">Cancel</button>
+        </div>`;
+    }).join('') || '<div class="text-[#666] p-4">No active sponsorships</div>';
 
-    // Managers table with easy copy
+    // Managers as clean cards with copy code
     let mgrsHtml = (data.managers || []).map(m => {
-      const paid = (m.fplPaid ? '✅ FPL' : '❌ FPL') + ' ' + (m.uclPaid ? '✅ UCL' : '❌ UCL');
+      const paid = [];
+      if (m.fplPaid) paid.push('FPL');
+      if (m.uclPaid) paid.push('UCL');
+      const paidStr = paid.length ? paid.join(' + ') : 'Not paid';
       const code = m.accessCode || '—';
-      return `<tr class="border-b border-[#333] text-sm"><td class="py-1.5 font-medium">${m.displayName}</td><td class="py-1.5 text-[#888]">${m.email}</td><td class="py-1.5">${m.fplClubName || '—'}</td><td class="py-1.5 text-right font-mono">${paid}</td><td class="py-1.5"><button onclick="navigator.clipboard.writeText('${code}'); alert('Copied: ${code}')" class="text-xs bg-[#222] hover:bg-[#333] px-2 py-0.5 rounded">${code}</button></td></tr>`;
-    }).join('') || '<tr><td colspan="5" class="py-3 text-[#666]">No managers yet</td></tr>';
+      const isAdmin = m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com';
+      const club = m.fplClubName || (isAdmin ? 'Admin (no team)' : '—');
+      return `
+        <div class="flex justify-between items-center bg-[#1c1c1c] border border-[#333] p-3 rounded-2xl mb-2">
+          <div>
+            <div class="font-semibold">${m.displayName} ${isAdmin ? '<span class="text-xs bg-[#003322] text-[#00ff85] px-1 rounded">ADMIN</span>' : ''}</div>
+            <div class="text-xs text-[#888]">${m.email}</div>
+            <div class="text-xs text-[#00ff85] mt-0.5">${club}</div>
+            <div class="text-xs text-[#666]">${paidStr}</div>
+          </div>
+          <div class="text-right">
+            <div class="font-mono text-sm">${code}</div>
+            <button onclick="navigator.clipboard.writeText('${code}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500)" class="mt-1 text-[10px] px-3 py-0.5 bg-[#222] hover:bg-[#333] rounded">Copy</button>
+          </div>
+        </div>`;
+    }).join('') || '<div class="text-[#666] p-4">No managers</div>';
 
     // Nice stats cards
     const statsHtml = `
@@ -274,7 +318,7 @@ async function loadAdminOverview() {
       <div class="flex justify-between items-center mb-4 pb-3 border-b border-[#222]">
         <div>
           <span class="font-black text-4xl text-[#00ff85] tracking-[-1.5px]">ADMIN COCKPIT</span>
-          <div class="text-xs text-[#888] mt-0.5">Live from disk • bolade.oladejo@gmail.com</div>
+          <div class="text-xs text-[#888] mt-0.5">Live from disk • bolade.oladejo@gmail.com • Admin has no team</div>
         </div>
         <div class="flex gap-2">
           <button onclick="loadAdminOverview()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">REFRESH ALL</button>
@@ -307,72 +351,51 @@ async function loadAdminOverview() {
         </div>
       </div>
 
-      <!-- Main Management Grid -->
-      <div class="grid grid-cols-1 xl:grid-cols-5 gap-4">
-        
-        <!-- Join Requests - Historical, never hides -->
-        <div class="xl:col-span-3 bg-[#161616] border border-[#222] rounded-3xl p-5">
-          <div class="flex justify-between items-center mb-3">
-            <div class="font-semibold text-xl">Join Requests <span class="text-sm text-[#888]">(${joinRequests.length} recent)</span></div>
-            <div class="text-xs text-[#888]">These stay forever for your records</div>
-          </div>
-          <div class="max-h-[280px] overflow-auto pr-2 space-y-2">
+      <!-- Main Management Grid - clean cards -->
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <!-- Join Requests - Historical, never hidden -->
+        <div class="bg-[#161616] border border-[#222] rounded-3xl p-5">
+          <div class="font-semibold text-xl mb-3">JOIN REQUESTS (History - never hidden)</div>
+          <div class="max-h-[320px] overflow-auto space-y-2 pr-1">
             ${joinsHtml}
           </div>
         </div>
 
-        <!-- Quick Managers -->
-        <div class="xl:col-span-2 bg-[#161616] border border-[#222] rounded-3xl p-5">
-          <div class="font-semibold text-xl mb-3">Managers &amp; Codes</div>
-          <div class="max-h-[280px] overflow-auto text-sm">
-            <table class="w-full">
-              <thead class="text-xs text-[#888]">
-                <tr><th class="text-left pb-2">Name</th><th class="text-left pb-2">Email</th><th class="text-right pb-2">Code</th></tr>
-              </thead>
-              <tbody>
-                ${mgrsHtml}
-              </tbody>
-            </table>
+        <!-- Managers with codes -->
+        <div class="bg-[#161616] border border-[#222] rounded-3xl p-5">
+          <div class="font-semibold text-xl mb-3">MANAGERS &amp; ACCESS CODES</div>
+          <div class="max-h-[320px] overflow-auto space-y-2">
+            ${mgrsHtml}
           </div>
-          <div class="text-xs text-[#666] mt-2">Click any code button to copy. All managers listed.</div>
+          <div class="text-xs text-[#666] mt-2">Admin explicitly has empty club (no team). Codes shown for easy copy.</div>
         </div>
 
         <!-- Challenges -->
-        <div class="xl:col-span-3 bg-[#161616] border border-[#222] rounded-3xl p-5">
-          <div class="font-semibold text-xl mb-3">Challenges Management</div>
-          <div class="max-h-[220px] overflow-auto">
-            <table class="w-full text-sm">
-              <thead class="text-xs text-[#888]"><tr><th class="text-left">Title</th><th class="text-right">Prize</th><th class="text-center">Status</th><th class="text-right">Action</th></tr></thead>
-              <tbody>${challengesHtml}</tbody>
-            </table>
+        <div class="bg-[#161616] border border-[#222] rounded-3xl p-5">
+          <div class="font-semibold text-xl mb-3">CHALLENGES</div>
+          <div class="max-h-[240px] overflow-auto space-y-2">
+            ${challengesHtml}
           </div>
         </div>
 
         <!-- Sponsored -->
-        <div class="xl:col-span-2 bg-[#161616] border border-[#222] rounded-3xl p-5">
-          <div class="font-semibold text-xl mb-3">Sponsored Awards</div>
-          <div class="max-h-[220px] overflow-auto">
-            <table class="w-full text-sm">
-              <thead class="text-xs text-[#888]"><tr><th class="text-left">Sponsor</th><th class="text-right">Amount</th><th class="text-right">Action</th></tr></thead>
-              <tbody>${sponsorsHtml}</tbody>
-            </table>
+        <div class="bg-[#161616] border border-[#222] rounded-3xl p-5">
+          <div class="font-semibold text-xl mb-3">SPONSORED AWARDS</div>
+          <div class="max-h-[240px] overflow-auto space-y-2">
+            ${sponsorsHtml}
           </div>
         </div>
-
       </div>
 
-      <!-- Activity -->
       <div class="mt-5 bg-[#161616] border border-[#222] rounded-3xl p-5">
-        <div class="font-semibold text-xl mb-3">Activity Log</div>
-        <div class="max-h-[160px] overflow-auto text-xs bg-black/30 p-4 rounded-2xl font-mono leading-snug">
+        <div class="font-semibold text-xl mb-3">ACTIVITY LOG</div>
+        <div class="max-h-[140px] overflow-auto text-xs bg-black/40 p-4 rounded-2xl font-mono">
           ${otherHtml}
         </div>
       </div>
 
-      <div class="mt-4 text-center">
-        <div class="inline-flex items-center gap-2 text-xs text-[#666] bg-[#161616] px-4 py-1 rounded-full">
-          Persistent disk • All data safe across deploys • Last updated: ${new Date().toLocaleTimeString()}
-        </div>
+      <div class="mt-4 text-center text-xs text-[#666]">
+        Persistent on Render disk • Previous join requests and history preserved • Admin has no team
       </div>
     `;
 

@@ -14,7 +14,8 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install ALL dependencies (including devDependencies for Tailwind build)
-RUN npm ci
+# Use --include=dev to avoid "npm warn config production" from Render's NODE_ENV=production
+RUN npm ci --include=dev
 
 # Copy the rest of the code
 COPY . .
