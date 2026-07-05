@@ -1044,6 +1044,38 @@ app.post("/api/join-request", async (req, res) => {
   res.json({ ok: true, message: "Request received! The league admin will verify your FPL club name '" + fplClubName + "' and send your access code shortly." });
 });
 
+// Admin endpoint to add a new manager (protected with SYNC_TOKEN as X-Admin-Token for simplicity)
+app.post("/api/admin/add-manager", async (req, res) => {
+  if (req.headers['x-admin-token'] !== SYNC_TOKEN && !DEMO_MODE) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { name, email, accessCode, fplId, uclId, fplClubName, payoutDetails } = req.body || {};
+  if (!name || !email || !accessCode) return res.status(400).json({ error: "name, email, accessCode required" });
+
+  const s = await loadStore();
+  if (s.managers.find(m => m.email.toLowerCase() === email.toLowerCase())) {
+    return res.status(409).json({ error: "Manager with this email already exists" });
+  }
+
+  const id = generateId("mgr");
+  const mgr = {
+    id,
+    displayName: name,
+    email,
+    accessCode,
+    fpl: { teamId: fplId || `test-${id.slice(-6)}`, teamName: fplClubName || `${name} FC` },
+    ucl: { teamId: uclId || `ucl-${id.slice(-6)}`, teamName: fplClubName || `${name} United` },
+    payoutDetails: payoutDetails || `058:0001234567:${name}`,
+    fplClubName: fplClubName || `${name} FC`,
+    createdAt: nowISO()
+  };
+  s.managers.push(mgr);
+  await persistStore();
+  await logEvent("manager_added", { email, name, fplClubName, by: "admin" });
+
+  res.json({ ok: true, manager: { id, displayName: name, email, accessCode }, message: "Manager added. Share the accessCode with them." });
+});
+
 app.get("/api/me", async (req, res) => {
   const token = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
   const decoded = verifyToken(token);
