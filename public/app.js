@@ -332,10 +332,13 @@ async function loadAdminOverview() {
       const code = m.accessCode || '—';
       const isAdmin = m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com';
       const club = m.fplClubName || (isAdmin ? 'Admin (no team)' : '—');
+      const isRecovered = !!(m._recoveredFromPayments || m._restored || (m.email && m.email.includes('recovered-')));
+      const recoveredBadge = isRecovered ? '<span class="text-[9px] bg-orange-900 text-orange-300 px-1 rounded ml-1">RECOVERED - RECLAIM</span>' : '';
+      const reclaimBtn = isRecovered ? `<button onclick="reclaimPaidManager('${m.id}', '${(m.displayName||'').replace(/'/g,'\\\'')}', '${(m.fplClubName||'').replace(/'/g,'\\\'')}')" class="mt-1 block text-[9px] px-2 py-0.5 bg-orange-600 hover:bg-orange-500 text-white rounded">Reclaim + fix real details</button>` : '';
       return `
         <div class="flex justify-between items-center bg-[#1c1c1c] border border-[#333] p-3 rounded-2xl mb-2">
           <div>
-            <div class="font-semibold">${m.displayName} ${isAdmin ? '<span class="text-xs bg-[#003322] text-[#00ff85] px-1 rounded">ADMIN</span>' : ''}</div>
+            <div class="font-semibold">${m.displayName} ${isAdmin ? '<span class="text-xs bg-[#003322] text-[#00ff85] px-1 rounded">ADMIN</span>' : ''} ${recoveredBadge}</div>
             <div class="text-xs text-[#888]">${m.email}</div>
             <div class="text-xs text-[#00ff85] mt-0.5">${club}</div>
             <div class="text-xs text-[#666]">FPL: ${fplStatus} | UCL: ${uclStatus}</div>
@@ -343,6 +346,7 @@ async function loadAdminOverview() {
           <div class="text-right">
             <div class="font-mono text-sm">${code}</div>
             <button onclick="navigator.clipboard.writeText('${code}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500)" class="mt-1 text-[10px] px-3 py-0.5 bg-[#222] hover:bg-[#333] rounded">Copy Code</button>
+            ${reclaimBtn}
           </div>
         </div>`;
     }).join('') || '<div class="text-[#666] p-4">No managers</div>';
@@ -565,6 +569,30 @@ async function promptAddManager() {
     loadAdminOverview();
   } catch (e) {
     alert('Add failed: ' + e.message);
+  }
+}
+
+async function reclaimPaidManager(managerId, currentName, currentClub) {
+  if (!managerId) return;
+  const name = prompt('Real display name for this paid manager:', currentName || '');
+  if (!name) return;
+  const email = prompt('Real email they will use to login:');
+  if (!email) return;
+  const suggestedCode = (name.toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,6) + Date.now().toString().slice(-4));
+  const accessCode = prompt('Access code to give them (they will use this to login):', suggestedCode);
+  if (!accessCode) return;
+  const fplClubName = prompt('FPL club / team name:', currentClub || name + ' FC') || '';
+  const fplId = prompt('Their FPL team ID (optional but recommended):') || '';
+
+  try {
+    const res = await fetchJSON('/api/admin/restore-paid-manager', {
+      method: 'POST',
+      body: JSON.stringify({ managerId, name, email, accessCode, fplClubName, fplId })
+    });
+    alert('✅ Paid record reclaimed!\n\n' + (res.message || '') + '\n\nThey can now log in with the new email + code.\nTheir payments, scores and winnings are preserved.');
+    loadAdminOverview();
+  } catch (e) {
+    alert('Reclaim failed: ' + (e.message || e));
   }
 }
 

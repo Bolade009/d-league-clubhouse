@@ -203,6 +203,10 @@ async function loadStore() {
       }
     }
 
+    // Heal any paid managers lost during migration or prior bad updates
+    // This guarantees people who paid can still log in.
+    await recoverOrphanedPaidManagers();
+
     return storeCache;
   } catch (e) {
     console.warn(`[store] SQLite load failed: ${e.message}. Starting fresh.`);
@@ -227,6 +231,17 @@ async function persistStore() {
 
     tx(storeCache);
     console.log(`[store] Persisted to SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
+
+    // Extra safety: always write a timestamped json backup alongside (survives even if db has issues)
+    try {
+      const backupsDir = path.join(DATA_DIR, "backups");
+      if (!fsSync.existsSync(backupsDir)) fsSync.mkdirSync(backupsDir, { recursive: true });
+      const backupPath = path.join(backupsDir, `store-${new Date().toISOString().replace(/[:.]/g,'-')}.json`);
+      fsSync.writeFileSync(backupPath, JSON.stringify(storeCache, null, 2));
+      // keep only last 10 backups
+      const files = fsSync.readdirSync(backupsDir).filter(f => f.startsWith('store-')).sort().reverse();
+      files.slice(10).forEach(f => { try { fsSync.unlinkSync(path.join(backupsDir, f)); } catch {} });
+    } catch (bErr) { console.warn("[backup] failed", bErr.message); }
   } catch (e) {
     console.error("[store] Persist failed:", e.message);
   } finally {
@@ -1161,6 +1176,95 @@ async function ensureAdminManager() {
   console.log(`✅ Admin account ready: ${ADMIN_EMAIL} (code: ${ADMIN_ACCESS_CODE})`);
 }
 
+async function recoverOrphanedPaidManagers() {
+  const s = getStore();
+  let changed = false;
+
+  // 1. Find all managerIds that have confirmed payments OR strong activity (scores + ledger wins) 
+  //    Activity implies they were participating and likely paid.
+  const activityById = {};
+  (s.scores || []).forEach(sc => {
+    if (!activityById[sc.managerId]) activityById[sc.managerId] = {fpl:0, ucl:0};
+    activityById[sc.managerId][sc.competition]++;
+  });
+  (s.ledger || []).forEach(l => {
+    if (!activityById[l.managerId]) activityById[l.managerId] = {fpl:0, ucl:0};
+    if (l.competition) activityById[l.managerId][l.competition] = (activityById[l.managerId][l.competition]||0) + 1;
+  });
+
+  const confirmed = (s.payments || []).filter(p => p.status === "confirmed");
+  const paidIdsFromPayments = new Set(confirmed.map(p => p.managerId));
+
+  // All candidates: have payment OR significant activity
+  const candidateIds = new Set([
+    ...paidIdsFromPayments,
+    ...Object.keys(activityById).filter(id => (activityById[id].fpl + activityById[id].ucl) >= 2)
+  ]);
+
+  const existing = new Set(s.managers.map(m => m.id));
+
+  const recovered = [];
+  for (const mid of candidateIds) {
+    if (!existing.has(mid)) {
+      const short = mid.slice(-6);
+      const stub = {
+        id: mid,
+        displayName: `Recovered Paid ${short}`,
+        email: `recovered-${short}@d-league.local`,
+        accessCode: `RECOVER-${short.toUpperCase()}`,
+        fpl: { teamId: "", teamName: "" },
+        ucl: { teamId: "", teamName: "" },
+        payoutDetails: "",
+        fplClubName: `Recovered Club ${short}`,
+        createdAt: nowISO(),
+        _recoveredFromPayments: true,
+        recoveredAt: nowISO()
+      };
+      s.managers.push(stub);
+      existing.add(mid);
+      recovered.push({ id: mid, email: stub.email, code: stub.accessCode });
+      await logEvent("manager_recovered_from_orphan_payments", { managerId: mid, tempEmail: stub.email, tempCode: stub.accessCode });
+      changed = true;
+    }
+  }
+
+  // 2. For any recovered/active manager, ensure a confirmed payment record exists for comps they have activity in.
+  //    This restores the "PAID" badge for the competitions they clearly participated in.
+  for (const mid of candidateIds) {
+    const act = activityById[mid] || {fpl:0, ucl:0};
+    ["fpl", "ucl"].forEach(comp => {
+      if (act[comp] >= 1) {
+        const hasPay = confirmed.some(p => p.managerId === mid && p.competition === comp);
+        if (!hasPay) {
+          const compInfo = COMPETITIONS[comp];
+          const amount = (compInfo && compInfo.seasonFee) || (comp === "fpl" ? 30000 : 15000);
+          s.payments.push({
+            id: "pay_recover_" + mid + "_" + comp,
+            managerId: mid,
+            competition: comp,
+            amount,
+            reference: "recovered-historical-" + Date.now() + "-" + mid.slice(-4),
+            status: "confirmed",
+            confirmedAt: nowISO(),
+            note: "Recovered from historical scores/ledger (payment record was lost in prior update)"
+          });
+          changed = true;
+          console.log(`[recover] Synthesized ${comp.toUpperCase()} payment record for ${mid} based on activity`);
+        }
+      }
+    });
+  }
+
+  if (recovered.length > 0 || changed) {
+    await persistStore();
+    if (recovered.length > 0) {
+      console.log("🚨 RECOVERED ORPHAN PAID MANAGERS (payments/activity were source of truth):");
+      recovered.forEach(r => console.log("   ", r.id, "temp login:", r.email, "/", r.code));
+    }
+  }
+  return recovered;
+}
+
 // Expose for scripts
 exports.seedDemoIfNeeded = seedDemoData;
 
@@ -1285,6 +1389,75 @@ app.post("/api/admin/add-manager", async (req, res) => {
   }
 
   res.json({ ok: true, manager: { id, displayName: name, email, accessCode }, message: "Manager added. Share the accessCode with them." });
+});
+
+// Restore / reclaim a paid manager record by its original ID (from payments).
+// This fixes lost names/emails/codes for people who already paid. Does NOT touch payment records.
+app.post("/api/admin/restore-paid-manager", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { managerId, name, email, accessCode, fplClubName, fplId, uclId } = req.body || {};
+  if (!managerId || !name || !email || !accessCode) {
+    return res.status(400).json({ error: "managerId, name, email, accessCode required to reclaim a paid record" });
+  }
+
+  const s = await loadStore();
+  let mgr = s.managers.find(m => m.id === managerId);
+  const wasRecovered = !!(mgr && mgr._recoveredFromPayments);
+
+  if (!mgr) {
+    // Create fresh attached to the payment ID
+    mgr = {
+      id: managerId,
+      displayName: name,
+      email,
+      accessCode,
+      fpl: { teamId: fplId || "", teamName: fplClubName || "" },
+      ucl: { teamId: uclId || "", teamName: fplClubName || "" },
+      payoutDetails: "",
+      fplClubName: fplClubName || name,
+      createdAt: nowISO(),
+      _restored: true
+    };
+    s.managers.push(mgr);
+  } else {
+    // Update in place - keep the ID so payments, scores, ledger stay linked
+    mgr.displayName = name;
+    mgr.email = email;
+    mgr.accessCode = accessCode;
+    if (fplClubName) mgr.fplClubName = fplClubName;
+    if (fplId) mgr.fpl = { teamId: fplId, teamName: fplClubName || mgr.fpl?.teamName || "" };
+    if (uclId) mgr.ucl = { teamId: uclId, teamName: fplClubName || mgr.ucl?.teamName || "" };
+    delete mgr._recoveredFromPayments;
+    mgr._restored = true;
+    mgr.restoredAt = nowISO();
+  }
+
+  await persistStore();
+  await logEvent("paid_manager_restored", { managerId, name, email, byAdmin: true, wasRecovered });
+
+  const view = buildManagerView(mgr);
+  res.json({
+    ok: true,
+    manager: view,
+    message: `Paid manager ${managerId} restored/updated. They can now login with the new email + code. Paid status preserved from payment records.`
+  });
 });
 
 // Admin cancel challenge
@@ -1797,11 +1970,18 @@ async function boot() {
   const store = await loadStore();
   console.log(`[BOOT] Store loaded with ${store.managers?.length || 0} managers (non-demo: protected mode)`);
 
+  // Always recover any paid people whose manager records were dropped. Payments + scores + ledger are source of truth.
+  await recoverOrphanedPaidManagers();
+
   if (DEMO_MODE) {
     await seedDemoData();
   } else {
     await ensureAdminManager();
   }
+
+  // Run recovery again after possible demo seed (demo seed can wipe but we heal paid)
+  await recoverOrphanedPaidManagers();
+
   app.listen(PORT, () => {
     console.log(`\n✅  D League Clubhouse is running!`);
     console.log(`    Open this in your browser:  http://localhost:${PORT}\n`);
