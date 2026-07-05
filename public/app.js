@@ -112,41 +112,21 @@ function showDashboard() {
     </div>
   `;
 
+  renderPayAccess();
+
   $('welcome-line').textContent = `WELCOME BACK, MANAGER • ${new Date().getFullYear()}`;
   $('manager-name').textContent = currentManager.displayName;
 
+  // Visible stamp to confirm deploys actually landed (user feedback: "nothing changed")
+  const stamp = $('build-stamp');
+  if (stamp) stamp.textContent = 'LIVE ' + new Date().toISOString().slice(0,10);
+
   // Status line - clean (paid per competition)
   const status = $('manager-status-line');
-  status.innerHTML = `<span class="text-xs text-[#888]">Pay FPL for FPL access. Pay UCL for UCL access. No partials for full.</span>`;
+  status.innerHTML = `<span class="text-xs text-[#888]">FPL or UCL — pay the one(s) you want. Separate flows.</span>`;
 
-  // Exactly two lines/blocks: FPL and UCL. Clearly labelled. Pay FPL only = FPL access. Pay UCL only = UCL access.
-  const payContainer = document.createElement('div');
-  payContainer.className = 'mb-6 p-4 bg-[#1c1c1c] border border-[#00ff85] rounded-2xl';
-  let payHtml = `<div class="font-bold text-[#00ff85] mb-2">PAY TO PARTICIPATE</div>`;
-
-  // FPL block always
-  payHtml += currentManager.fplPaid 
-    ? `<div class="mb-2 p-2 bg-[#003322] rounded">✓ FPL PAID — FPL features unlocked</div>`
-    : `
-      <div class="mb-2 p-2 bg-[#222] rounded border border-[#00ff85]">
-        <div class="font-semibold">FPL Season Fee</div>
-        <div class="text-xs">Pay to unlock FPL standings, H2H, lineup viewer, projections.</div>
-        <button onclick="initiatePayment('fpl')" class="mt-1 px-4 py-1 bg-[#00ff85] text-black font-bold rounded text-sm">PAY FOR FPL</button>
-      </div>`;
-
-  // UCL block always
-  payHtml += currentManager.uclPaid 
-    ? `<div class="p-2 bg-[#003322] rounded">✓ UCL PAID — UCL features unlocked</div>`
-    : `
-      <div class="p-2 bg-[#222] rounded border border-[#00ff85]">
-        <div class="font-semibold">UCL Season Fee</div>
-        <div class="text-xs">Pay to unlock UCL standings, challenges, projections.</div>
-        <button onclick="initiatePayment('ucl')" class="mt-1 px-4 py-1 bg-[#00ff85] text-black font-bold rounded text-sm">PAY FOR UCL</button>
-      </div>`;
-
-  payContainer.innerHTML = payHtml;
-  const actionsDiv = document.querySelector('#dashboard .mb-6');
-  if (actionsDiv) actionsDiv.after(payContainer);
+  // Render the two clear static pay blocks (reliable, no fragile insert)
+  renderPayAccess();
 
   // Populate hero stats immediately from the data we already have
   renderManagerHero();
@@ -163,6 +143,39 @@ function showDashboard() {
     const sel = $('league-selector');
     if (sel) switchLeague('fpl');
   }, 200);
+}
+
+function renderPayAccess() {
+  if (!currentManager) return;
+  const fplBlock = $('pay-fpl-block');
+  const uclBlock = $('pay-ucl-block');
+  const fplStatus = $('fpl-pay-status');
+  const uclStatus = $('ucl-pay-status');
+  const fplBtn = $('fpl-pay-btn');
+  const uclBtn = $('ucl-pay-btn');
+
+  if (fplBlock && fplStatus && fplBtn) {
+    if (currentManager.fplPaid) {
+      fplStatus.innerHTML = `<span class="bg-[#003322] text-[#00ff85] px-2 py-0.5 rounded">✓ PAID</span>`;
+      fplBtn.style.display = 'none';
+      fplBlock.style.borderColor = '#00ff85';
+    } else {
+      fplStatus.innerHTML = `<span class="text-[#ffaa00]">NOT PAID</span>`;
+      fplBtn.style.display = '';
+      fplBlock.style.borderColor = '#333';
+    }
+  }
+  if (uclBlock && uclStatus && uclBtn) {
+    if (currentManager.uclPaid) {
+      uclStatus.innerHTML = `<span class="bg-[#003322] text-[#00ff85] px-2 py-0.5 rounded">✓ PAID</span>`;
+      uclBtn.style.display = 'none';
+      uclBlock.style.borderColor = '#00ff85';
+    } else {
+      uclStatus.innerHTML = `<span class="text-[#ffaa00]">NOT PAID</span>`;
+      uclBtn.style.display = '';
+      uclBlock.style.borderColor = '#333';
+    }
+  }
 }
 
 async function loadAllData() {
@@ -202,6 +215,8 @@ async function loadAllData() {
   if (isCommissioner) {
     loadAdminOverview();
   }
+
+  renderPayAccess();
 }
 
 async function loadAdminOverview() {
@@ -220,25 +235,26 @@ async function loadAdminOverview() {
       if (m.email) managersByEmail[m.email.toLowerCase()] = m;
     });
 
-    // Join requests: always show recent ones (historical, never hide previous)
-    // They stay until events age out. Status shown if approved.
-    const joinRequests = events
-      .filter(e => e.type === 'join_request')
-      .slice(0, 20); // keep more history visible
+    // Join requests + adds: always show recent ones (historical, never hide previous)
+    // join_request stay as PENDING until manager_added / approved. Previous ones visible forever.
+    const joinRelated = events
+      .filter(e => e.type === 'join_request' || e.type === 'manager_added')
+      .slice(0, 25);
 
     let joinsHtml = '';
-    if (joinRequests.length) {
-      joinsHtml = joinRequests.map(e => {
+    if (joinRelated.length) {
+      joinsHtml = joinRelated.map(e => {
         const p = e.payload || {};
         const email = (p.email || '').toLowerCase();
         const when = (e.at || '').slice(11,16);
         const existing = managersByEmail[email];
+        const isAdded = e.type === 'manager_added';
         let actionHtml = '';
-        if (existing) {
-          const code = existing.accessCode || '—';
+        if (isAdded || existing) {
+          const code = (existing && existing.accessCode) || p.accessCode || '—';
           actionHtml = `
             <div class="text-right">
-              <div><span class="px-2 py-0.5 text-xs rounded bg-[#003322] text-[#00ff85]">APPROVED</span></div>
+              <div><span class="px-2 py-0.5 text-xs rounded bg-[#003322] text-[#00ff85]">${isAdded ? 'ADDED' : 'APPROVED'}</span></div>
               <div class="font-mono text-sm mt-1">${code}</div>
               <button onclick="navigator.clipboard.writeText('${code}');this.textContent='copied!'" class="mt-1 text-[10px] px-2 py-0.5 bg-[#00ff85] text-black rounded">copy code</button>
             </div>`;
@@ -253,13 +269,13 @@ async function loadAdminOverview() {
               <div class="font-semibold text-base">${p.name || 'Unknown'}</div>
               <div class="text-sm text-[#00ff85] truncate">${p.email || ''}</div>
               <div class="text-sm font-mono text-[#888] mt-0.5">${p.fplClubName || ''}</div>
-              <div class="text-[10px] text-[#666] mt-1">${when}</div>
+              <div class="text-[10px] text-[#666] mt-1">${when} • ${e.type}</div>
             </div>
             <div class="flex-shrink-0">${actionHtml}</div>
           </div>`;
       }).join('');
     } else {
-      joinsHtml = '<div class="text-[#666] p-4 bg-[#1c1c1c] border border-[#333] rounded-2xl">No join requests in history.</div>';
+      joinsHtml = '<div class="text-[#666] p-4 bg-[#1c1c1c] border border-[#333] rounded-2xl">No join requests or adds in history yet. Use REQUEST ACCESS on login screen.</div>';
     }
 
     const otherEvents = events.filter(e => e.type !== 'join_request').slice(0, 5);
@@ -403,10 +419,15 @@ async function loadAdminOverview() {
         <!-- Managers with codes -->
         <div class="bg-[#161616] border border-[#222] rounded-3xl p-5">
           <div class="font-semibold text-xl mb-3">MANAGERS &amp; ACCESS CODES</div>
-          <div class="max-h-[320px] overflow-auto space-y-2">
-            ${mgrsHtml}
+          <div class="max-h-[320px] overflow-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="text-[#888] text-xs"><th class="text-left">Name</th><th>Email</th><th>Club</th><th>FPL</th><th>UCL</th><th>Code</th></tr></thead>
+              <tbody>
+                ${mgrsHtml}
+              </tbody>
+            </table>
           </div>
-          <div class="text-xs text-[#666] mt-2">Admin explicitly has empty club (no team). Codes shown for easy copy.</div>
+          <div class="text-xs text-[#666] mt-2">FPL/UCL show per-comp paid status. Admin has no team. Click code to copy.</div>
         </div>
 
         <!-- Challenges -->
@@ -1317,6 +1338,7 @@ async function simulatePaymentSuccess(reference) {
     const me = await fetchJSON('/api/me');
     currentManager = me.manager;
     await loadAllData();
+    renderPayAccess();
     alert('Payment confirmed via simulation. You are now eligible!');
   } catch (e) {
     alert('Simulate failed: ' + e.message);

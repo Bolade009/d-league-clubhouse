@@ -1130,18 +1130,13 @@ async function ensureAdminManager() {
 
   const existing = s.managers.find(m => m.email && m.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
   if (existing) {
-    // Ensure admin has no team (unless they registered separately)
-    if (existing.fplClubName || existing.fpl?.teamId || existing.ucl?.teamId) {
-      existing.fplClubName = "";
-      existing.fpl = { teamId: "", teamName: "" };
-      existing.ucl = { teamId: "", teamName: "" };
-      await persistStore();
-    }
-    // Make sure the code matches what we want for the admin
-    if (existing.accessCode !== ADMIN_ACCESS_CODE) {
-      existing.accessCode = ADMIN_ACCESS_CODE;
-      await persistStore();
-    }
+    // ALWAYS ensure admin has NO team / club. Admin is only commissioner, not a competing manager.
+    let changed = false;
+    if (existing.fplClubName) { existing.fplClubName = ""; changed = true; }
+    if (existing.fpl && (existing.fpl.teamId || existing.fpl.teamName)) { existing.fpl = { teamId: "", teamName: "" }; changed = true; }
+    if (existing.ucl && (existing.ucl.teamId || existing.ucl.teamName)) { existing.ucl = { teamId: "", teamName: "" }; changed = true; }
+    if (existing.accessCode !== ADMIN_ACCESS_CODE) { existing.accessCode = ADMIN_ACCESS_CODE; changed = true; }
+    if (changed) await persistStore();
     return;
   }
 
