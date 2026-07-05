@@ -1730,11 +1730,12 @@ app.get("/api/admin/overview", async (req, res) => {
   const sponsorships = (s.sponsorships || []);
   const totalHouseCommission = (s.ledger || []).filter(l => l.type === "house_commission").reduce((sum, l) => sum + Math.abs(l.amount || 0), 0);
 
-  // Full managers summary for admin insight (no sensitive payout details)
+  // Full managers summary for admin insight (includes accessCode for convenience)
   const managersSummary = s.managers.map(m => ({
     id: m.id,
     displayName: m.displayName,
     email: m.email,
+    accessCode: m.accessCode,
     fplClubName: m.fplClubName || '',
     fplPaid: !!s.payments.find(p => p.managerId === m.id && p.competition === 'fpl' && p.status === 'confirmed'),
     uclPaid: !!s.payments.find(p => p.managerId === m.id && p.competition === 'ucl' && p.status === 'confirmed'),

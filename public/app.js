@@ -172,17 +172,25 @@ async function loadAdminOverview() {
 
     const panel = document.createElement('div');
     panel.id = 'admin-overview-panel';
-    panel.className = 'mt-4 p-4 bg-[#111] border-2 border-[#00ff85] rounded-2xl text-xs';
+    panel.className = 'mt-4 p-6 bg-[#111] border-2 border-[#00ff85] rounded-3xl text-sm';
 
     const events = data.recentEvents || [];
-    const joinRequests = events.filter(e => e.type === 'join_request').slice(0, 6);
+    const existingEmails = new Set((data.managers || []).map(m => (m.email || '').toLowerCase()));
+
+    // Only show join requests that haven't been approved yet
+    const joinRequests = events
+      .filter(e => e.type === 'join_request')
+      .filter(e => {
+        const email = (e.payload?.email || '').toLowerCase();
+        return email && !existingEmails.has(email);
+      })
+      .slice(0, 6);
 
     let joinsHtml = '';
     if (joinRequests.length) {
       joinsHtml = joinRequests.map(e => {
         const p = e.payload || {};
         const when = (e.at || '').slice(11,16);
-        // Escape for safe data attributes
         const safeName = (p.name || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
         const safeEmail = (p.email || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
         const safeClub = (p.fplClubName || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
@@ -206,7 +214,11 @@ async function loadAdminOverview() {
     let otherHtml = otherEvents.map(e => {
       const p = e.payload || {};
       const when = (e.at || '').slice(11,16);
-      return `<div class="text-[#aaa] py-0.5 text-[10px]">${e.type} — ${p.name || p.email || JSON.stringify(p).slice(0,50)} <span class="text-[#666]">(${when})</span></div>`;
+      let detail = p.name || p.email || JSON.stringify(p).slice(0,50);
+      if (e.type === 'manager_added' && p.accessCode) {
+        detail = `${p.name || p.email} — code: ${p.accessCode}`;
+      }
+      return `<div class="text-[#aaa] py-0.5 text-[10px]">${e.type} — ${detail} <span class="text-[#666]">(${when})</span></div>`;
     }).join('') || '<div class="text-[#666]">No other recent activity</div>';
 
     // Challenges section with cancel
@@ -224,52 +236,88 @@ async function loadAdminOverview() {
       return `<div class="text-[10px] py-0.5">${sp.sponsor || 'Sponsor'} - ₦${sp.amount} for ${sp.target || 'general'} <button onclick="cancelSponsorship('${sp.id}')" class="ml-2 px-1 text-[9px] bg-red-900 rounded">Cancel</button></div>`;
     }).join('') || '<div class="text-[#666]">No active sponsorships</div>';
 
-    // Managers overview (basic)
+    // Managers overview with access codes (admin only)
     let mgrsHtml = (data.managers || []).slice(0, 12).map(m => {
       const paid = (m.fplPaid ? 'F' : '') + (m.uclPaid ? 'U' : '') || '—';
-      return `<div class="text-[9px]">${m.displayName} <span class="text-[#666]">(${paid})</span> ${m.fplClubName ? '• ' + m.fplClubName : ''}</div>`;
+      const code = m.accessCode || '—';
+      return `<div class="text-[9px]">${m.displayName} <span class="text-[#666]">(${paid})</span> ${m.fplClubName ? '• ' + m.fplClubName : ''} <span class="font-mono text-[#00ff85]">code: ${code}</span></div>`;
     }).join('') || 'None';
 
+    // Nice stats cards
+    const statsHtml = `
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
+          <div class="text-xs text-[#888]">TOTAL MANAGERS</div>
+          <div class="text-2xl font-black">${data.totalManagers}</div>
+        </div>
+        <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
+          <div class="text-xs text-[#888]">PAID</div>
+          <div class="text-2xl font-black">FPL: ${data.paidFpl} &nbsp; UCL: ${data.paidUcl}</div>
+        </div>
+        <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
+          <div class="text-xs text-[#888]">CONFIRMED PAYMENTS</div>
+          <div class="text-2xl font-black">${data.totalPaymentsConfirmed}</div>
+        </div>
+        <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
+          <div class="text-xs text-[#888]">HOUSE COMMISSION</div>
+          <div class="text-2xl font-black">₦${data.totalHouseCommission || 0}</div>
+        </div>
+      </div>
+    `;
+
     panel.innerHTML = `
-      <div class="font-bold text-[#00ff85] mb-1 flex items-center justify-between">
-        <span>BACKEND ADMIN VIEW — FULL CONTROL</span>
-        <span class="text-[10px] text-[#888]">bolade.oladejo@gmail.com (non-competing admin)</span>
-      </div>
-      <div class="mb-1 text-sm">Managers: <span class="font-semibold">${data.totalManagers}</span> • Paid FPL: ${data.paidFpl} • UCL: ${data.paidUcl} • Payments: ${data.totalPaymentsConfirmed} • House: ₦${data.totalHouseCommission || 0}</div>
-      <div class="text-[#888] mb-1 text-[10px]">Last sync: ${data.lastSync || '—'} | Reserve est: see projections</div>
-
-      <div class="border-t border-[#333] pt-2 mt-2">
-        <div class="font-semibold text-[#00ff85] mb-1">Pending Join Requests</div>
-        <div>${joinsHtml}</div>
-      </div>
-
-      <div class="border-t border-[#333] pt-2 mt-2 grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div class="flex items-center justify-between mb-3">
         <div>
-          <div class="font-semibold mb-1">Challenges (all)</div>
-          <div class="max-h-24 overflow-auto text-xs">${challengesHtml}</div>
+          <span class="font-black text-xl text-[#00ff85]">ADMIN COCKPIT</span>
+          <span class="ml-2 text-xs px-2 py-0.5 bg-[#222] rounded text-[#888]">bolade.oladejo@gmail.com</span>
         </div>
-        <div>
-          <div class="font-semibold mb-1">Sponsored Awards</div>
-          <div class="max-h-24 overflow-auto text-xs">${sponsorsHtml}</div>
+        <div class="flex gap-2">
+          <button onclick="loadAdminOverview()" class="px-4 py-1.5 bg-[#222] hover:bg-[#333] rounded-xl text-sm">REFRESH</button>
+          <button onclick="triggerSettle()" class="px-4 py-1.5 bg-[#00ff85] text-black font-bold rounded-xl hover:bg-white">SETTLE &amp; PAYOUTS</button>
+          <button onclick="promptAddManager()" class="px-4 py-1.5 bg-[#222] hover:bg-[#333] rounded-xl text-sm">+ ADD MANAGER</button>
         </div>
       </div>
 
-      <div class="border-t border-[#333] pt-2 mt-2">
-        <div class="font-semibold mb-1">Managers Overview (first 12)</div>
-        <div class="text-xs">${mgrsHtml}</div>
+      ${statsHtml}
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <!-- Join Requests -->
+        <div class="bg-[#1a1a1a] p-4 rounded-2xl border border-[#333]">
+          <div class="font-semibold text-[#00ff85] mb-2 flex items-center gap-2">
+            PENDING JOIN REQUESTS
+            <span class="text-xs bg-[#00ff85] text-black px-1.5 py-0 rounded">${joinRequests.length}</span>
+          </div>
+          <div class="space-y-1 max-h-44 overflow-auto">${joinsHtml}</div>
+        </div>
+
+        <!-- Managers -->
+        <div class="bg-[#1a1a1a] p-4 rounded-2xl border border-[#333]">
+          <div class="font-semibold mb-2">MANAGERS (with codes)</div>
+          <div class="text-xs space-y-1 max-h-44 overflow-auto">${mgrsHtml}</div>
+          <div class="text-[10px] text-[#666] mt-2">Access codes shown for easy sharing. Click Refresh after approvals.</div>
+        </div>
+
+        <!-- Challenges -->
+        <div class="bg-[#1a1a1a] p-4 rounded-2xl border border-[#333]">
+          <div class="font-semibold mb-2">CHALLENGES</div>
+          <div class="text-xs space-y-1 max-h-44 overflow-auto">${challengesHtml}</div>
+        </div>
+
+        <!-- Sponsored Awards -->
+        <div class="bg-[#1a1a1a] p-4 rounded-2xl border border-[#333]">
+          <div class="font-semibold mb-2">SPONSORED AWARDS</div>
+          <div class="text-xs space-y-1 max-h-44 overflow-auto">${sponsorsHtml}</div>
+        </div>
       </div>
 
-      <div class="border-t border-[#333] pt-2 mt-2">
-        <div class="font-semibold mb-1">Recent Activity (incl. bets/awards)</div>
-        <div class="max-h-16 overflow-auto text-[10px]">${otherHtml}</div>
+      <div class="border-t border-[#333] pt-3 mt-4">
+        <div class="font-semibold mb-1">RECENT ACTIVITY</div>
+        <div class="max-h-28 overflow-auto text-xs bg-[#1a1a1a] p-3 rounded-xl border border-[#333]">${otherHtml}</div>
       </div>
 
-      <div class="mt-3 flex flex-wrap gap-2 text-xs">
-        <button onclick="triggerSettle()" class="px-3 py-1 bg-[#00ff85] hover:bg-white text-black font-bold rounded">SETTLE &amp; PAYOUTS</button>
-        <button onclick="loadAdminOverview()" class="px-3 py-1 bg-[#222] hover:bg-[#333] rounded">REFRESH</button>
-        <button onclick="promptAddManager()" class="px-3 py-1 bg-[#222] hover:bg-[#333] rounded">ADD MANAGER MANUAL</button>
+      <div class="mt-4 text-[10px] text-[#666]">
+        Full control panel — approve joins, cancel challenges/awards, add managers, trigger settlements. Data is live from the disk.
       </div>
-      <div class="text-[10px] text-[#888] mt-1">Full admin: cancel challenges/awards, approve joins, settle, add mgrs. Admin account excluded from comps.</div>
     `;
 
     const dash = document.getElementById('dashboard');
