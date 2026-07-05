@@ -38,8 +38,19 @@ async function fetchJSON(url, opts = {}) {
 
 // ============ LOGIN ============
 async function performLogin() {
-  const email = $('login-email').value.trim();
-  const code = $('login-code').value.trim();
+  const emailEl = $('login-email');
+  const codeEl = $('login-code');
+  if (!emailEl || !codeEl) {
+    alert('Login form elements not found. Please refresh the page.');
+    return;
+  }
+  const email = emailEl.value.trim();
+  const code = codeEl.value.trim();
+
+  if (!email || !code) {
+    alert('Please enter email and access code.');
+    return;
+  }
 
   try {
     const data = await fetchJSON('/api/auth/login', {
@@ -241,7 +252,8 @@ async function loadAdminOverview() {
       if (status === 'cancelled') color = '#ff6b6b';
       let actions = '';
       if (status === 'open') {
-        actions = `<div class="mt-2 flex gap-2"><button onclick="cancelChallenge('${ch.id}', '${ch.title.replace(/'/g,'\\'')}')" class="text-xs px-2 py-1 bg-red-900 hover:bg-red-800 rounded">Cancel</button><button onclick="forceSettleChallenge('${ch.id}')" class="text-xs px-2 py-1 bg-[#00ff85] text-black rounded">Force Settle</button></div>`;
+        const safeTitle = ch.title.replace(/'/g, "\\'");
+        actions = `<div class="mt-2 flex gap-2"><button onclick="cancelChallenge('${ch.id}', '${safeTitle}')" class="text-xs px-2 py-1 bg-red-900 hover:bg-red-800 rounded">Cancel</button><button onclick="forceSettleChallenge('${ch.id}')" class="text-xs px-2 py-1 bg-[#00ff85] text-black rounded">Force Settle</button></div>`;
       }
       return `
         <div class="bg-[#1c1c1c] border border-[#333] p-3 rounded-2xl mb-2">
@@ -1354,6 +1366,12 @@ async function bootstrap() {
 
   const warning = document.getElementById('server-warning');
 
+  // Attach login button handler early (avoids issues if later code errors)
+  const loginBtn = document.getElementById('login-button');
+  if (loginBtn) {
+    loginBtn.addEventListener('click', performLogin);
+  }
+
   // Show clear guidance if someone opened the HTML file directly (no server)
   if (location.protocol === 'file:') {
     if (warning) warning.classList.remove('hidden');
@@ -1411,12 +1429,6 @@ async function bootstrap() {
       if (ev.key === 'Enter') performLogin();
     });
   });
-
-  // Attach login button handler (avoids inline onclick + CSP issues)
-  const loginBtn = document.getElementById('login-button');
-  if (loginBtn) {
-    loginBtn.addEventListener('click', performLogin);
-  }
 
   // Expose limited debug for friends testing
   window.DL = { triggerSync, logout, switchLeague };
