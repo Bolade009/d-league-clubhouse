@@ -958,9 +958,10 @@ function renderProjectionsLive() {
     `;
   }
   if (uclWrap) {
+    const uclNote = proj.ucl?.upcomingMatches ? ` • ${proj.ucl.upcomingMatches} real upcoming MDs` : '';
     uclWrap.innerHTML = `
-      <div class="text-xs">MD Pot: <span class="font-bold text-[#aaa]">₦${proj.ucl?.mdPot90 || 0}</span></div>
-      <div class="text-xs text-[#aaa]">UCL phase projections here.</div>
+      <div class="text-xs">MD Pot: <span class="font-bold text-[#aaa]">₦${proj.ucl?.mdPot90 || 0}</span>${uclNote}</div>
+      <div class="text-xs text-[#aaa]">UCL projections now use real third-party match data.</div>
     `;
   }
 }
