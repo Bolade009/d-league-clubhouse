@@ -964,8 +964,9 @@ async function getProjectedPayouts() {
 
   // Pull real UCL data for projections (upcoming matches affect expected pots/activity)
   const uclStats = await getUCLStats();
-  const upcomingUCLMatches = (uclStats.matches || []).filter(m => m.status === 'SCHEDULED' || m.status === 'TIMED').length;
-  const uclFormBoost = Math.min(upcomingUCLMatches * 0.5, 5); // simple boost to projections based on real schedule
+  const upcomingMatches = (uclStats.matches || []).filter(m => m.status === 'SCHEDULED' || m.status === 'TIMED');
+  const upcomingUCLMatches = upcomingMatches.length;
+  const uclFormBoost = Math.min(upcomingUCLMatches * 0.5, 5); // simple boost based on real schedule
 
   return {
     fpl: {
@@ -973,13 +974,13 @@ async function getProjectedPayouts() {
       seasonReserve: Math.floor(fplReserve + sponsored * 0.4)
     },
     ucl: {
-      mdPot90: Math.floor(uclPotPerMD + uclFormBoost * 100), // real data influences
+      mdPot90: Math.floor(uclPotPerMD + uclFormBoost * 100),
       phaseReserve: Math.floor(uclReserve + sponsored * 0.4),
       upcomingMatches: upcomingUCLMatches,
       lastStatsUpdate: uclStats.lastUpdated || null
     },
     adminTotal: (fplPaid + uclPaid) * 5000,
-    note: "Base: paid_managers × 500 × 0.9 to winner. 5k admin/manager for server/ops. Sponsors boost specific pots. UCL projections now use real third-party match data."
+    note: "Base: paid_managers × 500 × 0.9 to winner. 5k admin/manager for server/ops. Sponsors boost specific pots. UCL uses real football-data.org matches."
   };
 }
 
@@ -1068,19 +1069,63 @@ function safeFetchJSON(url, timeoutMs = 8000) {
   });
 }
 
+async function fetchWithFootballAuth(url) {
+  if (!FOOTBALL_API_KEY) return null;
+
+  return new Promise((resolve) => {
+    const options = {
+      headers: {
+        "User-Agent": "DLeagueClubhouse/1.0",
+        "X-Auth-Token": FOOTBALL_API_KEY
+      }
+    };
+
+    const req = https.get(url, options, (res) => {
+      // Examine throttling headers as per football-data.org instructions
+      const remaining = res.headers["x-requests-available-minute"] || res.headers["x-requests-available-day"];
+      const reset = res.headers["x-requestcounter-reset"];
+      if (remaining !== undefined) {
+        console.log(`[football-data] Requests remaining: ${remaining} (reset in ${reset || 'unknown'})`);
+      }
+      if (res.statusCode === 429) {
+        console.warn("[football-data] Rate limited! Backing off.");
+        // Simple backoff: resolve null, caller can retry later
+        resolve(null);
+        return;
+      }
+
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+
+    req.on("error", () => resolve(null));
+    req.setTimeout(10000, () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
+
 async function fetchUCLStats() {
   if (!FOOTBALL_API_KEY) return null;
   try {
     // Using football-data.org v4 for UCL (competition code CL)
-    const headers = { 'X-Auth-Token': FOOTBALL_API_KEY };
-    // Fetch recent and upcoming matches for projections
-    const matchesRes = await fetch(`${FOOTBALL_API_BASE}/competitions/CL/matches?status=FINISHED,SCHEDULED&limit=50`, { headers });
-    if (!matchesRes.ok) return null;
-    const matchesData = await matchesRes.json();
+    const matchesData = await fetchWithFootballAuth(
+      `${FOOTBALL_API_BASE}/competitions/CL/matches?status=FINISHED,SCHEDULED&limit=50`
+    );
 
-    // Fetch teams/standings for form
-    const standingsRes = await fetch(`${FOOTBALL_API_BASE}/competitions/CL/standings?season=2025`, { headers });
-    const standingsData = standingsRes.ok ? await standingsRes.json() : null;
+    const standingsData = await fetchWithFootballAuth(
+      `${FOOTBALL_API_BASE}/competitions/CL/standings?season=2025`
+    );
+
+    if (!matchesData) return null;
 
     return {
       matches: matchesData.matches || [],
