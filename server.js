@@ -25,6 +25,8 @@ const PAYSTACK_PUBLIC = process.env.PAYSTACK_PUBLIC_KEY || "";
 const PAYSTACK_CALLBACK = process.env.PAYSTACK_CALLBACK_URL || "";
 const LIVE_FPL_TEMPLATE = process.env.LIVE_FPL_API_TEMPLATE || "";
 const UCL_TEMPLATE = process.env.UCL_FANTASY_API_TEMPLATE || "";
+const FOOTBALL_API_KEY = process.env.FOOTBALL_DATA_KEY || process.env.API_FOOTBALL_KEY || ""; // football-data.org or API-Football style
+const FOOTBALL_API_BASE = "https://api.football-data.org/v4"; // using football-data.org as example third-party (free tier available)
 
 // Live admin (only this email can see backend admin view + trigger protected actions)
 const ADMIN_EMAIL = "bolade.oladejo@gmail.com";
@@ -928,8 +930,25 @@ function getWalletBalance(managerId) {
     .reduce((sum, l) => sum + (l.amount || 0), 0);
 }
 
-function getProjectedPayouts() {
-  // Enhanced: admin fees (5k/manager), sponsorships added to pots. Base pot = paid * 500 * 0.9. Sponsored funds boost specific awards (gw, captain, league).
+let uclStatsCache = null;
+let uclStatsCacheTime = 0;
+
+async function getUCLStats() {
+  const now = Date.now();
+  if (uclStatsCache && (now - uclStatsCacheTime) < 1000 * 60 * 30) { // cache 30 min
+    return uclStatsCache;
+  }
+  const stats = await fetchUCLStats();
+  if (stats) {
+    uclStatsCache = stats;
+    uclStatsCacheTime = now;
+  }
+  return stats || { matches: [], standings: [] };
+}
+
+async function getProjectedPayouts() {
+  // Enhanced: admin fees (5k/manager), sponsorships added to pots. Base pot = paid * 500 * 0.9. Sponsored funds boost specific awards.
+  // Now augmented with real third-party UCL stats for better projections.
   const s = getStore();
   const fplPaid = getEligibleManagers("fpl").length;
   const uclPaid = getEligibleManagers("ucl").length;
@@ -943,17 +962,24 @@ function getProjectedPayouts() {
 
   const sponsored = (s.sponsorships || []).reduce((sum, sp) => sum + (sp.amount || 0), 0);
 
+  // Pull real UCL data for projections (upcoming matches affect expected pots/activity)
+  const uclStats = await getUCLStats();
+  const upcomingUCLMatches = (uclStats.matches || []).filter(m => m.status === 'SCHEDULED' || m.status === 'TIMED').length;
+  const uclFormBoost = Math.min(upcomingUCLMatches * 0.5, 5); // simple boost to projections based on real schedule
+
   return {
     fpl: {
       weeklyPot90: Math.floor(fplPotPerWeek),
       seasonReserve: Math.floor(fplReserve + sponsored * 0.4)
     },
     ucl: {
-      mdPot90: Math.floor(uclPotPerMD),
-      phaseReserve: Math.floor(uclReserve + sponsored * 0.4)
+      mdPot90: Math.floor(uclPotPerMD + uclFormBoost * 100), // real data influences
+      phaseReserve: Math.floor(uclReserve + sponsored * 0.4),
+      upcomingMatches: upcomingUCLMatches,
+      lastStatsUpdate: uclStats.lastUpdated || null
     },
     adminTotal: (fplPaid + uclPaid) * 5000,
-    note: "Base: paid_managers × 500 × 0.9 to winner. 5k admin/manager for server/ops. Sponsors boost specific pots (e.g. best captain award)."
+    note: "Base: paid_managers × 500 × 0.9 to winner. 5k admin/manager for server/ops. Sponsors boost specific pots. UCL projections now use real third-party match data."
   };
 }
 
@@ -1040,6 +1066,31 @@ function safeFetchJSON(url, timeoutMs = 8000) {
     req.on("error", () => resolve(null));
     req.setTimeout(timeoutMs, () => { req.destroy(); resolve(null); });
   });
+}
+
+async function fetchUCLStats() {
+  if (!FOOTBALL_API_KEY) return null;
+  try {
+    // Using football-data.org v4 for UCL (competition code CL)
+    const headers = { 'X-Auth-Token': FOOTBALL_API_KEY };
+    // Fetch recent and upcoming matches for projections
+    const matchesRes = await fetch(`${FOOTBALL_API_BASE}/competitions/CL/matches?status=FINISHED,SCHEDULED&limit=50`, { headers });
+    if (!matchesRes.ok) return null;
+    const matchesData = await matchesRes.json();
+
+    // Fetch teams/standings for form
+    const standingsRes = await fetch(`${FOOTBALL_API_BASE}/competitions/CL/standings?season=2025`, { headers });
+    const standingsData = standingsRes.ok ? await standingsRes.json() : null;
+
+    return {
+      matches: matchesData.matches || [],
+      standings: standingsData?.standings || [],
+      lastUpdated: new Date().toISOString()
+    };
+  } catch (e) {
+    console.warn("[UCL Stats] Failed to fetch third-party data:", e.message);
+    return null;
+  }
 }
 
 // ============ DEMO SEED ============
@@ -1384,7 +1435,8 @@ app.get("/api/config", (req, res) => {
     callbackUrl: PAYSTACK_CALLBACK,
     competitions: COMPETITIONS,
     liveProjectionTemplate: !!LIVE_FPL_TEMPLATE,
-    uclAdapterTemplate: !!UCL_TEMPLATE
+    uclAdapterTemplate: !!UCL_TEMPLATE,
+    footballStatsApi: !!FOOTBALL_API_KEY
   });
 });
 
@@ -1715,11 +1767,12 @@ app.get("/api/standings", async (req, res) => {
   if (DEMO_MODE) await seedDemoData();
   const lb = getFullLeaderboard();
   const s = getStore();
+  const projections = await getProjectedPayouts();
   res.json({
     currentRound: s.settings.currentRound,
     roundAverages: s.settings.roundAverages,
     ...lb,
-    projections: getProjectedPayouts()
+    projections
   });
 });
 
@@ -1975,7 +2028,8 @@ app.get("/api/ledger", async (req, res) => {
 });
 
 app.get("/api/payouts", async (req, res) => {
-  res.json(getProjectedPayouts());
+  const projections = await getProjectedPayouts();
+  res.json(projections);
 });
 
 // Simple live ticker data
@@ -2023,7 +2077,7 @@ app.get("/api/admin/overview", async (req, res) => {
     totalPaymentsConfirmed: s.payments.filter(p => p.status === "confirmed").length,
     totalFines: 0,
     lastSync: s.settings.lastSyncAt,
-    reserveEstimate: getProjectedPayouts(),
+    reserveEstimate: await getProjectedPayouts(),
     recentLedger,
     recentEvents,
     challenges: allChallenges,

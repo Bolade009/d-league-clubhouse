@@ -33,6 +33,9 @@ services:
         value: ""
       - key: UCL_FANTASY_API_TEMPLATE
         value: ""
+      # Third-party football stats API for real UCL projections/scoring (e.g. football-data.org key)
+      - key: FOOTBALL_DATA_KEY
+        sync: false
       - key: ENABLE_SCHEDULED_SYNC
         value: "false"
       - key: SYNC_INTERVAL_MS
