@@ -690,16 +690,41 @@ async function autoAwardPresets(comp, round) {
 
 async function createTransferRecipient(mgr) {
   if (!mgr || !mgr.payoutDetails || !PAYSTACK_SECRET) return null;
-  const parts = String(mgr.payoutDetails).split(":");
-  if (parts.length < 3) return null;
-  const [bankCode, accountNumber, name] = parts;
-  const postData = JSON.stringify({
-    type: "nuban",
-    name: name || mgr.displayName,
-    account_number: accountNumber,
-    bank_code: bankCode,
-    currency: "NGN"
-  });
+  let details;
+  try {
+    details = JSON.parse(mgr.payoutDetails);
+  } catch (e) {
+    // Fallback to old string format for backward compat
+    const parts = String(mgr.payoutDetails).split(":");
+    if (parts.length < 3) return null;
+    details = { type: "nuban", bank_code: parts[0], account_number: parts[1], account_name: parts[2] || mgr.displayName };
+  }
+
+  const accountName = details.account_name || mgr.displayName || "DLeague Manager";
+
+  let postDataObj;
+  if (details.type === 'international') {
+    postDataObj = {
+      type: "international",
+      name: accountName,
+      account_number: details.account_number,
+      bank_name: details.bank_name || "",
+      bank_code: details.swift || details.bank_code || "",
+      currency: (details.currency || "USD").toUpperCase(),
+      country: (details.country || "US").toUpperCase()
+    };
+  } else {
+    // local Nigerian - nuban. bank_code must be Paystack code
+    postDataObj = {
+      type: "nuban",
+      name: accountName,
+      account_number: String(details.account_number || "").replace(/\s/g, ""),
+      bank_code: String(details.bank_code || "").trim(),
+      currency: "NGN"
+    };
+  }
+
+  const postData = JSON.stringify(postDataObj);
   return new Promise((resolve) => {
     const options = {
       hostname: "api.paystack.co",
@@ -716,11 +741,20 @@ async function createTransferRecipient(mgr) {
       res.on("end", () => {
         try {
           const body = JSON.parse(data);
-          resolve(body.data && body.data.recipient_code ? body.data.recipient_code : null);
+          if (body.status && body.data && body.data.recipient_code) {
+            console.log('[Paystack] Recipient created:', body.data.recipient_code);
+            resolve(body.data.recipient_code);
+          } else {
+            console.log('[Paystack] Recipient create response:', body);
+            resolve(null);
+          }
         } catch { resolve(null); }
       });
     });
-    req.on("error", () => resolve(null));
+    req.on("error", (err) => {
+      console.log('[Paystack] Recipient error', err.message);
+      resolve(null);
+    });
     req.write(postData);
     req.end();
   });
@@ -1203,6 +1237,7 @@ function buildManagerView(mgr) {
     uclTotal,
     combined: fplTotal + uclTotal,
     wallet,
+    payoutDetails: mgr.payoutDetails || "",
     // no fines
     // Detailed FPL data for squad view
     recentCaptain: recentFpl.captain || null,
@@ -1370,7 +1405,7 @@ async function seedDemoData(force = false) {
       accessCode: dm.code,
       fpl: { teamId: dm.fplId, teamName: dm.club || (dm.displayName.split(" ")[0] + " FC") },
       ucl: { teamId: dm.uclId, teamName: dm.club || (dm.displayName.split(" ")[0] + " United") },
-      payoutDetails: "058:0001234567:" + dm.displayName, // bank_code:account_number:name for Paystack transfer (test format)
+      payoutDetails: JSON.stringify({ type: "nuban", bank_code: "058", account_number: "0001234567", account_name: dm.displayName }), // demo JSON format - real users set via form
       fplClubName: dm.club || (dm.displayName.split(" ")[0] + " FC"),
       createdAt: now
     };
@@ -1648,7 +1683,7 @@ app.post("/api/admin/add-manager", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
   }
-  const { name, email, accessCode, fplId, uclId, fplClubName, payoutDetails } = req.body || {};
+  const { name, email, accessCode, fplId, uclId, fplClubName } = req.body || {};
   if (!name || !email || !accessCode) return res.status(400).json({ error: "name, email, accessCode required" });
 
   const s = await loadStore();
@@ -1681,7 +1716,7 @@ app.post("/api/admin/add-manager", async (req, res) => {
     accessCode,
     fpl: { teamId: fplId || `test-${id.slice(-6)}`, teamName: fplClubName || `${name} FC` },
     ucl: { teamId: uclId || `ucl-${id.slice(-6)}`, teamName: fplClubName || `${name} United` },
-    payoutDetails: payoutDetails || `058:0001234567:${name}`,
+    payoutDetails: "",  // manager must set via Update Bank Details for Paystack auto transfers
     fplClubName: fplClubName || `${name} FC`,
     createdAt: nowISO()
   };
@@ -1929,7 +1964,7 @@ app.post("/api/wallet/request-payout", async (req, res) => {
     type: "withdrawal_requested",
     managerId: mgr.id,
     amount: -payoutAmount,
-    note: `Withdrawal request to ${mgr.payoutDetails} (Paystack transfer initiated)`,
+    note: `Withdrawal request (Paystack transfer initiated to saved bank)`,
     at: nowISO(),
     transferResult
   });
@@ -1944,11 +1979,41 @@ app.post("/api/wallet/request-payout", async (req, res) => {
   });
 });
 
+// Proxy list of Nigerian banks from Paystack (for accurate codes in local forms)
+app.get("/api/paystack/banks", async (req, res) => {
+  if (!PAYSTACK_SECRET) {
+    return res.json({ banks: [] });
+  }
+  const options = {
+    hostname: "api.paystack.co",
+    path: "/bank?country=NG",
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${PAYSTACK_SECRET}`
+    }
+  };
+  const reqPay = https.request(options, (pres) => {
+    let data = "";
+    pres.on("data", c => data += c);
+    pres.on("end", () => {
+      try {
+        const body = JSON.parse(data);
+        const banks = (body.data || []).map(b => ({ name: b.name, code: b.code }));
+        res.json({ banks });
+      } catch (e) {
+        res.json({ banks: [] });
+      }
+    });
+  });
+  reqPay.on("error", () => res.json({ banks: [] }));
+  reqPay.end();
+});
+
 // Manager updates own bank details for payouts (incl international)
 app.post("/api/manager/update-payout", async (req, res) => {
   if (!currentManager) return res.status(401).json({ error: "Login required" });
   const { payoutDetails } = req.body || {};
-  if (!payoutDetails) return res.status(400).json({ error: "payoutDetails required (e.g. 058:0001234567:Name or international format)" });
+  if (!payoutDetails) return res.status(400).json({ error: "Bank details required" });
 
   const s = await loadStore();
   const mgr = s.managers.find(m => m.id === currentManager.id);
@@ -1958,7 +2023,7 @@ app.post("/api/manager/update-payout", async (req, res) => {
   await persistStore();
   await logEvent("payout_details_updated", { managerId: mgr.id });
 
-  res.json({ ok: true, message: "Bank details updated for future payouts." });
+  res.json({ ok: true, message: "Bank details updated. Paystack will auto-create recipient for settlements." });
 });
 
 // Admin force settle a specific challenge (pick winner or cancel)

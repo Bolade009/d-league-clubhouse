@@ -144,3 +144,5 @@ Private league use only. Do not expose publicly without securing tokens and addi
 ---
 
 Built with pride for the D League managers. Let's win clean.
+
+See [D_LEAGUE_PLAYBOOK.md](./D_LEAGUE_PLAYBOOK.md) — the full product pitch written as if explaining to a brand new manager what this is and why every detail (especially the bank form → Paystack) matters.

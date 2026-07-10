@@ -117,21 +117,24 @@ function showDashboard() {
   $('welcome-line').textContent = `WELCOME BACK, MANAGER • ${new Date().getFullYear()}`;
   $('manager-name').textContent = currentManager.displayName;
 
-  // Wallet display (real balance from ledger settlements)
-  const walletEl = document.createElement('div');
-  walletEl.className = 'mt-2 text-sm';
-  walletEl.innerHTML = `Wallet: <span class="font-bold">₦${(currentManager.wallet || 0).toLocaleString()}</span> <button onclick="requestPayout()" class="ml-2 text-xs px-2 py-0.5 bg-[#00ff85] text-black rounded">Request Payout to Bank</button>`;
+  // Wallet display (real balance from ledger settlements) + prominent bank update
   const nameEl = $('manager-name');
-  if (nameEl && nameEl.parentNode) nameEl.parentNode.appendChild(walletEl);
+  // Remove any previous wallet row
+  let prevWallet = nameEl && nameEl.parentNode ? nameEl.parentNode.querySelector('.wallet-row') : null;
+  if (prevWallet) prevWallet.remove();
 
-  // Bank details update for payouts (support international)
-  const bankEl = document.createElement('div');
-  bankEl.className = 'mt-1 text-xs';
-  bankEl.innerHTML = `
-    Bank: <input id="payout-details" type="text" value="${currentManager.payoutDetails || ''}" class="bg-[#111] border border-[#444] px-1 text-xs w-48" placeholder="058:1234567:Your Name or intl format">
-    <button onclick="updatePayoutDetails()" class="ml-1 px-1 bg-[#222] text-xs rounded">Update Bank</button>
+  const hasBank = !!(currentManager.payoutDetails && currentManager.payoutDetails.length > 10);
+  let bankStatus = hasBank ? `<span class="text-[#00ff85] text-xs ml-1">✓ Bank on file — auto Paystack payouts enabled</span>` : `<span class="text-amber-400 text-xs ml-1">⚠ No bank set. Click to add for auto-settlements</span>`;
+
+  const walletEl = document.createElement('div');
+  walletEl.className = 'wallet-row mt-2 text-sm flex flex-wrap items-center gap-x-3 gap-y-1';
+  walletEl.innerHTML = `
+    <span>Wallet: <span class="font-bold">₦${(currentManager.wallet || 0).toLocaleString()}</span></span>
+    <button onclick="requestPayout()" class="text-xs px-3 py-1 bg-[#00ff85] text-black font-semibold rounded-lg active:scale-[0.985]">Request Payout to Bank</button>
+    <button onclick="showUpdateBankModal()" class="text-xs px-3 py-1 border border-[#00ff85] text-[#00ff85] font-semibold rounded-lg active:scale-[0.985]">Update Bank Details</button>
+    ${bankStatus}
   `;
-  if (nameEl && nameEl.parentNode) nameEl.parentNode.appendChild(bankEl);
+  if (nameEl && nameEl.parentNode) nameEl.parentNode.appendChild(walletEl);
 
   // Visible stamp to confirm deploys actually landed (user feedback: "nothing changed")
   const stamp = $('build-stamp');
@@ -599,7 +602,6 @@ async function submitAddManagerForm(ev) {
   const fplClubName = $('add-club').value.trim();
   const fplId = $('add-fplid').value.trim();
   const uclId = $('add-uclid').value.trim();
-  const payoutDetails = $('add-payout').value.trim() || `058:0001234567:${name}`;
 
   if (!name || !email || !accessCode) {
     alert('Name, email and access code required.');
@@ -609,7 +611,7 @@ async function submitAddManagerForm(ev) {
   try {
     const res = await fetchJSON('/api/admin/add-manager', {
       method: 'POST',
-      body: JSON.stringify({ name, email, accessCode, fplId, uclId, fplClubName, payoutDetails })
+      body: JSON.stringify({ name, email, accessCode, fplId, uclId, fplClubName })
     });
     alert(`Added! Code: ${accessCode}\n\n${res.message || ''}`);
     closeAddManagerModal();
@@ -1438,40 +1440,192 @@ async function requestPayout() {
   }
 }
 
-async function updatePayoutDetails() {
-  const currentDetails = currentManager.payoutDetails || '';
-  const isLocal = confirm('Is this a Nigerian (local) bank account? OK for local, Cancel for international.');
-  
-  let details = '';
-  if (isLocal) {
-    const name = prompt('Account Name:', currentDetails.split(':').pop() || '');
-    const bank = prompt('Bank Name or Code (e.g. 058 for GTBank):', '');
-    const acct = prompt('Account Number:', '');
-    if (name && bank && acct) details = `${bank}:${acct}:${name}`;
-  } else {
-    const name = prompt('Account Name:', '');
-    const bankName = prompt('Bank Name:', '');
-    const acct = prompt('Account Number / IBAN:', '');
-    const swift = prompt('SWIFT/BIC Code (if applicable):', '');
-    const country = prompt('Country:', '');
-    if (name && bankName && acct) {
-      details = `INTL:${bankName}:${acct}:${name}:${swift || ''}:${country || ''}`;
+function showBankModal() {
+  const m = $('bank-modal');
+  if (!m) return;
+  m.classList.remove('hidden');
+  m.classList.add('flex');
+
+  // Reset: choice buttons always visible at top (static selector), hide forms
+  const choice = document.getElementById('bank-choice');
+  const localForm = document.getElementById('local-bank-form');
+  const intlForm = document.getElementById('intl-bank-form');
+
+  if (choice) choice.classList.remove('hidden');
+  if (localForm) localForm.classList.add('hidden');
+  if (intlForm) intlForm.classList.add('hidden');
+
+  // Load Paystack banks into the static local select (once per open)
+  loadPaystackBanks().then(banks => {
+    let select = document.getElementById('local-bank-code');
+    if (!select) return;
+
+    // If we previously replaced it with input on error, re-query
+    if (select.tagName !== 'SELECT') {
+      // already an input from previous fallback, leave it
+    } else {
+      select.innerHTML = '<option value="">-- Select your bank --</option>';
+      if (banks && banks.length > 0) {
+        banks.forEach(b => {
+          const opt = document.createElement('option');
+          opt.value = b.code;
+          opt.textContent = `${b.name} (${b.code})`;
+          select.appendChild(opt);
+        });
+      } else {
+        // Fallback to text input
+        select.outerHTML = `<input id="local-bank-code" name="bank_code" type="text" required class="w-full bg-[#111] border border-[#444] rounded-xl px-3 py-2 text-sm" placeholder="Bank code e.g. 058">`;
+        select = document.getElementById('local-bank-code');
+      }
+    }
+
+    // If the local form is currently visible and we have saved data, re-apply the bank code
+    const localVisible = document.getElementById('local-bank-form') && !document.getElementById('local-bank-form').classList.contains('hidden');
+    if (localVisible && currentManager && currentManager.payoutDetails) {
+      try {
+        const d = JSON.parse(currentManager.payoutDetails);
+        if (d.bank_code && select) {
+          select.value = d.bank_code;
+        }
+      } catch(_) {}
+    }
+  }).catch(() => {});
+
+  // If user already has saved details, prefill the right static form (choice buttons stay visible above it)
+  if (currentManager && currentManager.payoutDetails) {
+    try {
+      const d = JSON.parse(currentManager.payoutDetails);
+      const isIntl = d.type === 'international';
+
+      if (isIntl && intlForm) {
+        intlForm.classList.remove('hidden');
+        const f = document.getElementById('intl-bank-form-el');
+        if (f) {
+          if (f.querySelector('[name="account_name"]')) f.querySelector('[name="account_name"]').value = d.account_name || '';
+          if (f.querySelector('[name="account_number"]')) f.querySelector('[name="account_number"]').value = d.account_number || '';
+          if (f.querySelector('[name="bank_name"]')) f.querySelector('[name="bank_name"]').value = d.bank_name || '';
+          if (f.querySelector('[name="swift"]')) f.querySelector('[name="swift"]').value = d.swift || '';
+          if (f.querySelector('[name="country"]')) f.querySelector('[name="country"]').value = d.country || '';
+          if (f.querySelector('[name="currency"]')) f.querySelector('[name="currency"]').value = d.currency || '';
+        }
+      } else if (!isIntl && localForm) {
+        localForm.classList.remove('hidden');
+        const f = document.getElementById('local-bank-form-el');
+        if (f) {
+          if (f.querySelector('[name="account_name"]')) f.querySelector('[name="account_name"]').value = d.account_name || '';
+          if (f.querySelector('[name="account_number"]')) f.querySelector('[name="account_number"]').value = d.account_number || '';
+          const bankSel = document.getElementById('local-bank-code');
+          if (bankSel) bankSel.value = d.bank_code || '';
+        }
+      }
+    } catch (e) {
+      // bad data or old format — show choice only, no prefill
     }
   }
-  
-  if (!details) return alert('Details not provided.');
-  
+}
+
+function showBankChoice() {
+  const choice = document.getElementById('bank-choice');
+  const localForm = document.getElementById('local-bank-form');
+  const intlForm = document.getElementById('intl-bank-form');
+  if (choice) choice.classList.remove('hidden');
+  if (localForm) localForm.classList.add('hidden');
+  if (intlForm) intlForm.classList.add('hidden');
+}
+
+function closeBankModal() {
+  const m = $('bank-modal');
+  if (m) {
+    m.classList.add('hidden');
+    m.classList.remove('flex');
+  }
+}
+
+async function loadPaystackBanks() {
+  try {
+    const data = await fetchJSON('/api/paystack/banks');
+    return data.banks || [];
+  } catch (e) {
+    console.warn('Could not load Paystack banks list', e);
+    return [];
+  }
+}
+
+function showLocalBankForm() {
+  const localForm = document.getElementById('local-bank-form');
+  const intlForm = document.getElementById('intl-bank-form');
+  if (intlForm) intlForm.classList.add('hidden');
+  if (localForm) localForm.classList.remove('hidden');
+  // Choice row stays visible so you always see both options
+}
+
+function showIntlBankForm() {
+  const localForm = document.getElementById('local-bank-form');
+  const intlForm = document.getElementById('intl-bank-form');
+  if (localForm) localForm.classList.add('hidden');
+  if (intlForm) intlForm.classList.remove('hidden');
+  // Choice row stays visible so you always see both options
+}
+
+async function submitBankForm(ev, type) {
+  ev.preventDefault();
+
+  // Pick the correct static form based on type
+  let form;
+  if (type === 'nuban') {
+    form = document.getElementById('local-bank-form-el');
+  } else {
+    form = document.getElementById('intl-bank-form-el');
+  }
+  if (!form) {
+    // fallback: try whichever is visible
+    form = document.querySelector('#local-bank-form:not(.hidden) form') || document.querySelector('#intl-bank-form:not(.hidden) form');
+  }
+  if (!form) return alert('Form not found. Please refresh.');
+
+  const formData = new FormData(form);
+  let detailsObj = {};
+  for (let [key, value] of formData.entries()) {
+    if (value) detailsObj[key] = value.trim();
+  }
+  detailsObj.type = type || 'nuban';
+  const details = JSON.stringify(detailsObj);
+
   try {
     await fetchJSON('/api/manager/update-payout', {
       method: 'POST',
       body: JSON.stringify({ payoutDetails: details })
     });
-    alert('Bank details updated for Paystack.');
+    alert('Bank details saved. Paystack will use these for automatic transfers and settlements.');
     currentManager.payoutDetails = details;
-    // Refresh UI if needed
+    closeBankModal();
+
+    // Rebuild the small wallet row immediately to reflect new bank status
+    const nameEl2 = $('manager-name');
+    if (nameEl2 && nameEl2.parentNode) {
+      let oldW = nameEl2.parentNode.querySelector('.wallet-row');
+      if (oldW) oldW.remove();
+      const hasBankNow = !!(details && details.length > 10);
+      const bankStatusNow = hasBankNow 
+        ? `<span class="text-[#00ff85] text-xs ml-1">✓ Bank on file — auto Paystack payouts enabled</span>` 
+        : `<span class="text-amber-400 text-xs ml-1">⚠ No bank set</span>`;
+      const wEl = document.createElement('div');
+      wEl.className = 'wallet-row mt-2 text-sm flex flex-wrap items-center gap-x-3 gap-y-1';
+      wEl.innerHTML = `
+        <span>Wallet: <span class="font-bold">₦${(currentManager.wallet || 0).toLocaleString()}</span></span>
+        <button onclick="requestPayout()" class="text-xs px-3 py-1 bg-[#00ff85] text-black font-semibold rounded-lg active:scale-[0.985]">Request Payout to Bank</button>
+        <button onclick="showUpdateBankModal()" class="text-xs px-3 py-1 border border-[#00ff85] text-[#00ff85] font-semibold rounded-lg active:scale-[0.985]">Update Bank Details</button>
+        ${bankStatusNow}
+      `;
+      nameEl2.parentNode.appendChild(wEl);
+    }
   } catch (e) {
     alert('Update failed: ' + e.message);
   }
+}
+
+function showUpdateBankModal() {
+  showBankModal();
 }
 
 async function initiatePayment(comp) {
