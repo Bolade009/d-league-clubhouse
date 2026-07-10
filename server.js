@@ -213,16 +213,16 @@ async function loadStore() {
 
     console.log(`[store] Loaded from SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
 
-    // Normalize for new 2026/27 season if old data (reset round/season name/lock, keep managers/payments/ledger)
-    if (storeCache.settings && (storeCache.settings.seasonName.includes("2025/26") || storeCache.settings.currentRound.fpl > 1 || storeCache.settings.seasonName.includes("25/26"))) {
+    // Normalize ONLY for old season data at the very start of 2026/27. 
+    // NEVER trigger on currentRound > 1 during live season - protects registered managers, scores, lock state.
+    if (storeCache.settings && (storeCache.settings.seasonName.includes("2025/26") || storeCache.settings.seasonName.includes("25/26"))) {
       storeCache.settings.seasonName = "2026/27 D League";
       storeCache.settings.currentRound = { fpl: 1, ucl: 1 };
       storeCache.settings.leagueLocked = false;
-      // Clear old history/scores for clean start? Keep ledger and payments for continuity.
       storeCache.settings.history = { weekly: [], awards: [], beefs: [], standings: [] };
       storeCache.scores = [];
       needsPersist = true;
-      console.log("[store] Normalized to 2026/27 season start (round=1, unlocked)");
+      console.log("[store] Normalized to 2026/27 season start (round=1, unlocked). Existing managers/payments/ledger fully protected.");
     }
 
     if (needsPersist) await persistStore();
@@ -1688,26 +1688,28 @@ app.post("/api/admin/add-manager", async (req, res) => {
 
   const s = await loadStore();
 
-  // Simple admin-controlled lock (no complex date logic)
-  if (!DEMO_MODE && s.settings.leagueLocked) {
+  const existing = s.managers.find(m => m.email.toLowerCase() === email.toLowerCase());
+
+  // Lock only prevents *new* managers. Already-registered managers can still be updated by admin (critical for live fixes).
+  if (!existing && !DEMO_MODE && s.settings.leagueLocked) {
     return res.status(403).json({ error: "League is locked by admin. No new managers can join." });
   }
 
-  const existing = s.managers.find(m => m.email.toLowerCase() === email.toLowerCase());
   if (existing) {
-    if (email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
-      // Admin re-registering as participant - update his profile
-      if (fplId) existing.fpl = { teamId: fplId, teamName: fplClubName || existing.fpl?.teamName || '' };
-      if (uclId) existing.ucl = { teamId: uclId, teamName: fplClubName || existing.ucl?.teamName || '' };
-      if (fplClubName) existing.fplClubName = fplClubName;
-      existing.accessCode = accessCode; // allow reset code if needed
-      await persistStore();
-      await logEvent("admin_registered_as_manager", { email, name, fplClubName });
-      return res.json({ ok: true, manager: { id: existing.id, displayName: name, email, accessCode }, message: "Admin profile updated as manager. Share the accessCode." });
-    }
-    return res.status(409).json({ error: "Manager with this email already exists" });
+    // Authorized admin call (auth passed above): allow updating details of already registered manager.
+    // This protects existing paid/registered users (no duplicate error) while letting commissioner fix FPL ID, name, code, club etc. even after season live.
+    existing.displayName = name;
+    existing.email = email;
+    existing.accessCode = accessCode;
+    if (fplId) existing.fpl = { teamId: fplId, teamName: fplClubName || existing.fpl?.teamName || '' };
+    if (uclId) existing.ucl = { teamId: uclId, teamName: fplClubName || existing.ucl?.teamName || '' };
+    if (fplClubName) existing.fplClubName = fplClubName;
+    await persistStore();
+    await logEvent("manager_updated_by_admin", { id: existing.id, email, name, fplClubName, fplId });
+    return res.json({ ok: true, manager: { id: existing.id, displayName: name, email, accessCode }, message: "Existing manager updated (details refreshed, paid status and history untouched)." });
   }
 
+  // New manager - create only if not locked (lock check above)
   const id = generateId("mgr");
   const mgr = {
     id,

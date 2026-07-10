@@ -362,6 +362,7 @@ async function loadAdminOverview() {
           <div class="text-right">
             <div class="font-mono text-sm">${code}</div>
             <button onclick="navigator.clipboard.writeText('${code}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500)" class="mt-1 text-[10px] px-3 py-0.5 bg-[#222] hover:bg-[#333] rounded">Copy Code</button>
+            <button onclick="editManager('${(m.email||'').replace(/'/g,'\\\'')}', '${(m.displayName||'').replace(/'/g,'\\\'')}', '${(m.fplClubName||'').replace(/'/g,'\\\'')}', '${(m.fpl && m.fpl.teamId || '').replace(/'/g,'\\\'')}', '${(m.ucl && m.ucl.teamId || '').replace(/'/g,'\\\'')}', '${code.replace(/'/g,'\\\'')}')" class="mt-1 ml-1 text-[9px] px-2 py-0.5 bg-[#222] hover:bg-[#333] rounded">Edit</button>
             ${reclaimBtn}
           </div>
         </div>`;
@@ -393,7 +394,7 @@ async function loadAdminOverview() {
       <div class="flex justify-between items-center mb-4 pb-3 border-b border-[#222]">
         <div>
           <span class="font-black text-4xl text-[#00ff85] tracking-[-1.5px]">ADMIN COCKPIT</span>
-          <div class="text-xs text-[#888] mt-0.5">Commissioner view • Admin has no team in competition</div>
+          <div class="text-xs text-[#888] mt-0.5">Commissioner view • Admin has no team • Use Edit on managers to fix details (works after lock/live)</div>
         </div>
         <div class="flex gap-2">
           <button onclick="loadAdminOverview()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">REFRESH ALL</button>
@@ -686,6 +687,26 @@ async function reclaimPaidManager(managerId, currentName, currentClub) {
     loadAdminOverview();
   } catch (e) {
     alert('Reclaim failed: ' + (e.message || e));
+  }
+}
+
+async function editManager(email, currentName, currentClub, currentFplId, currentUclId, currentCode) {
+  if (!email) return alert('No email');
+  const name = prompt('Display name:', currentName || '') || currentName;
+  const accessCode = prompt('Access code:', currentCode || '') || currentCode;
+  const fplClubName = prompt('FPL club / team name:', currentClub || '') || currentClub;
+  const fplId = prompt('FPL Team ID:', currentFplId || '') || currentFplId;
+  const uclId = prompt('UCL Team ID (optional):', currentUclId || '') || currentUclId;
+
+  try {
+    const res = await fetchJSON('/api/admin/add-manager', {
+      method: 'POST',
+      body: JSON.stringify({ name, email, accessCode, fplId, uclId, fplClubName })
+    });
+    alert('✅ Manager updated!\n' + (res.message || 'Details saved. Paid status preserved.'));
+    loadAdminOverview();
+  } catch (e) {
+    alert('Update failed: ' + (e.message || e));
   }
 }
 
