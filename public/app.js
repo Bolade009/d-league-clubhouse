@@ -143,6 +143,9 @@ function showDashboard() {
   // Render the two clear static pay blocks (reliable, no fragile insert)
   renderPayAccess();
 
+  // Preload Paystack banks in background for instant dropdown in bank form
+  loadPaystackBanks().catch(() => {});
+
   // Populate hero stats immediately from the data we already have
   renderManagerHero();
 
@@ -1474,29 +1477,27 @@ function showBankModal() {
 
   // Load Paystack banks into the static local select (once per open)
   loadPaystackBanks().then(banks => {
-    let select = document.getElementById('local-bank-code');
+    const select = document.getElementById('local-bank-code');
     if (!select) return;
 
-    // If we previously replaced it with input on error, re-query
-    if (select.tagName !== 'SELECT') {
-      // already an input from previous fallback, leave it
+    // Always keep as <select> for proper Paystack code selection
+    select.innerHTML = '<option value="">-- Select your bank from Paystack list --</option>';
+    if (banks && banks.length > 0) {
+      banks.forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b.code;
+        opt.textContent = `${b.name} (${b.code})`;
+        select.appendChild(opt);
+      });
     } else {
-      select.innerHTML = '<option value="">-- Select your bank --</option>';
-      if (banks && banks.length > 0) {
-        banks.forEach(b => {
-          const opt = document.createElement('option');
-          opt.value = b.code;
-          opt.textContent = `${b.name} (${b.code})`;
-          select.appendChild(opt);
-        });
-      } else {
-        // Fallback to text input
-        select.outerHTML = `<input id="local-bank-code" name="bank_code" type="text" required class="w-full bg-[#111] border border-[#444] rounded-xl px-3 py-2 text-sm" placeholder="Bank code e.g. 058">`;
-        select = document.getElementById('local-bank-code');
-      }
+      // If fetch failed (no secret or network), provide guidance but keep select
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '(List unavailable - enter known code like 058 below if needed, or refresh)';
+      select.appendChild(opt);
     }
 
-    // If the local form is currently visible and we have saved data, re-apply the bank code
+    // Re-apply saved bank code if form visible
     const localVisible = document.getElementById('local-bank-form') && !document.getElementById('local-bank-form').classList.contains('hidden');
     if (localVisible && currentManager && currentManager.payoutDetails) {
       try {
@@ -1506,7 +1507,13 @@ function showBankModal() {
         }
       } catch(_) {}
     }
-  }).catch(() => {});
+  }).catch(() => {
+    // On error, still ensure basic select
+    const select = document.getElementById('local-bank-code');
+    if (select && select.options.length <= 1) {
+      select.innerHTML = '<option value="">-- Select bank (Paystack list failed to load) --</option>';
+    }
+  });
 
   // If user already has saved details, prefill the right static form (choice buttons stay visible above it)
   if (currentManager && currentManager.payoutDetails) {
@@ -1558,10 +1565,13 @@ function closeBankModal() {
   }
 }
 
+let paystackBanksCache = null;
 async function loadPaystackBanks() {
+  if (paystackBanksCache) return paystackBanksCache;
   try {
     const data = await fetchJSON('/api/paystack/banks');
-    return data.banks || [];
+    paystackBanksCache = data.banks || [];
+    return paystackBanksCache;
   } catch (e) {
     console.warn('Could not load Paystack banks list', e);
     return [];

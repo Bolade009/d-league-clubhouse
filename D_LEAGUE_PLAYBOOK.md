@@ -52,16 +52,19 @@ Late joiners pay the full season fee. No discounts. Fairness is non-negotiable.
 
 ### UCL
 - Season fee: **₦15,000**
-  - Most goes to pots
-  - Smaller house slice (currently coded at ₦2,500)
+  - ₦10,000 for weekly payouts (matchday pots)
+  - ₦2,500 for final standing / overall pot at the end of the season
+  - **₦2,500** is the house/admin fee
 
-**Why the 5k house fee exists and why it is honest:**
+**Why the house fees exist and why they are honest:**
 
-The ₦5,000 covers:
+For FPL the ₦5,000 house fee (for UCL the ₦2,500) covers:
 - Paystack processing + transfer fees on every payout
 - Server, database, SSL, automated weekly syncs and settlement jobs that run 24/7
 - Building and maintaining the beautiful dashboard (lineup viewer, live projections, H2H brackets, wallet)
 - The guarantee that money moves *automatically* without anyone chasing the commissioner at 2am after a Monday night game
+
+For UCL specifically: ₦10,000 funds the weekly/matchday payouts, ₦2,500 funds the end-of-season overall/final standings pot, and ₦2,500 is the house fee.
 
 Everything else (90%+ of the real pot money) is distributed to managers via Paystack transfers.
 

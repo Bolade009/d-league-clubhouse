@@ -109,9 +109,9 @@ const COMPETITIONS = {
     roundLabel: "MD",
     rounds: 17,
     seasonFee: 15000,
-    contributionPerRound: 500,
-    extraReserve: 1500,
-    adminFee: 5000,
+    contributionPerRound: 600,  // ~10,200 total for weekly/matchday pots over 17 MDs
+    extraReserve: 0,
+    adminFee: 2500,  // house fee for UCL (consistent with revenue tracking)
     reserveSplit: [
       { label: "League Phase", pct: 70 },
       { label: "Knockout Phase", pct: 30 }
@@ -441,16 +441,13 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
   s.payments.push(payment);
 
   // Track revenue for season pots (exclude pure house admin fees)
-  if (competition === 'fpl') {
-    // FPL: 5000 is pure house fee, rest is revenue
-    const houseFee = 5000;
-    s.settings.totalFplRevenue = (s.settings.totalFplRevenue || 0) + Math.max(0, Number(amount) - houseFee);
-    s.settings.houseFplAdmin = (s.settings.houseFplAdmin || 0) + Math.min(Number(amount), houseFee);
-  } else if (competition === 'ucl') {
-    // UCL: 2500 is pure house fee
-    const houseFee = 2500;
-    s.settings.totalUclRevenue = (s.settings.totalUclRevenue || 0) + Math.max(0, Number(amount) - houseFee);
-    s.settings.houseUclAdmin = (s.settings.houseUclAdmin || 0) + Math.min(Number(amount), houseFee);
+  const compDef = COMPETITIONS[competition];
+  const houseFee = compDef ? (compDef.adminFee || 0) : 0;
+  if (competition === 'fpl' || competition === 'ucl') {
+    const revKey = `total${competition.charAt(0).toUpperCase() + competition.slice(1)}Revenue`;
+    const houseKey = `house${competition.charAt(0).toUpperCase() + competition.slice(1)}Admin`;
+    s.settings[revKey] = (s.settings[revKey] || 0) + Math.max(0, Number(amount) - houseFee);
+    s.settings[houseKey] = (s.settings[houseKey] || 0) + Math.min(Number(amount), houseFee);
   }
 
   await logEvent("payment_confirmed", { managerId, competition, reference, amount });
@@ -464,7 +461,7 @@ function updateSeasonPots(s) {
   const uclRev = s.settings.totalUclRevenue || 0;
   s.settings.fplOverallPot = Math.floor(0.05 * fplRev);
   s.settings.fplCupPot = Math.floor(0.025 * fplRev);
-  s.settings.uclOverallPot = Math.floor(0.05 * uclRev);
+  s.settings.uclOverallPot = Math.floor(0.2 * uclRev);  // 20% of UCL revenue (after 2.5k house) ≈ 2,500 per paid manager for final standings
 }
 
 function calculateRoundPot(compKey, round, paidCount) {
@@ -1982,17 +1979,15 @@ app.post("/api/wallet/request-payout", async (req, res) => {
 });
 
 // Proxy list of Nigerian banks from Paystack (for accurate codes in local forms)
+// Always attempt fetch (bank list works without secret in most cases)
 app.get("/api/paystack/banks", async (req, res) => {
-  if (!PAYSTACK_SECRET) {
-    return res.json({ banks: [] });
-  }
   const options = {
     hostname: "api.paystack.co",
     path: "/bank?country=NG",
     method: "GET",
-    headers: {
+    headers: PAYSTACK_SECRET ? {
       Authorization: `Bearer ${PAYSTACK_SECRET}`
-    }
+    } : {}
   };
   const reqPay = https.request(options, (pres) => {
     let data = "";
@@ -2001,7 +1996,7 @@ app.get("/api/paystack/banks", async (req, res) => {
       try {
         const body = JSON.parse(data);
         const banks = (body.data || []).map(b => ({ name: b.name, code: b.code }));
-        res.json({ banks });
+        res.json({ banks: banks.length ? banks : [] });
       } catch (e) {
         res.json({ banks: [] });
       }
