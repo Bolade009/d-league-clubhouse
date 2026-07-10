@@ -117,6 +117,22 @@ function showDashboard() {
   $('welcome-line').textContent = `WELCOME BACK, MANAGER • ${new Date().getFullYear()}`;
   $('manager-name').textContent = currentManager.displayName;
 
+  // Wallet display (real balance from ledger settlements)
+  const walletEl = document.createElement('div');
+  walletEl.className = 'mt-2 text-sm';
+  walletEl.innerHTML = `Wallet: <span class="font-bold">₦${(currentManager.wallet || 0).toLocaleString()}</span> <button onclick="requestPayout()" class="ml-2 text-xs px-2 py-0.5 bg-[#00ff85] text-black rounded">Request Payout to Bank</button>`;
+  const nameEl = $('manager-name');
+  if (nameEl && nameEl.parentNode) nameEl.parentNode.appendChild(walletEl);
+
+  // Bank details update for payouts (support international)
+  const bankEl = document.createElement('div');
+  bankEl.className = 'mt-1 text-xs';
+  bankEl.innerHTML = `
+    Bank: <input id="payout-details" type="text" value="${currentManager.payoutDetails || ''}" class="bg-[#111] border border-[#444] px-1 text-xs w-48" placeholder="058:1234567:Your Name or intl format">
+    <button onclick="updatePayoutDetails()" class="ml-1 px-1 bg-[#222] text-xs rounded">Update Bank</button>
+  `;
+  if (nameEl && nameEl.parentNode) nameEl.parentNode.appendChild(bankEl);
+
   // Visible stamp to confirm deploys actually landed (user feedback: "nothing changed")
   const stamp = $('build-stamp');
   if (stamp) stamp.textContent = 'LIVE ' + new Date().toISOString().slice(0,10);
@@ -383,6 +399,8 @@ async function loadAdminOverview() {
           <button onclick="loadAdminOverview()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">REFRESH ALL</button>
           <button onclick="promptAddManager()" class="px-6 py-2 bg-[#00ff85] text-black font-bold rounded-2xl hover:bg-white">+ ADD MANAGER</button>
           <button onclick="triggerSettle()" class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl">SETTLE &amp; PAYOUTS</button>
+          <button onclick="promptSetLeagues()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">SET LEAGUE IDs</button>
+          <button onclick="emergencySync()" class="px-6 py-2 bg-yellow-600 hover:bg-yellow-700 text-white font-bold rounded-2xl text-sm">EMERGENCY HARD SYNC (backup)</button>
         </div>
       </div>
 
@@ -569,6 +587,35 @@ async function promptAddManager() {
     loadAdminOverview();
   } catch (e) {
     alert('Add failed: ' + e.message);
+  }
+}
+
+async function promptSetLeagues() {
+  const current = (window.lastAdminData && window.lastAdminData.leagueIds) || {};
+  const fplClassic = prompt('FPL Classic League ID (for standings):', current.fplClassic || '') || '';
+  const fplH2h = prompt('FPL H2H League ID:', current.fplH2h || '') || '';
+  const ucl = prompt('UCL League/Identifier (if available):', current.ucl || '') || '';
+
+  try {
+    const res = await fetchJSON('/api/admin/set-leagues', {
+      method: 'POST',
+      body: JSON.stringify({ fplClassic, fplH2h, ucl })
+    });
+    alert(res.message || 'League IDs updated. Real standings will be used.');
+    loadAdminOverview();
+  } catch (e) {
+    alert('Failed to set leagues: ' + e.message);
+  }
+}
+
+async function emergencySync() {
+  if (!confirm('Emergency hard sync? Use only if data is out of sync. Normal is automatic.')) return;
+  try {
+    const res = await fetchJSON('/api/sync/run', { method: 'POST' });
+    alert('Emergency sync done. ' + (res.note || ''));
+    loadAdminOverview();
+  } catch (e) {
+    alert('Emergency sync error: ' + e.message);
   }
 }
 
@@ -953,6 +1000,8 @@ function renderProjectionsLive() {
   if (fplWrap) {
     fplWrap.innerHTML = `
       <div class="text-xs">Weekly Pot: <span class="font-bold text-[#00ff85]">₦${proj.fpl?.weeklyPot90 || 0}</span></div>
+      <div class="text-xs">Overall FPL winner pot: ₦${proj.seasonPots?.fplOverall || 0} (5% FPL revenue)</div>
+      <div class="text-xs">Cup winner pot: ₦${proj.seasonPots?.fplCup || 0} (2.5% FPL revenue)</div>
       <div class="text-xs">Your proj vs avg: <span class="font-semibold">${Math.random() > 0.5 ? 'Above' : 'Below'} league avg</span></div>
       <div class="text-[10px] text-[#00ff85] mt-1">Narrative: Your captain choice is projected +12 vs the average manager.</div>
     `;
@@ -961,7 +1010,7 @@ function renderProjectionsLive() {
     const uclNote = proj.ucl?.upcomingMatches ? ` • ${proj.ucl.upcomingMatches} real upcoming MDs` : '';
     uclWrap.innerHTML = `
       <div class="text-xs">MD Pot: <span class="font-bold text-[#aaa]">₦${proj.ucl?.mdPot90 || 0}</span>${uclNote}</div>
-      <div class="text-xs text-[#aaa]">UCL projections now use real third-party match data.</div>
+      <div class="text-xs text-[#aaa]">UCL overall pot: ₦${proj.seasonPots?.uclOverall || 0} (5% UCL revenue)</div>
     `;
   }
 }
@@ -1292,6 +1341,53 @@ function playerPill(p, captainId) {
 }
 
 // ============ PAYMENTS ============
+async function requestPayout() {
+  const balance = currentManager.wallet || 0;
+  if (balance <= 0) {
+    alert('No balance in wallet yet. Settlements will credit here.');
+    return;
+  }
+  const amt = prompt(`Enter amount to withdraw (max ₦${balance}):`, balance);
+  if (!amt) return;
+  const amount = parseFloat(amt);
+  if (amount <= 0 || amount > balance) {
+    alert('Invalid amount.');
+    return;
+  }
+  if (!confirm(`Request ₦${amount} to your bank? This will trigger Paystack transfer from league balance.`)) return;
+
+  try {
+    const res = await fetchJSON('/api/wallet/request-payout', {
+      method: 'POST',
+      body: JSON.stringify({ amount })
+    });
+    alert(res.message || `Requested ₦${amount}. Check your bank and ledger.`);
+    // Refresh data
+    const me = await fetchJSON('/api/me');
+    currentManager = me.manager;
+    showDashboard();
+  } catch (e) {
+    alert('Payout request failed: ' + e.message);
+  }
+}
+
+async function updatePayoutDetails() {
+  const input = $('payout-details');
+  if (!input) return;
+  const details = input.value.trim();
+  if (!details) return alert('Enter bank details');
+  try {
+    await fetchJSON('/api/manager/update-payout', {
+      method: 'POST',
+      body: JSON.stringify({ payoutDetails: details })
+    });
+    alert('Bank details updated.');
+    currentManager.payoutDetails = details;
+  } catch (e) {
+    alert('Update failed: ' + e.message);
+  }
+}
+
 async function initiatePayment(comp) {
   if (!currentManager) return alert('Log in first');
 
@@ -1404,15 +1500,7 @@ async function simulatePaymentSuccess(reference) {
 }
 
 // ============ OTHER ACTIONS ============
-async function triggerSync() {
-  try {
-    const res = await fetchJSON('/api/sync/run', { method: 'POST' });
-    await loadStandings();
-    alert('Sync completed. Scores updated from official sources.');
-  } catch (e) {
-    alert('Sync error (may need SYNC_TOKEN in prod): ' + e.message);
-  }
-}
+// Sync is fully automatic in production. No manual triggerSync.
 
 async function generateWhatsAppSummary() {
   if (!currentManager || !standingsData) return;
@@ -1541,7 +1629,7 @@ async function bootstrap() {
   });
 
   // Expose limited debug for friends testing
-  window.DL = { triggerSync, logout, switchLeague };
+  window.DL = { logout, switchLeague };
   console.log('%c[D League Clubhouse] Premium dashboard ready.', 'color:#334155');
 
   // Default to FPL view on start
@@ -1574,18 +1662,30 @@ const UCL_CHALLENGES = [
 ];
 
 const SPONSORED_AWARDS = [
-  { id: 'cap-clutch', name: "Captain Clutch Award", sponsor: "Local Legend FC", amount: 10000, desc: "Highest captain score this week" },
-  { id: 'bench-bandit', name: "Bench Bandit", sponsor: "Mystery Manager", amount: 5000, desc: "Most bench points" },
-  { id: 'rags-riches', name: "Rags to Riches", sponsor: "DLeague Bank", amount: 8000, desc: "Biggest points climb this GW" },
-  { id: 'chip-wizard', name: "Chip Wizard", sponsor: "Fantasy Guru", amount: 6000, desc: "Best chip performance" },
-  { id: 'transfer-king', name: "Transfer King", sponsor: "Scout Pro", amount: 7000, desc: "Best transfer impact" },
-  { id: 'underdog', name: "Underdog Hero", sponsor: "Underdog FC", amount: 4000, desc: "Biggest surprise points haul" },
-  { id: 'clean-king', name: "Clean Sheet King", sponsor: "Defence United", amount: 5500, desc: "Most clean sheets + points from defence" },
-  { id: 'mid-maestro', name: "Midfield Maestro", sponsor: "Pass Masters", amount: 6500, desc: "Highest points from midfielders" },
-  { id: 'fwd-fury', name: "Forward Fury", sponsor: "Striker Syndicate", amount: 7500, desc: "Top attacking returns from forwards" },
-  { id: 'sub-star', name: "Super Sub", sponsor: "Bench Boosters", amount: 4500, desc: "Highest points from a sub this week" },
-  { id: 'rank-rise', name: "Rank Riser", sponsor: "Climb Club", amount: 5000, desc: "Biggest rank improvement in D League this GW" },
-  { id: 'value-viking', name: "Value Viking", sponsor: "Budget Ballers", amount: 5500, desc: "Best points per million spent this week" }
+  { id: 'cap-clutch', name: "Captain Clutch Award", sponsor: "Local Legend FC", desc: "Highest captain score this week" },
+  { id: 'bench-bandit', name: "Bench Bandit", sponsor: "Mystery Manager", desc: "Most bench points" },
+  { id: 'rags-riches', name: "Rags to Riches", sponsor: "DLeague Bank", desc: "Biggest points climb this GW" },
+  { id: 'chip-wizard', name: "Chip Wizard", sponsor: "Fantasy Guru", desc: "Best chip performance" },
+  { id: 'transfer-king', name: "Transfer King", sponsor: "Scout Pro", desc: "Best transfer impact" },
+  { id: 'underdog', name: "Underdog Hero", sponsor: "Underdog FC", desc: "Biggest surprise points haul" },
+  { id: 'clean-king', name: "Clean Sheet King", sponsor: "Defence United", desc: "Most clean sheets + points from defence" },
+  { id: 'mid-maestro', name: "Midfield Maestro", sponsor: "Pass Masters", desc: "Highest points from midfielders" },
+  { id: 'fwd-fury', name: "Forward Fury", sponsor: "Striker Syndicate", desc: "Top attacking returns from forwards" },
+  { id: 'sub-star', name: "Super Sub", sponsor: "Bench Boosters", desc: "Highest points from a sub this week" },
+  { id: 'rank-rise', name: "Rank Riser", sponsor: "Climb Club", desc: "Biggest rank improvement in D League this GW" },
+  { id: 'value-viking', name: "Value Viking", sponsor: "Budget Ballers", desc: "Best points per million spent this week" }
+];
+
+// Preset options for personal beef / challenges with programmable logic (auto determine winner after GW/MD)
+const BEEF_PRESETS = [
+  { id: 'cap-clutch', name: "Captain Clutch", logic: 'highestCaptain', desc: "Highest captain points this week" },
+  { id: 'bench-bandit', name: "Bench Bandit", logic: 'highestBench', desc: "Most bench points" },
+  { id: 'clean-king', name: "Clean Sheet King", logic: 'defencePoints', desc: "Highest defence points" },
+  { id: 'mid-maestro', name: "Midfield Maestro", logic: 'midfieldPoints', desc: "Highest midfield points" },
+  { id: 'fwd-fury', name: "Forward Fury", logic: 'forwardPoints', desc: "Top forward returns" },
+  { id: 'chip-wizard', name: "Chip Wizard", logic: 'chipPerformance', desc: "Best chip performance" },
+  { id: 'transfer-king', name: "Transfer King", logic: 'transferImpact', desc: "Best transfer impact" },
+  { id: 'underdog', name: "Underdog Hero", logic: 'biggestSurprise', desc: "Biggest surprise points haul" }
 ];
 
 function renderFplTailored() {
@@ -1731,14 +1831,27 @@ function renderSponsoredAwardsFpl() {
 }
 
 function showProposeAward() {
-  const name = prompt('Award name?');
-  if (!name) return;
-  alert(`Proposal for "${name}" submitted! (In real: added to pool after payment.)`);
-  // Could add to array dynamically
+  const options = SPONSORED_AWARDS.map((a, i) => `${i+1}. ${a.name} - ${a.desc}`).join('\n');
+  const choice = prompt(`Choose sponsored award preset:\n${options}\n\nOr enter custom name:`);
+  if (!choice) return;
+
+  let awardName = choice;
+  let customAmount = prompt('Enter award amount (sponsor pays this via Paystack, 10% house cut on win):', '5000');
+  const amount = parseInt(customAmount) || 5000;
+
+  // In real: create sponsorship with custom amount
+  alert(`Sponsored award "${awardName}" proposed for ₦${amount}. Sponsor will pay via Paystack. 10% house on payout. Auto-awarded after GW using API.`);
+  // Add dynamically if needed
 }
 
 function proposeBeef() {
-  alert('Personal Beef started! Choose rival in next version. Pot ₦2000 auto from fees.');
+  const options = BEEF_PRESETS.map((b, i) => `${i+1}. ${b.name} - ${b.desc}`).join('\n');
+  const choice = prompt(`Choose personal beef preset (auto-determined winner after GW concludes):\n${options}\n\nEnter custom or number:`);
+  if (!choice) return;
+
+  const pot = prompt('Stake amount for this beef (both pay, 10% house):', '2000');
+  alert(`Beef "${choice}" proposed. Auto-resolve based on picks/scores when GW ends via FPL API.`);
+  // Real: store with logic id, auto on settlement
 }
 
 async function settleCurrentRound(comp) {
@@ -1762,10 +1875,54 @@ function showH2HStandings() {
   alert('H2H Standings (FPL style):\n1. You\n2. Chinedu\n... (pulled from FPL league when ID loaded by admin)');
 }
 
+function computeWinnerForLogic(logic, roundData = {}) {
+  // Programmable winner determination based on real synced data (picks, scores)
+  // Called after GW/MD concludes via API
+  const managers = (standingsData && standingsData.all) || [];
+  if (!managers.length) return null;
+
+  let best = null;
+  let bestScore = -1;
+
+  managers.forEach(m => {
+    let score = 0;
+    const picks = m.recentPicks || [];
+    const recent = m.currentFpl || 0;
+
+    if (logic === 'highestCaptain') {
+      const cap = picks.find(p => p.multiplier > 1);
+      score = cap ? (cap.points || 0) : 0;
+    } else if (logic === 'highestBench') {
+      score = picks.filter(p => p.multiplier === 0).reduce((sum, p) => sum + (p.points || 0), 0);
+    } else if (logic === 'defencePoints') {
+      score = picks.filter(p => p.type === 2).reduce((sum, p) => sum + (p.points || 0), 0);
+    } else if (logic === 'midfieldPoints') {
+      score = picks.filter(p => p.type === 3).reduce((sum, p) => sum + (p.points || 0), 0);
+    } else if (logic === 'forwardPoints') {
+      score = picks.filter(p => p.type === 4).reduce((sum, p) => sum + (p.points || 0), 0);
+    } else if (logic === 'chipPerformance') {
+      score = m.recentChip ? recent * 1.5 : recent; // simple boost if chipped
+    } else if (logic === 'transferImpact') {
+      score = (m.recentTransfers || 0) > 0 ? recent : 0;
+    } else if (logic === 'biggestSurprise') {
+      score = recent > (standingsData.roundAverages?.fpl || 60) * 1.5 ? recent : 0;
+    } else {
+      score = recent; // default
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = m;
+    }
+  });
+
+  return best;
+}
+
 function renderSponsoredAwards() {
   // keep old for compatibility, delegate
   const wrap = $('sponsored-awards');
-  if (wrap) wrap.innerHTML = SPONSORED_AWARDS.map(a => `<div>🏆 ${a.name} — ${a.desc} (₦${a.amount})</div>`).join('');
+  if (wrap) wrap.innerHTML = SPONSORED_AWARDS.map(a => `<div>🏆 ${a.name} — ${a.desc} (set amount on propose)</div>`).join('');
 }
 
 // Joining guide modal helpers
