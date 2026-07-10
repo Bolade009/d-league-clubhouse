@@ -93,6 +93,98 @@ async function tryAutoLogin() {
   }
 }
 
+// Static comprehensive list of Nigerian banks from Paystack (for reliable name-based dropdown)
+const STATIC_NIGERIAN_BANKS = [
+  { name: "9mobile 9Payment Service Bank", code: "120001" },
+  { name: "Abbey Mortgage Bank", code: "801" },
+  { name: "Above Only MFB", code: "51204" },
+  { name: "Abulesoro MFB", code: "51312" },
+  { name: "Access Bank", code: "044" },
+  { name: "Access Bank (Diamond)", code: "063" },
+  { name: "Airtel Smartcash PSB", code: "120004" },
+  { name: "ALAT by WEMA", code: "035A" },
+  { name: "Amju Unique MFB", code: "50926" },
+  { name: "Aramoko MFB", code: "50083" },
+  { name: "ASO Savings and Loans", code: "401" },
+  { name: "Astrapolaris MFB LTD", code: "MFB50094" },
+  { name: "Bainescredit MFB", code: "51229" },
+  { name: "Bowen Microfinance Bank", code: "50931" },
+  { name: "Carbon", code: "565" },
+  { name: "CEMCS Microfinance Bank", code: "50823" },
+  { name: "Chanelle Microfinance Bank Limited", code: "50171" },
+  { name: "Citibank Nigeria", code: "023" },
+  { name: "Corestep MFB", code: "50204" },
+  { name: "Coronation Merchant Bank", code: "559" },
+  { name: "Crescent MFB", code: "51297" },
+  { name: "Ecobank Nigeria", code: "050" },
+  { name: "Ekimogun MFB", code: "50263" },
+  { name: "Ekondo Microfinance Bank", code: "562" },
+  { name: "Eyowo", code: "50126" },
+  { name: "Fidelity Bank", code: "070" },
+  { name: "Firmus MFB", code: "51314" },
+  { name: "First Bank of Nigeria", code: "011" },
+  { name: "First City Monument Bank", code: "214" },
+  { name: "FSDH Merchant Bank Limited", code: "501" },
+  { name: "Gateway Mortgage Bank LTD", code: "812" },
+  { name: "Globus Bank", code: "00103" },
+  { name: "GoMoney", code: "100022" },
+  { name: "Guaranty Trust Bank", code: "058" },
+  { name: "Hackman Microfinance Bank", code: "51251" },
+  { name: "Hasal Microfinance Bank", code: "50383" },
+  { name: "Heritage Bank", code: "030" },
+  { name: "HopePSB", code: "120002" },
+  { name: "Ibile Microfinance Bank", code: "51244" },
+  { name: "Ikoyi Osun MFB", code: "50439" },
+  { name: "Infinity MFB", code: "50457" },
+  { name: "Jaiz Bank", code: "301" },
+  { name: "Kadpoly MFB", code: "50502" },
+  { name: "Keystone Bank", code: "082" },
+  { name: "Kredi Money MFB LTD", code: "50200" },
+  { name: "Kuda Bank", code: "50211" },
+  { name: "Lagos Building Investment Company Plc.", code: "90052" },
+  { name: "Links MFB", code: "50549" },
+  { name: "Living Trust Mortgage Bank", code: "031" },
+  { name: "Lotus Bank", code: "303" },
+  { name: "Mayfair MFB", code: "50563" },
+  { name: "Mint MFB", code: "50304" },
+  { name: "MTN Momo PSB", code: "120003" },
+  { name: "Paga", code: "100002" },
+  { name: "PalmPay", code: "999991" },
+  { name: "Parallex Bank", code: "104" },
+  { name: "Parkway - ReadyCash", code: "311" },
+  { name: "Paycom", code: "999992" },
+  { name: "Petra Mircofinance Bank Plc", code: "50746" },
+  { name: "Polaris Bank", code: "076" },
+  { name: "Polyunwana MFB", code: "50864" },
+  { name: "PremiumTrust Bank", code: "105" },
+  { name: "Providus Bank", code: "101" },
+  { name: "QuickFund MFB", code: "51293" },
+  { name: "Rand Merchant Bank", code: "502" },
+  { name: "Refuge Mortgage Bank", code: "90067" },
+  { name: "Rubies MFB", code: "125" },
+  { name: "Safe Haven MFB", code: "51113" },
+  { name: "Solid Rock MFB", code: "50800" },
+  { name: "Sparkle Microfinance Bank", code: "51310" },
+  { name: "Stanbic IBTC Bank", code: "221" },
+  { name: "Standard Chartered Bank", code: "068" },
+  { name: "Stellas MFB", code: "51253" },
+  { name: "Sterling Bank", code: "232" },
+  { name: "Suntrust Bank", code: "100" },
+  { name: "TAJ Bank", code: "302" },
+  { name: "Tangerine Money", code: "51269" },
+  { name: "TCF MFB", code: "51211" },
+  { name: "Titan Bank", code: "102" },
+  { name: "Titan Paystack", code: "100039" },
+  { name: "Unical MFB", code: "50871" },
+  { name: "Union Bank of Nigeria", code: "032" },
+  { name: "United Bank For Africa", code: "033" },
+  { name: "Unity Bank", code: "215" },
+  { name: "VFD Microfinance Bank Limited", code: "566" },
+  { name: "Wema Bank", code: "035" },
+  { name: "Zenith Bank", code: "057" },
+  { name: "OPay", code: "100004" }
+];
+
 // ============ DASHBOARD RENDER ============
 function showDashboard() {
   $('login-screen').classList.add('hidden');
@@ -143,8 +235,37 @@ function showDashboard() {
   // Render the two clear static pay blocks (reliable, no fragile insert)
   renderPayAccess();
 
-  // Preload Paystack banks in background for instant dropdown in bank form
-  loadPaystackBanks().catch(() => {});
+  // Pre-populate bank select with static list immediately for instant UX (then enhance with API if available)
+  (function prePopulateBanks() {
+    const select = document.getElementById('local-bank-code');
+    if (select) {
+      // Use static for immediate population
+      const staticBanks = STATIC_NIGERIAN_BANKS.slice().sort((a, b) => a.name.localeCompare(b.name));
+      select.innerHTML = '<option value="">-- Select your bank --</option>';
+      staticBanks.forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b.code;
+        opt.textContent = b.name;
+        select.appendChild(opt);
+      });
+    }
+  })();
+
+  // Preload (may update with live Paystack list in prod)
+  loadPaystackBanks().then(banks => {
+    const select = document.getElementById('local-bank-code');
+    if (select && banks && banks.length > 0) {
+      // Re-populate with potentially fresher list if API succeeded
+      const sorted = banks.slice().sort((a, b) => a.name.localeCompare(b.name));
+      select.innerHTML = '<option value="">-- Select your bank --</option>';
+      sorted.forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b.code;
+        opt.textContent = b.name;
+        select.appendChild(opt);
+      });
+    }
+  }).catch(() => {});
 
   // Populate hero stats immediately from the data we already have
   renderManagerHero();
@@ -1480,24 +1601,23 @@ function showBankModal() {
     const select = document.getElementById('local-bank-code');
     if (!select) return;
 
-    // Always keep as <select> for proper Paystack code selection
-    select.innerHTML = '<option value="">-- Select your bank from Paystack list --</option>';
-    if (banks && banks.length > 0) {
+    // Sort alphabetically by name for clean UX
+    banks = (banks || []).sort((a, b) => a.name.localeCompare(b.name));
+
+    // Always keep as <select> for proper Paystack code selection (value=code, display=name only)
+    select.innerHTML = '<option value="">-- Select your bank --</option>';
+    if (banks.length > 0) {
       banks.forEach(b => {
         const opt = document.createElement('option');
         opt.value = b.code;
-        opt.textContent = `${b.name} (${b.code})`;
+        opt.textContent = b.name;  // Clean name only, no code shown to user
         select.appendChild(opt);
       });
     } else {
-      // If fetch failed (no secret or network), provide guidance but keep select
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = '(List unavailable - enter known code like 058 below if needed, or refresh)';
-      select.appendChild(opt);
+      select.innerHTML = '<option value="">-- Select your bank --</option>';
     }
 
-    // Re-apply saved bank code if form visible
+    // Re-apply saved bank code if form visible (selects by code value)
     const localVisible = document.getElementById('local-bank-form') && !document.getElementById('local-bank-form').classList.contains('hidden');
     if (localVisible && currentManager && currentManager.payoutDetails) {
       try {
@@ -1508,10 +1628,10 @@ function showBankModal() {
       } catch(_) {}
     }
   }).catch(() => {
-    // On error, still ensure basic select
+    // On error, ensure basic select (static fallback should have prevented)
     const select = document.getElementById('local-bank-code');
     if (select && select.options.length <= 1) {
-      select.innerHTML = '<option value="">-- Select bank (Paystack list failed to load) --</option>';
+      select.innerHTML = '<option value="">-- Select your bank --</option>';
     }
   });
 
@@ -1566,15 +1686,20 @@ function closeBankModal() {
 }
 
 let paystackBanksCache = null;
+
 async function loadPaystackBanks() {
   if (paystackBanksCache) return paystackBanksCache;
   try {
     const data = await fetchJSON('/api/paystack/banks');
     paystackBanksCache = data.banks || [];
+    if (paystackBanksCache.length === 0) {
+      paystackBanksCache = STATIC_NIGERIAN_BANKS;
+    }
     return paystackBanksCache;
   } catch (e) {
-    console.warn('Could not load Paystack banks list', e);
-    return [];
+    console.warn('Could not load Paystack banks list, using static fallback', e);
+    paystackBanksCache = STATIC_NIGERIAN_BANKS;
+    return paystackBanksCache;
   }
 }
 

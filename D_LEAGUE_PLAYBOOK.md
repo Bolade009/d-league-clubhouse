@@ -84,7 +84,7 @@ It immediately asks:
 
 **Local (Nigeria) or International?**
 
-- **Local (Nigeria):** Beautiful form + live dropdown of every Nigerian bank pulled directly from Paystack's bank list. Pick your bank (e.g. GTBank 058), type your exact account name and 10-digit number.
+- **Local (Nigeria):** Beautiful form + dropdown of Nigerian banks from Paystack. Pick your bank by name (we use the correct code automatically), type your exact account name and 10-digit number.
 - **International:** Full form for account name, number/IBAN, bank name, SWIFT, country, currency.
 
 When you hit SAVE, we store a clean structured JSON object.
