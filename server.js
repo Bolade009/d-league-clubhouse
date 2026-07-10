@@ -133,7 +133,7 @@ function createEmptyStore() {
         fplH2h: "",      // H2H league ID
         ucl: ""          // If UCL has equivalent identifier (or use internal)
       },
-      leagueLocked: false,  // Admin can manually lock/unlock new joins (default open for new season)
+      leagueLocked: { fpl: false, ucl: false },  // Separate locks for FPL and UCL joins (admin controls independently)
       // Revenue tracking for season pots (excluding pure house admin fees)
       totalFplRevenue: 0,
       totalUclRevenue: 0,
@@ -218,7 +218,7 @@ async function loadStore() {
     if (storeCache.settings && (storeCache.settings.seasonName.includes("2025/26") || storeCache.settings.seasonName.includes("25/26"))) {
       storeCache.settings.seasonName = "2026/27 D League";
       storeCache.settings.currentRound = { fpl: 1, ucl: 1 };
-      storeCache.settings.leagueLocked = false;
+      storeCache.settings.leagueLocked = { fpl: false, ucl: false };
       storeCache.settings.history = { weekly: [], awards: [], beefs: [], standings: [] };
       storeCache.scores = [];
       needsPersist = true;
@@ -226,6 +226,13 @@ async function loadStore() {
     }
 
     if (needsPersist) await persistStore();
+
+    // Migrate old boolean leagueLocked to per-comp object
+    if (typeof storeCache.settings.leagueLocked === 'boolean') {
+      const wasLocked = storeCache.settings.leagueLocked;
+      storeCache.settings.leagueLocked = { fpl: wasLocked, ucl: wasLocked };
+      needsPersist = true;
+    }
 
     // One-time migration from old store.json (if exists and SQLite is empty)
     const oldStorePath = STORE_FILE;
@@ -1705,9 +1712,16 @@ app.post("/api/admin/add-manager", async (req, res) => {
 
   const existing = s.managers.find(m => m.email.toLowerCase() === email.toLowerCase());
 
-  // Lock only prevents *new* managers. Already-registered managers can still be updated by admin (critical for live fixes).
-  if (!existing && !DEMO_MODE && s.settings.leagueLocked) {
-    return res.status(403).json({ error: "League is locked by admin. No new managers can join." });
+  // Separate locks for FPL/UCL so admin can control joins independently.
+  if (!DEMO_MODE) {
+    const addingFpl = !!fplId;
+    const addingUcl = !!uclId;
+    if (addingFpl && s.settings.leagueLocked?.fpl) {
+      return res.status(403).json({ error: "FPL is locked by admin. No new FPL managers can join." });
+    }
+    if (addingUcl && s.settings.leagueLocked?.ucl) {
+      return res.status(403).json({ error: "UCL is locked by admin. No new UCL managers can join." });
+    }
   }
 
   if (existing) {
@@ -1950,12 +1964,18 @@ app.post("/api/admin/set-league-lock", async (req, res) => {
     if (!allowed) return res.status(401).json({ error: "Unauthorized" });
   }
 
-  const { locked } = req.body || {};
+  const { locked, fplLocked, uclLocked } = req.body || {};
   const s = await loadStore();
-  s.settings.leagueLocked = !!locked;
+  if (typeof fplLocked !== 'undefined') s.settings.leagueLocked.fpl = !!fplLocked;
+  if (typeof uclLocked !== 'undefined') s.settings.leagueLocked.ucl = !!uclLocked;
+  if (typeof locked !== 'undefined') {
+    s.settings.leagueLocked.fpl = !!locked;
+    s.settings.leagueLocked.ucl = !!locked;
+  }
   await persistStore();
-  await logEvent("league_lock_toggled", { locked: s.settings.leagueLocked });
-  res.json({ ok: true, leagueLocked: s.settings.leagueLocked, message: s.settings.leagueLocked ? "League locked. No new joins." : "League unlocked. Joins allowed." });
+  await logEvent("league_lock_toggled", { leagueLocked: s.settings.leagueLocked });
+  const msg = `FPL: ${s.settings.leagueLocked.fpl ? 'LOCKED' : 'OPEN'}, UCL: ${s.settings.leagueLocked.ucl ? 'LOCKED' : 'OPEN'}`;
+  res.json({ ok: true, leagueLocked: s.settings.leagueLocked, message: msg });
 });
 
 // Manager requests payout from wallet to their bank (Paystack transfer)
@@ -2524,7 +2544,7 @@ app.get("/api/admin/overview", async (req, res) => {
     sponsorships,
     managers: managersSummary,
     totalHouseCommission,
-    leagueLocked: !!s.settings.leagueLocked
+    leagueLocked: s.settings.leagueLocked || { fpl: false, ucl: false }
   });
 });
 

@@ -529,15 +529,27 @@ async function loadAdminOverview() {
         </div>
       </div>
 
-      <!-- League Lock Control -->
-      <div class="mb-4 p-3 bg-[#161616] border border-[#222] rounded-2xl flex items-center justify-between">
-        <div>
-          <span class="font-semibold">League Join Status:</span>
-          <span class="${data.leagueLocked ? 'text-red-400' : 'text-[#00ff85]'} font-bold ml-2">${data.leagueLocked ? 'LOCKED' : 'OPEN'}</span>
+      <!-- League Lock Control - separate for FPL and UCL -->
+      <div class="mb-4 p-3 bg-[#161616] border border-[#222] rounded-2xl">
+        <div class="flex items-center justify-between mb-2">
+          <div>
+            <span class="font-semibold">FPL Join Status:</span>
+            <span class="${data.leagueLocked?.fpl ? 'text-red-400' : 'text-[#00ff85]'} font-bold ml-2">${data.leagueLocked?.fpl ? 'LOCKED' : 'OPEN'}</span>
+          </div>
+          <div>
+            <button onclick="toggleLeagueLock(true, 'fpl')" class="px-4 py-1 bg-red-600 hover:bg-red-700 text-white text-sm rounded-xl mr-2">LOCK FPL</button>
+            <button onclick="toggleLeagueLock(false, 'fpl')" class="px-4 py-1 bg-[#00ff85] hover:bg-white text-black text-sm rounded-xl">UNLOCK FPL</button>
+          </div>
         </div>
-        <div>
-          <button onclick="toggleLeagueLock(true)" class="px-4 py-1 bg-red-600 hover:bg-red-700 text-white text-sm rounded-xl mr-2">LOCK LEAGUE</button>
-          <button onclick="toggleLeagueLock(false)" class="px-4 py-1 bg-[#00ff85] hover:bg-white text-black text-sm rounded-xl">UNLOCK LEAGUE</button>
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="font-semibold">UCL Join Status:</span>
+            <span class="${data.leagueLocked?.ucl ? 'text-red-400' : 'text-[#00ff85]'} font-bold ml-2">${data.leagueLocked?.ucl ? 'LOCKED' : 'OPEN'}</span>
+          </div>
+          <div>
+            <button onclick="toggleLeagueLock(true, 'ucl')" class="px-4 py-1 bg-red-600 hover:bg-red-700 text-white text-sm rounded-xl mr-2">LOCK UCL</button>
+            <button onclick="toggleLeagueLock(false, 'ucl')" class="px-4 py-1 bg-[#00ff85] hover:bg-white text-black text-sm rounded-xl">UNLOCK UCL</button>
+          </div>
         </div>
       </div>
 
@@ -765,12 +777,14 @@ async function promptSetLeagues() {
   }
 }
 
-async function toggleLeagueLock(locked) {
-  if (!confirm(locked ? 'Lock the league? No new joins will be allowed.' : 'Unlock the league? New joins will be allowed.')) return;
+async function toggleLeagueLock(locked, comp) {
+  const compName = comp ? comp.toUpperCase() : 'both';
+  if (!confirm(locked ? `Lock ${compName}? No new joins for ${compName}.` : `Unlock ${compName}? New joins allowed for ${compName}.`)) return;
   try {
+    const body = comp ? { [`${comp}Locked`]: locked } : { fplLocked: locked, uclLocked: locked };
     const res = await fetchJSON('/api/admin/set-league-lock', {
       method: 'POST',
-      body: JSON.stringify({ locked })
+      body: JSON.stringify(body)
     });
     alert(res.message || 'Lock status updated.');
     loadAdminOverview();
