@@ -581,26 +581,47 @@ async function cancelSponsorship(id) {
   }
 }
 
-async function promptAddManager() {
-  const name = prompt('Manager name:');
-  if (!name) return;
-  const email = prompt('Email:');
-  if (!email) return;
-  const accessCode = prompt('Access code to give them:');
-  if (!accessCode) return;
-  const fplClubName = prompt('FPL club name:') || '';
-  const fplId = prompt('FPL team ID (optional):') || '';
+function showAddManagerModal() {
+  const m = $('add-manager-modal');
+  if (m) m.classList.remove('hidden');
+}
+
+function closeAddManagerModal() {
+  const m = $('add-manager-modal');
+  if (m) m.classList.add('hidden');
+}
+
+async function submitAddManagerForm(ev) {
+  ev.preventDefault();
+  const name = $('add-name').value.trim();
+  const email = $('add-email').value.trim();
+  const accessCode = $('add-code').value.trim();
+  const fplClubName = $('add-club').value.trim();
+  const fplId = $('add-fplid').value.trim();
+  const uclId = $('add-uclid').value.trim();
+  const payoutDetails = $('add-payout').value.trim() || `058:0001234567:${name}`;
+
+  if (!name || !email || !accessCode) {
+    alert('Name, email and access code required.');
+    return;
+  }
 
   try {
     const res = await fetchJSON('/api/admin/add-manager', {
       method: 'POST',
-      body: JSON.stringify({ name, email, accessCode, fplId, fplClubName })
+      body: JSON.stringify({ name, email, accessCode, fplId, uclId, fplClubName, payoutDetails })
     });
     alert(`Added! Code: ${accessCode}\n\n${res.message || ''}`);
+    closeAddManagerModal();
     loadAdminOverview();
   } catch (e) {
     alert('Add failed: ' + e.message);
   }
+}
+
+// Keep old for backward if needed, but use modal
+async function promptAddManager() {
+  showAddManagerModal();
 }
 
 async function promptSetLeagues() {
@@ -1160,29 +1181,48 @@ function showChallengeModal() {
 function showSponsorModal() {
   const modal = $('modal');
   const c = $('modal-content');
+  const options = SPONSORED_AWARDS.map(a => `<option value="${a.id}">${a.name} - ${a.desc}</option>`).join('');
   c.innerHTML = `
     <div>
-      <div class="font-semibold mb-2">Sponsor an Award</div>
+      <div class="font-semibold mb-2">Sponsor an Award (Pay immediately to activate)</div>
       <input id="sp-name" placeholder="Your name / brand" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
-      <input id="sp-amount" type="number" value="10000" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
-      <select id="sp-target" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
-        <option>Best Captain this GW</option>
-        <option>Highest GW scorer</option>
-        <option>League Winner bonus</option>
-        <option>FPL Challenge top</option>
+      <select id="sp-target" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm" style="max-height:150px;overflow:auto;">
+        ${options}
       </select>
-      <button id="sp-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">SPONSOR (add to pot via Paystack)</button>
-      <div class="text-[10px] mt-1">Funds boost the target pot. 0% cut for sponsors.</div>
+      <button id="sp-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">SPONSOR (pay via Paystack now)</button>
+      <div class="text-[10px] mt-1">Choose award, then enter amount on next step. Adds to pot. 10% house on payout.</div>
     </div>
   `;
   modal.classList.remove('hidden');
   modal.classList.add('flex');
   document.getElementById('sp-submit').onclick = () => {
-    // In real, would initiate payment for amount, then add to sponsorships
+    const sponsorName = document.getElementById('sp-name').value.trim() || currentManager.displayName;
+    const targetId = document.getElementById('sp-target').value;
+    const award = SPONSORED_AWARDS.find(a => a.id === targetId);
+    if (!award) return alert('Select an award');
+    const amountStr = prompt(`Enter amount to sponsor for "${award.name}":`, '10000');
+    const amount = parseInt(amountStr) || 0;
+    if (amount <= 0) return;
     closeModal();
-    renderSponsoredAwards();
-    alert('Thank you! In real, Paystack deposit adds to the pot. Visible in projections.');
+    // Initiate pay immediately for sponsor
+    initiateSponsorPayment(sponsorName, award, amount);
   };
+}
+
+async function initiateSponsorPayment(sponsorName, award, amount) {
+  // For sponsor, pay immediately
+  try {
+    // Use a special type or just simulate for now; in real extend initiatePayment or new endpoint
+    // For demo, add directly after 'pay'
+    alert(`In real: Paystack for ₦${amount} for ${award.name}. On success, add to sponsorships.`);
+    // Add to local for demo
+    const s = {sponsor: sponsorName, amount, target: award.id, status: 'active'};
+    // Would call backend to add after payment
+    renderSponsoredAwards();
+    alert('Sponsor added (demo - pay flow would trigger).');
+  } catch (e) {
+    alert('Sponsor failed: ' + e.message);
+  }
 }
 
 function renderSpotlight() {
@@ -1399,17 +1439,36 @@ async function requestPayout() {
 }
 
 async function updatePayoutDetails() {
-  const input = $('payout-details');
-  if (!input) return;
-  const details = input.value.trim();
-  if (!details) return alert('Enter bank details');
+  const currentDetails = currentManager.payoutDetails || '';
+  const isLocal = confirm('Is this a Nigerian (local) bank account? OK for local, Cancel for international.');
+  
+  let details = '';
+  if (isLocal) {
+    const name = prompt('Account Name:', currentDetails.split(':').pop() || '');
+    const bank = prompt('Bank Name or Code (e.g. 058 for GTBank):', '');
+    const acct = prompt('Account Number:', '');
+    if (name && bank && acct) details = `${bank}:${acct}:${name}`;
+  } else {
+    const name = prompt('Account Name:', '');
+    const bankName = prompt('Bank Name:', '');
+    const acct = prompt('Account Number / IBAN:', '');
+    const swift = prompt('SWIFT/BIC Code (if applicable):', '');
+    const country = prompt('Country:', '');
+    if (name && bankName && acct) {
+      details = `INTL:${bankName}:${acct}:${name}:${swift || ''}:${country || ''}`;
+    }
+  }
+  
+  if (!details) return alert('Details not provided.');
+  
   try {
     await fetchJSON('/api/manager/update-payout', {
       method: 'POST',
       body: JSON.stringify({ payoutDetails: details })
     });
-    alert('Bank details updated.');
+    alert('Bank details updated for Paystack.');
     currentManager.payoutDetails = details;
+    // Refresh UI if needed
   } catch (e) {
     alert('Update failed: ' + e.message);
   }
@@ -1873,12 +1932,14 @@ function showProposeAward() {
 
 function proposeBeef() {
   const options = BEEF_PRESETS.map((b, i) => `${i+1}. ${b.name} - ${b.desc}`).join('\n');
-  const choice = prompt(`Choose personal beef preset (auto-determined winner after GW concludes):\n${options}\n\nEnter custom or number:`);
+  const choice = prompt(`Choose personal beef preset (pay only AFTER other accepts):\n${options}\n\nEnter number or name:`);
   if (!choice) return;
-
-  const pot = prompt('Stake amount for this beef (both pay, 10% house):', '2000');
-  alert(`Beef "${choice}" proposed. Auto-resolve based on picks/scores when GW ends via FPL API.`);
-  // Real: store with logic id, auto on settlement
+  const opp = prompt('Opponent manager name/email:');
+  if (!opp) return;
+  const stakeStr = prompt('Stake amount (you pay via Paystack only if accepted):', '5000');
+  const stake = parseInt(stakeStr) || 5000;
+  alert(`Beef "${choice}" vs ${opp} for ₦${stake} proposed. NO payment yet - other must accept first. Once accepted, Paystack flow triggers for both.`);
+  // Real: store proposed, on accept then initiate pay for stake.
 }
 
 async function settleCurrentRound(comp) {
