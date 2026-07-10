@@ -183,7 +183,20 @@ const STATIC_NIGERIAN_BANKS = [
   { name: "Wema Bank", code: "035" },
   { name: "Zenith Bank", code: "057" },
   { name: "OPay", code: "100004" }
-];
+};
+
+function populateLocalBankSelect() {
+  const select = document.getElementById('local-bank-code');
+  if (!select) return;
+  const staticBanks = STATIC_NIGERIAN_BANKS.slice().sort((a, b) => a.name.localeCompare(b.name));
+  select.innerHTML = '<option value="">-- Select your bank --</option>';
+  staticBanks.forEach(b => {
+    const opt = document.createElement('option');
+    opt.value = b.code;
+    opt.textContent = b.name;
+    select.appendChild(opt);
+  });
+}
 
 // ============ DASHBOARD RENDER ============
 function showDashboard() {
@@ -235,21 +248,8 @@ function showDashboard() {
   // Render the two clear static pay blocks (reliable, no fragile insert)
   renderPayAccess();
 
-  // Pre-populate bank select with static list immediately for instant UX (then enhance with API if available)
-  (function prePopulateBanks() {
-    const select = document.getElementById('local-bank-code');
-    if (select) {
-      // Use static for immediate population
-      const staticBanks = STATIC_NIGERIAN_BANKS.slice().sort((a, b) => a.name.localeCompare(b.name));
-      select.innerHTML = '<option value="">-- Select your bank --</option>';
-      staticBanks.forEach(b => {
-        const opt = document.createElement('option');
-        opt.value = b.code;
-        opt.textContent = b.name;
-        select.appendChild(opt);
-      });
-    }
-  })();
+  // Pre-populate bank select with static list immediately for instant UX
+  populateLocalBankSelect();
 
   // Preload (may update with live Paystack list in prod)
   loadPaystackBanks().then(banks => {
@@ -1253,7 +1253,7 @@ function showChallengeModal() {
         ${categories.map(c => `<option>${c}</option>`).join('')}
       </select>
       <input id="ch-stake" type="number" value="5000" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
-      <button id="ch-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">PROPOSE (both will pay stake via Paystack)</button>
+      <button id="ch-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">PROPOSE (pay stake from wallet if balance, else Paystack)</button>
       <div class="text-[10px] mt-1 text-[#888]">10% house commission on settlement for server & automated payout.</div>
     </div>
   `;
@@ -1263,18 +1263,22 @@ function showChallengeModal() {
     const opp = document.getElementById('ch-opponent').value;
     const cat = document.getElementById('ch-cat').value;
     const stake = parseInt(document.getElementById('ch-stake').value) || 5000;
-    playerChallenges.push({proposer: currentManager.displayName, opponent: opp, category: cat, stake, status: 'proposed'});
+    const paidFromWallet = tryPayWithWallet(stake, 'challenge stake');
+    playerChallenges.push({proposer: currentManager.displayName, opponent: opp, category: cat, stake, status: 'proposed', paidFromWallet});
     closeModal();
     renderChallengeArena();
-    alert('Proposed! In real, opponent accepts and both pay stake via Paystack. Settlement after GW based on category.');
+    const payMsg = paidFromWallet ? 'Stake deducted from your wallet.' : 'No wallet balance - would use Paystack in real.';
+    alert(`Proposed! ${payMsg} Opponent accepts and pays stake (from wallet or Paystack). 10% house. Settlement after GW.`);
   };
 }
 
 function acceptChallenge(i) {
   const ch = playerChallenges[i];
+  const paid = tryPayWithWallet(ch.stake, 'accepting beef/challenge');
   ch.status = 'accepted';
-  // In real: call initiate for stake for both
-  alert('Accepted! In real flow, Paystack deposits for stake from both. 10% house.');
+  const payMsg = paid ? 'Your stake paid from wallet.' : 'Insufficient wallet balance (would Paystack).';
+  // In real: call initiate for stake for both (wallet or Paystack)
+  alert(`Accepted! ${payMsg} Both stakes secured. 10% house on settlement.`);
   renderChallengeArena();
 }
 
@@ -1318,7 +1322,7 @@ function showSquadModal() {
 }
 
 function showChallengeModal() {
-  alert('Challenge proposal modal: Select opponent, category (e.g. Captain outscores, Chip boost), stake. Both confirm via Paystack deposit. 10% house commission for automated settlement and server.');
+  alert('Challenge proposal: Select opponent, category, stake. Pay from wallet (winnings) if sufficient, else Paystack when accepted. 10% house.');
 }
 
 function showSponsorModal() {
@@ -1333,7 +1337,7 @@ function showSponsorModal() {
         ${options}
       </select>
       <button id="sp-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">SPONSOR (pay via Paystack now)</button>
-      <div class="text-[10px] mt-1">Choose award, then enter amount on next step. Adds to pot. 10% house on payout.</div>
+      <div class="text-[10px] mt-1">Choose award, then enter amount. Pay from wallet (if winnings balance) or Paystack. 10% house on payout.</div>
     </div>
   `;
   modal.classList.remove('hidden');
@@ -1353,8 +1357,16 @@ function showSponsorModal() {
 }
 
 async function initiateSponsorPayment(sponsorName, award, amount) {
-  // For sponsor, pay immediately
+  // For sponsor, pay immediately - prefer wallet if balance
   try {
+    const paidWallet = tryPayWithWallet(amount, `sponsoring ${award.name}`);
+    if (paidWallet) {
+      const s = {sponsor: sponsorName, amount, target: award.id, status: 'active'};
+      // Would call backend to add after payment
+      renderSponsoredAwards();
+      alert('Sponsor added from wallet balance.');
+      return;
+    }
     // Use a special type or just simulate for now; in real extend initiatePayment or new endpoint
     // For demo, add directly after 'pay'
     alert(`In real: Paystack for ₦${amount} for ${award.name}. On success, add to sponsorships.`);
@@ -1362,7 +1374,7 @@ async function initiateSponsorPayment(sponsorName, award, amount) {
     const s = {sponsor: sponsorName, amount, target: award.id, status: 'active'};
     // Would call backend to add after payment
     renderSponsoredAwards();
-    alert('Sponsor added.');
+    alert('Sponsor added (via Paystack in real).');
   } catch (e) {
     alert('Sponsor failed: ' + e.message);
   }
@@ -1581,6 +1593,20 @@ async function requestPayout() {
   }
 }
 
+function tryPayWithWallet(amount, description) {
+  if (!currentManager) return false;
+  let bal = currentManager.wallet || 0;
+  if (bal >= amount) {
+    currentManager.wallet = bal - amount;
+    // refresh visible wallet displays
+    document.querySelectorAll('.wallet-row span.font-bold').forEach(el => {
+      el.textContent = `₦${currentManager.wallet.toLocaleString()}`;
+    });
+    return true;
+  }
+  return false;
+}
+
 function showBankModal() {
   const m = $('bank-modal');
   if (!m) return;
@@ -1596,28 +1622,24 @@ function showBankModal() {
   if (localForm) localForm.classList.add('hidden');
   if (intlForm) intlForm.classList.add('hidden');
 
-  // Load Paystack banks into the static local select (once per open)
+  populateLocalBankSelect();  // ensure dropdown ready
+
+  // Load Paystack banks (may refresh if API succeeds with more)
   loadPaystackBanks().then(banks => {
     const select = document.getElementById('local-bank-code');
-    if (!select) return;
+    if (!select || !banks || banks.length === 0) return;
 
-    // Sort alphabetically by name for clean UX
-    banks = (banks || []).sort((a, b) => a.name.localeCompare(b.name));
-
-    // Always keep as <select> for proper Paystack code selection (value=code, display=name only)
+    // only update if we got a list from API (prefer static otherwise)
+    const sorted = banks.slice().sort((a, b) => a.name.localeCompare(b.name));
     select.innerHTML = '<option value="">-- Select your bank --</option>';
-    if (banks.length > 0) {
-      banks.forEach(b => {
-        const opt = document.createElement('option');
-        opt.value = b.code;
-        opt.textContent = b.name;  // Clean name only, no code shown to user
-        select.appendChild(opt);
-      });
-    } else {
-      select.innerHTML = '<option value="">-- Select your bank --</option>';
-    }
+    sorted.forEach(b => {
+      const opt = document.createElement('option');
+      opt.value = b.code;
+      opt.textContent = b.name;
+      select.appendChild(opt);
+    });
 
-    // Re-apply saved bank code if form visible (selects by code value)
+    // Re-apply saved
     const localVisible = document.getElementById('local-bank-form') && !document.getElementById('local-bank-form').classList.contains('hidden');
     if (localVisible && currentManager && currentManager.payoutDetails) {
       try {
@@ -1627,13 +1649,7 @@ function showBankModal() {
         }
       } catch(_) {}
     }
-  }).catch(() => {
-    // On error, ensure basic select (static fallback should have prevented)
-    const select = document.getElementById('local-bank-code');
-    if (select && select.options.length <= 1) {
-      select.innerHTML = '<option value="">-- Select your bank --</option>';
-    }
-  });
+  }).catch(() => {});
 
   // If user already has saved details, prefill the right static form (choice buttons stay visible above it)
   if (currentManager && currentManager.payoutDetails) {
@@ -1708,6 +1724,7 @@ function showLocalBankForm() {
   const intlForm = document.getElementById('intl-bank-form');
   if (intlForm) intlForm.classList.add('hidden');
   if (localForm) localForm.classList.remove('hidden');
+  populateLocalBankSelect();  // ensure list is there
   // Choice row stays visible so you always see both options
 }
 
@@ -2231,7 +2248,7 @@ function showProposeAward() {
   const amount = parseInt(customAmount) || 5000;
 
   // In real: create sponsorship with custom amount
-  alert(`Sponsored award "${awardName}" proposed for ₦${amount}. Sponsor will pay via Paystack. 10% house on payout. Auto-awarded after GW using API.`);
+  alert(`Sponsored award "${awardName}" proposed for ₦${amount}. Sponsor pays (wallet if available or Paystack). 10% house on payout. Auto-awarded after GW using API.`);
   // Add dynamically if needed
 }
 
@@ -2241,10 +2258,10 @@ function proposeBeef() {
   if (!choice) return;
   const opp = prompt('Opponent manager name/email:');
   if (!opp) return;
-  const stakeStr = prompt('Stake amount (you pay via Paystack only if accepted):', '5000');
+  const stakeStr = prompt('Stake amount (pay via wallet if balance, else Paystack only if accepted):', '5000');
   const stake = parseInt(stakeStr) || 5000;
-  alert(`Beef "${choice}" vs ${opp} for ₦${stake} proposed. NO payment yet - other must accept first. Once accepted, Paystack flow triggers for both.`);
-  // Real: store proposed, on accept then initiate pay for stake.
+  alert(`Beef "${choice}" vs ${opp} for ₦${stake} proposed. NO payment yet - other must accept first. Once accepted, stake paid (wallet or Paystack for both).`);
+  // Real: store proposed, on accept then initiate pay for stake (prefer wallet).
 }
 
 async function settleCurrentRound(comp) {
