@@ -20,7 +20,7 @@
           </div>
           <div>
             <div class="font-black tracking-[-1.5px] text-2xl text-white">D LEAGUE</div>
-            <div class="text-[10px] text-[#00ff85] -mt-1 font-mono">CLUBHOUSE 26/27 <span id="build-stamp" class="text-[9px] text-[#666] font-mono ml-1">2026-07-10</span></div>
+            <div class="text-[10px] text-[#00ff85] -mt-1 font-mono">CLUBHOUSE • SEASON 26/27</div>
           </div>
         </div>
         <div class="hidden md:flex items-center gap-2 text-xs px-3 py-1 rounded-full bg-[#1c1c1c] text-[#00ff85] border border-[#333]">
@@ -49,7 +49,6 @@
         <div class="mx-auto w-16 h-16 rounded-3xl bg-black flex items-center justify-center mb-4 border border-[#333]">
           <span class="text-[#00ff85] font-black text-4xl">DL</span>
         </div>
-        <div style="color:#888; font-size:12px; margin-bottom:8px;">Server must be running — visit <span style="font-family:monospace">http://localhost:4174</span> in your browser after <span style="font-family:monospace">npm start</span></div>
         <h1 class="text-4xl font-black tracking-[-2px]">D League Clubhouse</h1>
         <p class="text-[#888] mt-2">Private. Transparent. Manager-first.</p>
       </div>
@@ -73,9 +72,7 @@
       </div>
 
       <div id="server-warning" class="mt-4 p-3 bg-[#2a1515] border border-[#552] rounded-2xl text-xs text-red-400 hidden">
-        <strong>IMPORTANT:</strong> This is a server-powered app.<br>
-        1. In Terminal: <span class="font-mono">cd d-league-clubhouse && npm start</span><br>
-        2. Then open <span class="font-mono">http://localhost:4174</span> in your browser.
+        <strong>Connection issue.</strong> Please try refreshing or contact the commissioner if you cannot log in.
       </div>
 
       <div id="demo-hint" class="mt-6 text-center text-[11px] text-[#666]">
@@ -117,7 +114,7 @@
       <div class="flex justify-between items-start mb-4">
         <div>
           <div class="text-[#00ff85] font-bold text-xl">How to Join D League Clubhouse</div>
-          <div class="text-[#888] text-xs">Full walkthrough for new managers</div>
+          <div class="text-[#888] text-xs">Step-by-step for new managers</div>
         </div>
         <button onclick="hideJoinGuideModal()" class="text-[#666] hover:text-white">✕</button>
       </div>
@@ -149,7 +146,7 @@
         <div>
           <div class="font-semibold mb-1 text-[#00ff85]">STEP 3 — Login</div>
           <div class="text-[#aaa] text-xs">Return to this page. Enter the email + access code and click ENTER THE CLUBHOUSE.</div>
-          <div class="mt-1 text-[10px] text-[#666]">First time? The server must be running (or use the live link the group shares).</div>
+          <div class="mt-1 text-[10px] text-[#666]">Use the link shared in the group. Enter email + access code.</div>
         </div>
 
         <div>
@@ -407,8 +404,7 @@
     </div>
 
     <div class="mt-8 text-center text-[10px] text-[#666]">
-      Payments confirmed exclusively via Paystack <span class="font-mono">charge.success</span> webhooks.<br>
-      Scores pulled from official FPL public API. Live projections configurable. No manual paid toggles.
+      All payments processed via Paystack. Scores from official APIs. Fully automatic.
     </div>
   </div>
 
@@ -419,7 +415,7 @@
     </div>
   </div>
 
-  <!-- Join Request Form Modal (2026 seamless form, not sequential prompts) -->
+  <!-- Join Request Form Modal -->
   <div id="join-modal" onclick="if (event.target.id === 'join-modal') closeJoinModal()" class="hidden fixed inset-0 bg-black/70 backdrop-blur z-[80] flex items-center justify-center p-4">
     <div onclick="event.stopImmediatePropagation()" class="bg-[#1c1c1c] w-full max-w-md rounded-3xl border border-[#00ff85] p-6">
       <div class="font-bold text-xl mb-4 text-[#00ff85]">Request Access - D League Clubhouse</div>

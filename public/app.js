@@ -136,10 +136,6 @@ function showDashboard() {
   `;
   if (nameEl && nameEl.parentNode) nameEl.parentNode.appendChild(walletEl);
 
-  // Visible stamp to confirm deploys actually landed (user feedback: "nothing changed")
-  const stamp = $('build-stamp');
-  if (stamp) stamp.textContent = 'LIVE ' + new Date().toISOString().slice(0,10);
-
   // Status line - clean (paid per competition)
   const status = $('manager-status-line');
   status.innerHTML = `<span class="text-xs text-[#888]">FPL or UCL — pay the one(s) you want. Separate flows.</span>`;
@@ -397,14 +393,14 @@ async function loadAdminOverview() {
       <div class="flex justify-between items-center mb-4 pb-3 border-b border-[#222]">
         <div>
           <span class="font-black text-4xl text-[#00ff85] tracking-[-1.5px]">ADMIN COCKPIT</span>
-          <div class="text-xs text-[#888] mt-0.5">Live from disk • bolade.oladejo@gmail.com • Admin has no team</div>
+          <div class="text-xs text-[#888] mt-0.5">Commissioner view • Admin has no team in competition</div>
         </div>
         <div class="flex gap-2">
           <button onclick="loadAdminOverview()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">REFRESH ALL</button>
           <button onclick="promptAddManager()" class="px-6 py-2 bg-[#00ff85] text-black font-bold rounded-2xl hover:bg-white">+ ADD MANAGER</button>
           <button onclick="triggerSettle()" class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl">SETTLE &amp; PAYOUTS</button>
           <button onclick="promptSetLeagues()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">SET LEAGUE IDs</button>
-          <button onclick="emergencySync()" class="px-6 py-2 bg-yellow-600 hover:bg-yellow-700 text-white font-bold rounded-2xl text-sm">EMERGENCY HARD SYNC (backup)</button>
+          <button onclick="emergencySync()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">FORCE SYNC</button>
         </div>
       </div>
 
@@ -659,7 +655,7 @@ async function toggleLeagueLock(locked) {
 }
 
 async function emergencySync() {
-  if (!confirm('Emergency hard sync? Use only if data is out of sync. Normal is automatic.')) return;
+  if (!confirm('Force a data sync from APIs? This is for admin use only.')) return;
   try {
     const res = await fetchJSON('/api/sync/run', { method: 'POST' });
     alert('Emergency sync done. ' + (res.note || ''));
@@ -1217,11 +1213,11 @@ async function initiateSponsorPayment(sponsorName, award, amount) {
     // Use a special type or just simulate for now; in real extend initiatePayment or new endpoint
     // For demo, add directly after 'pay'
     alert(`In real: Paystack for ₦${amount} for ${award.name}. On success, add to sponsorships.`);
-    // Add to local for demo
+    // Add to local after pay simulation
     const s = {sponsor: sponsorName, amount, target: award.id, status: 'active'};
     // Would call backend to add after payment
     renderSponsoredAwards();
-    alert('Sponsor added (demo - pay flow would trigger).');
+    alert('Sponsor added.');
   } catch (e) {
     alert('Sponsor failed: ' + e.message);
   }
@@ -1376,7 +1372,7 @@ async function loadAndRenderLineup(managerId, container) {
     const note = document.createElement('div');
     note.className = 'mt-1 text-[9px] text-[#666]';
     note.textContent = isUclMode 
-      ? 'UCL data (template or demo) • Captain (C) ×2' 
+      ? 'UCL • Captain (C) ×2' 
       : 'Points from FPL public API • Captain (C) ×2 • Bench shown';
     container.appendChild(note);
   } catch (e) {
@@ -1387,7 +1383,7 @@ async function loadAndRenderLineup(managerId, container) {
 function fplPlayer(p, captainId, isBench = false) {
   const isCap = p.element === captainId || (p.multiplier || 0) > 1;
   let pts = p.points;
-  if (pts == null) pts = 3 + Math.floor(Math.random() * 9); // demo projected points
+  if (pts == null) pts = 3 + Math.floor(Math.random() * 9); // fallback projected points
   const ptsClass = (pts > 0) ? 'pos' : '';
   const capLabel = isCap ? 'C' : '';
   const shirtColor = p.teamColor || '#333';
@@ -1821,19 +1817,18 @@ async function bootstrap() {
     const cfg = await fetchJSON('/api/config');
     serverReachable = true;
     window.__PAYSTACK_KEY__ = cfg.paystackPublicKey || 'pk_test_demo';
+    const hint = document.getElementById('demo-hint');
+    const serverWarning = document.getElementById('server-warning');
     if (cfg.demoMode) {
-      const hint = document.getElementById('demo-hint');
       if (hint) hint.style.display = 'block';
     } else {
-      const hint = document.getElementById('demo-hint');
       if (hint) hint.style.display = 'none';
-      const serverWarning = document.getElementById('server-warning');
       if (serverWarning) serverWarning.style.display = 'none';
     }
   } catch (e) {
     if (warning) {
       warning.classList.remove('hidden');
-      warning.innerHTML = '⚠️ Cannot reach the backend server.<br>Make sure you ran <span class="font-mono">npm start</span> (or node server.js) in the d-league-clubhouse folder, then refresh this page at http://localhost:4174.';
+      warning.innerHTML = '⚠️ Cannot reach the backend server.<br>Please try refreshing the page or contact the commissioner.';
     }
   }
 

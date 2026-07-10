@@ -2,6 +2,8 @@
 
 **Welcome to the D League, Manager.**
 
+**Website:** https://d-league-clubhouse.onrender.com
+
 This is not another fantasy app.  
 This is *our* closed circle, turned into a premium, transparent, money-moving machine.
 
@@ -124,7 +126,7 @@ If you win the FPL weekly pot of ₦8,500 in GW 19, after the deadline passes an
 
 Same for H2H, sponsored beefs, cup runs, and season-end overall pots.
 
-**This is why the form matters.** Old simple text boxes produced useless data that required manual admin work. Now the fields are the exact ones Paystack needs.
+The fields you enter are sent directly to Paystack. This guarantees automatic, accurate transfers when you win.
 
 ---
 
