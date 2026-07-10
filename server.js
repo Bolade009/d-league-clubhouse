@@ -123,10 +123,10 @@ function createEmptyStore() {
   return {
     version: 1,
     settings: {
-      currentRound: { fpl: 5, ucl: 3 },
+      currentRound: { fpl: 1, ucl: 1 },
       roundAverages: { fpl: 68, ucl: 52 },
       lastSyncAt: null,
-      seasonName: "2025/26 D League",
+      seasonName: "2026/27 D League",
       // Admin configured real league IDs for accurate standings, H2H, auto-settlements
       leagueIds: {
         fplClassic: "",  // e.g. "12345" for FPL league standings
@@ -157,7 +157,7 @@ function createEmptyStore() {
     ledger: [],
     h2h: [],
     cup: {
-      name: "D League Cup 25/26",
+      name: "D League Cup 26/27",
       stage: "Quarter Finals",
       prizeFund: 85000,
       bracket: []
@@ -211,6 +211,17 @@ async function loadStore() {
     }
 
     console.log(`[store] Loaded from SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
+
+    // Normalize for new 2026/27 season if old data (reset round/season name, keep managers/payments/ledger)
+    if (storeCache.settings && (storeCache.settings.seasonName.includes("2025/26") || storeCache.settings.currentRound.fpl > 1 || storeCache.settings.seasonName.includes("25/26"))) {
+      storeCache.settings.seasonName = "2026/27 D League";
+      storeCache.settings.currentRound = { fpl: 1, ucl: 1 };
+      // Clear old history/scores for clean start? Keep ledger and payments for continuity.
+      storeCache.settings.history = { weekly: [], awards: [], beefs: [], standings: [] };
+      storeCache.scores = [];
+      needsPersist = true;
+      console.log("[store] Normalized to 2026/27 season start (round=1)");
+    }
 
     if (needsPersist) await persistStore();
 
@@ -779,6 +790,12 @@ async function syncFPL(roundsToSync = null) {
   if (!bootstrap || !bootstrap.events) {
     await logEvent("sync_fpl_failed", { reason: "bootstrap" });
     return { ok: false, error: "FPL bootstrap failed" };
+  }
+
+  // Auto-update current round from FPL for the season
+  const currentEvent = bootstrap.events.find(e => e.is_current) || bootstrap.events.find(e => !e.finished);
+  if (currentEvent && currentEvent.id) {
+    s.settings.currentRound.fpl = currentEvent.id;
   }
 
   const eventMap = {};
@@ -1598,18 +1615,14 @@ app.post("/api/join-request", async (req, res) => {
   const { name, email, fplClubName, fplId, fplLeagueJoined, message } = req.body || {};
   if (!name || !email || !fplClubName) return res.status(400).json({ error: "Name, email and FPL club name required (to confirm league join)" });
 
-  // Locking check for join requests too
-  if (!DEMO_MODE) {
-    const bootstrap = await safeFetchJSON(`${FPL_BASE}/bootstrap-static/`);
-    if (bootstrap && bootstrap.events && bootstrap.events[0]) {
-      const gw1Deadline = new Date(bootstrap.events[0].deadline_time);
-      if (new Date() > gw1Deadline) {
-        return res.status(403).json({ error: "League locked after GW1 deadline. No new join requests." });
-      }
-    }
-  }
-
   const s = await loadStore();
+
+  // Locking check for join requests too
+  // Lock once the D League season has started (currentRound.fpl > 1 after first GW).
+  // This avoids wrong triggers from FPL bootstrap during off-season or season rollover.
+  if (!DEMO_MODE && s.settings.currentRound.fpl > 1) {
+    return res.status(403).json({ error: "League locked after GW1. No new join requests." });
+  }
   await logEvent("join_request", { name, email, fplClubName, fplId: fplId || '', fplLeagueJoined: !!fplLeagueJoined, message });
   await notifyAdminOfJoinRequest({ name, email, fplClubName, fplId: fplId || '' });
 
@@ -1644,15 +1657,10 @@ app.post("/api/admin/add-manager", async (req, res) => {
 
   const s = await loadStore();
 
-  // Locking: after GW1 deadline, no new managers
-  if (!DEMO_MODE) {
-    const bootstrap = await safeFetchJSON(`${FPL_BASE}/bootstrap-static/`);
-    if (bootstrap && bootstrap.events && bootstrap.events[0]) {
-      const gw1Deadline = new Date(bootstrap.events[0].deadline_time);
-      if (new Date() > gw1Deadline) {
-        return res.status(403).json({ error: "League is locked. GW1 deadline has passed. No new managers can join." });
-      }
-    }
+  // Locking: after the D League's first GW has passed (currentRound >1 ).
+  // Avoids bootstrap date issues during season rollover.
+  if (!DEMO_MODE && s.settings.currentRound.fpl > 1) {
+    return res.status(403).json({ error: "League is locked. GW1 has passed. No new managers can join." });
   }
 
   const existing = s.managers.find(m => m.email.toLowerCase() === email.toLowerCase());
