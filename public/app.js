@@ -6,93 +6,6 @@ let currentLeagueMode = 'fpl'; // 'fpl' or 'ucl'
 
 const $ = (id) => document.getElementById(id);
 
-// Tailwind script run
-function initTailwind() {
-  if (window.tailwind) {
-    window.tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily: {
-            display: ['system-ui', '-apple-system', 'sans-serif']
-          }
-        }
-      }
-    };
-  }
-}
-
-async function fetchJSON(url, opts = {}) {
-  const headers = opts.headers || {};
-  if (currentToken) headers['Authorization'] = `Bearer ${currentToken}`;
-  // Auto-set JSON content type for POST/PUT with string body (fixes admin add-manager etc.)
-  if (opts.body && typeof opts.body === 'string' && !headers['Content-Type']) {
-    headers['Content-Type'] = 'application/json';
-  }
-  const res = await fetch(url, { ...opts, headers });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || res.statusText);
-  }
-  return res.json();
-}
-
-// ============ LOGIN ============
-async function performLogin() {
-  const emailEl = $('login-email');
-  const codeEl = $('login-code');
-  if (!emailEl || !codeEl) {
-    alert('Login form elements not found. Please refresh the page.');
-    return;
-  }
-  const email = emailEl.value.trim();
-  const code = codeEl.value.trim();
-
-  if (!email || !code) {
-    alert('Please enter email and access code.');
-    return;
-  }
-
-  try {
-    const data = await fetchJSON('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, code })
-    });
-
-    currentToken = data.token;
-    currentManager = data.manager;
-
-    localStorage.setItem('dl_token', currentToken);
-    localStorage.setItem('dl_manager_id', currentManager.id);
-
-    showDashboard();
-    loadAllData();
-  } catch (e) {
-    alert('Login failed: ' + e.message + '\n\nTip: New managers must be added by the commissioner first. Use the "REQUEST ACCESS" button or message the group admin.');
-  }
-}
-
-function logout() {
-  localStorage.removeItem('dl_token');
-  localStorage.removeItem('dl_manager_id');
-  location.reload();
-}
-
-async function tryAutoLogin() {
-  const token = localStorage.getItem('dl_token');
-  const mgrId = localStorage.getItem('dl_manager_id');
-  if (!token || !mgrId) return false;
-
-  try {
-    const me = await fetchJSON(`/api/me?token=${token}`);
-    currentToken = token;
-    currentManager = me.manager;
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // Static comprehensive list of Nigerian banks from Paystack (for reliable name-based dropdown)
 const STATIC_NIGERIAN_BANKS = [
   { name: "9mobile 9Payment Service Bank", code: "120001" },
@@ -183,7 +96,7 @@ const STATIC_NIGERIAN_BANKS = [
   { name: "Wema Bank", code: "035" },
   { name: "Zenith Bank", code: "057" },
   { name: "OPay", code: "100004" }
-};
+];
 
 function populateLocalBankSelect() {
   const select = document.getElementById('local-bank-code');
@@ -196,6 +109,93 @@ function populateLocalBankSelect() {
     opt.textContent = b.name;
     select.appendChild(opt);
   });
+}
+
+// Tailwind script run
+function initTailwind() {
+  if (window.tailwind) {
+    window.tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['system-ui', '-apple-system', 'sans-serif']
+          }
+        }
+      }
+    };
+  }
+}
+
+async function fetchJSON(url, opts = {}) {
+  const headers = opts.headers || {};
+  if (currentToken) headers['Authorization'] = `Bearer ${currentToken}`;
+  // Auto-set JSON content type for POST/PUT with string body (fixes admin add-manager etc.)
+  if (opts.body && typeof opts.body === 'string' && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const res = await fetch(url, { ...opts, headers });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+// ============ LOGIN ============
+async function performLogin() {
+  const emailEl = $('login-email');
+  const codeEl = $('login-code');
+  if (!emailEl || !codeEl) {
+    alert('Login form elements not found. Please refresh the page.');
+    return;
+  }
+  const email = emailEl.value.trim();
+  const code = codeEl.value.trim();
+
+  if (!email || !code) {
+    alert('Please enter email and access code.');
+    return;
+  }
+
+  try {
+    const data = await fetchJSON('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, code })
+    });
+
+    currentToken = data.token;
+    currentManager = data.manager;
+
+    localStorage.setItem('dl_token', currentToken);
+    localStorage.setItem('dl_manager_id', currentManager.id);
+
+    showDashboard();
+    loadAllData();
+  } catch (e) {
+    alert('Login failed: ' + e.message + '\n\nTip: New managers must be added by the commissioner first. Use the "REQUEST ACCESS" button or message the group admin.');
+  }
+}
+
+function logout() {
+  localStorage.removeItem('dl_token');
+  localStorage.removeItem('dl_manager_id');
+  location.reload();
+}
+
+async function tryAutoLogin() {
+  const token = localStorage.getItem('dl_token');
+  const mgrId = localStorage.getItem('dl_manager_id');
+  if (!token || !mgrId) return false;
+
+  try {
+    const me = await fetchJSON(`/api/me?token=${token}`);
+    currentToken = token;
+    currentManager = me.manager;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ============ DASHBOARD RENDER ============
