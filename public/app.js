@@ -238,6 +238,7 @@ async function loadAllData() {
 async function loadAdminOverview() {
   try {
     const data = await fetchJSON('/api/admin/overview');
+    window.lastAdminData = data;
     const prev = document.getElementById('admin-overview-panel');
     if (prev) prev.remove();
 
@@ -401,6 +402,18 @@ async function loadAdminOverview() {
           <button onclick="triggerSettle()" class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl">SETTLE &amp; PAYOUTS</button>
           <button onclick="promptSetLeagues()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">SET LEAGUE IDs</button>
           <button onclick="emergencySync()" class="px-6 py-2 bg-yellow-600 hover:bg-yellow-700 text-white font-bold rounded-2xl text-sm">EMERGENCY HARD SYNC (backup)</button>
+        </div>
+      </div>
+
+      <!-- League Lock Control -->
+      <div class="mb-4 p-3 bg-[#161616] border border-[#222] rounded-2xl flex items-center justify-between">
+        <div>
+          <span class="font-semibold">League Join Status:</span>
+          <span class="${data.leagueLocked ? 'text-red-400' : 'text-[#00ff85]'} font-bold ml-2">${data.leagueLocked ? 'LOCKED' : 'OPEN'}</span>
+        </div>
+        <div>
+          <button onclick="toggleLeagueLock(true)" class="px-4 py-1 bg-red-600 hover:bg-red-700 text-white text-sm rounded-xl mr-2">LOCK LEAGUE</button>
+          <button onclick="toggleLeagueLock(false)" class="px-4 py-1 bg-[#00ff85] hover:bg-white text-black text-sm rounded-xl">UNLOCK LEAGUE</button>
         </div>
       </div>
 
@@ -605,6 +618,20 @@ async function promptSetLeagues() {
     loadAdminOverview();
   } catch (e) {
     alert('Failed to set leagues: ' + e.message);
+  }
+}
+
+async function toggleLeagueLock(locked) {
+  if (!confirm(locked ? 'Lock the league? No new joins will be allowed.' : 'Unlock the league? New joins will be allowed.')) return;
+  try {
+    const res = await fetchJSON('/api/admin/set-league-lock', {
+      method: 'POST',
+      body: JSON.stringify({ locked })
+    });
+    alert(res.message || 'Lock status updated.');
+    loadAdminOverview();
+  } catch (e) {
+    alert('Failed to toggle lock: ' + e.message);
   }
 }
 

@@ -133,6 +133,7 @@ function createEmptyStore() {
         fplH2h: "",      // H2H league ID
         ucl: ""          // If UCL has equivalent identifier (or use internal)
       },
+      leagueLocked: false,  // Admin can manually lock/unlock new joins (default open for new season)
       // Revenue tracking for season pots (excluding pure house admin fees)
       totalFplRevenue: 0,
       totalUclRevenue: 0,
@@ -212,15 +213,16 @@ async function loadStore() {
 
     console.log(`[store] Loaded from SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
 
-    // Normalize for new 2026/27 season if old data (reset round/season name, keep managers/payments/ledger)
+    // Normalize for new 2026/27 season if old data (reset round/season name/lock, keep managers/payments/ledger)
     if (storeCache.settings && (storeCache.settings.seasonName.includes("2025/26") || storeCache.settings.currentRound.fpl > 1 || storeCache.settings.seasonName.includes("25/26"))) {
       storeCache.settings.seasonName = "2026/27 D League";
       storeCache.settings.currentRound = { fpl: 1, ucl: 1 };
+      storeCache.settings.leagueLocked = false;
       // Clear old history/scores for clean start? Keep ledger and payments for continuity.
       storeCache.settings.history = { weekly: [], awards: [], beefs: [], standings: [] };
       storeCache.scores = [];
       needsPersist = true;
-      console.log("[store] Normalized to 2026/27 season start (round=1)");
+      console.log("[store] Normalized to 2026/27 season start (round=1, unlocked)");
     }
 
     if (needsPersist) await persistStore();
@@ -1617,12 +1619,6 @@ app.post("/api/join-request", async (req, res) => {
 
   const s = await loadStore();
 
-  // Locking check for join requests too
-  // Lock once the D League season has started (currentRound.fpl > 1 after first GW).
-  // This avoids wrong triggers from FPL bootstrap during off-season or season rollover.
-  if (!DEMO_MODE && s.settings.currentRound.fpl > 1) {
-    return res.status(403).json({ error: "League locked after GW1. No new join requests." });
-  }
   await logEvent("join_request", { name, email, fplClubName, fplId: fplId || '', fplLeagueJoined: !!fplLeagueJoined, message });
   await notifyAdminOfJoinRequest({ name, email, fplClubName, fplId: fplId || '' });
 
@@ -1657,10 +1653,9 @@ app.post("/api/admin/add-manager", async (req, res) => {
 
   const s = await loadStore();
 
-  // Locking: after the D League's first GW has passed (currentRound >1 ).
-  // Avoids bootstrap date issues during season rollover.
-  if (!DEMO_MODE && s.settings.currentRound.fpl > 1) {
-    return res.status(403).json({ error: "League is locked. GW1 has passed. No new managers can join." });
+  // Simple admin-controlled lock (no complex date logic)
+  if (!DEMO_MODE && s.settings.leagueLocked) {
+    return res.status(403).json({ error: "League is locked by admin. No new managers can join." });
   }
 
   const existing = s.managers.find(m => m.email.toLowerCase() === email.toLowerCase());
@@ -1881,6 +1876,34 @@ app.post("/api/admin/set-leagues", async (req, res) => {
   await persistStore();
   await logEvent("leagues_configured", { fplClassic, fplH2h, ucl });
   res.json({ ok: true, leagueIds: s.settings.leagueIds, message: "League IDs saved. Standings will use real FPL data where possible." });
+});
+
+// Admin toggles league lock (simple manual control, no date logic)
+app.post("/api/admin/set-league-lock", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { locked } = req.body || {};
+  const s = await loadStore();
+  s.settings.leagueLocked = !!locked;
+  await persistStore();
+  await logEvent("league_lock_toggled", { locked: s.settings.leagueLocked });
+  res.json({ ok: true, leagueLocked: s.settings.leagueLocked, message: s.settings.leagueLocked ? "League locked. No new joins." : "League unlocked. Joins allowed." });
 });
 
 // Manager requests payout from wallet to their bank (Paystack transfer)
@@ -2354,7 +2377,8 @@ app.get("/api/admin/overview", async (req, res) => {
     challenges: allChallenges,
     sponsorships,
     managers: managersSummary,
-    totalHouseCommission
+    totalHouseCommission,
+    leagueLocked: !!s.settings.leagueLocked
   });
 });
 
