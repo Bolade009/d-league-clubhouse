@@ -1113,7 +1113,7 @@ async function loadH2H() {
     const youB = match.managerB === currentManager.id;
     div.innerHTML = `
       <div class="flex justify-between text-xs mb-1">
-        <div class="text-[#888]">${match.round} • ₦${match.stake} stake • 10% retained</div>
+        <div class="text-[#888]">${match.round} • H2H match (season pot)</div>
         <div class="${match.status === 'settled' ? 'text-[#00ff85]' : 'text-[#aaa]'}">${match.status.toUpperCase()}</div>
       </div>
       <div class="font-medium">
@@ -2124,7 +2124,7 @@ function renderFplTailored() {
   // H2H this/next
   if ($('fpl-h2h-this')) {
     const h2h = (standingsData.h2h || []).find(h => h.managerA === currentManager?.id || h.managerB === currentManager?.id);
-    $('fpl-h2h-this').innerHTML = h2h ? `vs ${h2h.managerA === currentManager.id ? 'Opponent' : 'You'} • Stake ₦${h2h.stake || 0}` : 'No H2H this week yet';
+    $('fpl-h2h-this').innerHTML = h2h ? `vs ${h2h.managerA === currentManager.id ? 'Opponent' : 'You'}` : 'No H2H this week yet';
   }
   if ($('fpl-h2h-next')) $('fpl-h2h-next').textContent = 'TBD (auto from FPL league)';
 

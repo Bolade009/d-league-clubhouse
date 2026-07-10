@@ -333,6 +333,13 @@ function verifyToken(token) {
   }
 }
 
+function getAuthenticatedManager(req) {
+  const token = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+  const decoded = verifyToken(token);
+  if (!decoded || !decoded.managerId) return null;
+  return getManagerById(decoded.managerId);
+}
+
 function requireSyncAuth(req, res, next) {
   if (DEMO_MODE) return next();
   const token = req.headers["x-sync-token"] || req.query.token;
@@ -518,7 +525,7 @@ async function settleWeeklyPot(comp, round) {
     at: nowISO()
   });
 
-  // For FPL, deduct 10% of winner share to season H2H pot (accumulates for end of season H2H winner)
+  // For FPL, deduct 10% of winner share to season H2H pot (accumulates for END OF SEASON H2H winner only - NOT paid weekly)
   if (comp === 'fpl') {
     const h2hDeduction = Math.floor(sharePerWinner * 0.1);
     s.settings.h2hOverallPot = (s.settings.h2hOverallPot || 0) + h2hDeduction;
@@ -530,7 +537,7 @@ async function settleWeeklyPot(comp, round) {
       competition: comp,
       round,
       amount: -h2hDeduction,
-      note: `10% deduction from weekly winner share to season H2H pot`,
+      note: `10% deduction from weekly winner share to season H2H pot (end of season)`,
       at: nowISO()
     });
   }
@@ -1192,7 +1199,7 @@ async function getProjectedPayouts() {
     adminTotal: (fplPaid + uclPaid) * 5000,
     seasonPots,
     h2hOverallPot: s.settings.h2hOverallPot || 0,
-    note: "Weekly pots 90% to winner(s). Season pots: 5% FPL rev to overall FPL winner, 2.5% to cup, 5% UCL rev to UCL overall, 10% weekly FPL winner share to H2H season pot. House cuts (10% weekly) + initial admin fees (FPL 5k, UCL 2.5k pure house) fund/maintain. See ledger for details."
+    note: "Weekly pots 90% to winner(s). H2H is SEASON pot only (10% from FPL weekly pots accumulates; paid to overall H2H winner at end, not weekly). Season pots: 5% FPL rev to overall FPL winner, 2.5% to cup, 5% UCL rev to UCL overall. House cuts (10% weekly) + initial admin fees (FPL 5k, UCL 2.5k pure house) fund/maintain. See ledger for details."
   };
 }
 
@@ -1943,10 +1950,8 @@ app.post("/api/admin/set-league-lock", async (req, res) => {
 // Manager requests payout from wallet to their bank (Paystack transfer)
 app.post("/api/wallet/request-payout", async (req, res) => {
   const { amount } = req.body || {};
-  if (!currentManager) return res.status(401).json({ error: "Login required" }); // Note: in real, use token from auth, but for simplicity assume from context; adjust if needed
-
-  const mgr = getManagerById(currentManager.id);
-  if (!mgr) return res.status(404).json({ error: "Manager not found" });
+  const mgr = getAuthenticatedManager(req);
+  if (!mgr) return res.status(401).json({ error: "Login required" });
 
   const balance = getWalletBalance(mgr.id);
   const payoutAmount = Math.min(Number(amount) || 0, balance);
@@ -2008,15 +2013,16 @@ app.get("/api/paystack/banks", async (req, res) => {
 
 // Manager updates own bank details for payouts (incl international)
 app.post("/api/manager/update-payout", async (req, res) => {
-  if (!currentManager) return res.status(401).json({ error: "Login required" });
+  const mgr = getAuthenticatedManager(req);
+  if (!mgr) return res.status(401).json({ error: "Login required" });
   const { payoutDetails } = req.body || {};
   if (!payoutDetails) return res.status(400).json({ error: "Bank details required" });
 
   const s = await loadStore();
-  const mgr = s.managers.find(m => m.id === currentManager.id);
-  if (!mgr) return res.status(404).json({ error: "Manager not found" });
+  const dbMgr = s.managers.find(m => m.id === mgr.id);
+  if (!dbMgr) return res.status(404).json({ error: "Manager not found" });
 
-  mgr.payoutDetails = payoutDetails;
+  dbMgr.payoutDetails = payoutDetails;
   await persistStore();
   await logEvent("payout_details_updated", { managerId: mgr.id });
 
