@@ -447,14 +447,25 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
   };
   s.payments.push(payment);
 
-  // Track revenue for season pots (exclude pure house admin fees)
-  const compDef = COMPETITIONS[competition];
-  const houseFee = compDef ? (compDef.adminFee || 0) : 0;
-  if (competition === 'fpl' || competition === 'ucl') {
-    const revKey = `total${competition.charAt(0).toUpperCase() + competition.slice(1)}Revenue`;
-    const houseKey = `house${competition.charAt(0).toUpperCase() + competition.slice(1)}Admin`;
-    s.settings[revKey] = (s.settings[revKey] || 0) + Math.max(0, Number(amount) - houseFee);
-    s.settings[houseKey] = (s.settings[houseKey] || 0) + Math.min(Number(amount), houseFee);
+  if (payment.type === 'sponsor' && payment.sponsorTarget) {
+    s.sponsorships = s.sponsorships || [];
+    s.sponsorships.push({
+      id: generateId("sp"),
+      sponsor: mgr.displayName,
+      amount: payment.amount,
+      target: payment.sponsorTarget,
+      status: 'active'
+    });
+  } else {
+    // Track revenue for season pots (exclude pure house admin fees)
+    const compDef = COMPETITIONS[competition];
+    const houseFee = compDef ? (compDef.adminFee || 0) : 0;
+    if (competition === 'fpl' || competition === 'ucl') {
+      const revKey = `total${competition.charAt(0).toUpperCase() + competition.slice(1)}Revenue`;
+      const houseKey = `house${competition.charAt(0).toUpperCase() + competition.slice(1)}Admin`;
+      s.settings[revKey] = (s.settings[revKey] || 0) + Math.max(0, Number(amount) - houseFee);
+      s.settings[houseKey] = (s.settings[houseKey] || 0) + Math.min(Number(amount), houseFee);
+    }
   }
 
   await logEvent("payment_confirmed", { managerId, competition, reference, amount });
@@ -2029,6 +2040,36 @@ app.post("/api/manager/update-payout", async (req, res) => {
   res.json({ ok: true, message: "Bank details updated. Paystack will auto-create recipient for settlements." });
 });
 
+app.post("/api/sponsor", async (req, res) => {
+  const mgr = getAuthenticatedManager(req);
+  if (!mgr) return res.status(401).json({ error: "Login required" });
+  const { sponsorName, target, amount } = req.body || {};
+  if (!target || !amount || amount <= 0) return res.status(400).json({ error: "Invalid sponsor data" });
+  const s = await loadStore();
+  const balance = getWalletBalance(mgr.id);
+  if (balance < amount) {
+    return res.json({ ok: false, needPaystack: true });
+  }
+  s.ledger.push({
+    id: generateId("ldg"),
+    type: "sponsor_wallet",
+    managerId: mgr.id,
+    amount: -amount,
+    note: `Sponsored ${target} by ${sponsorName || mgr.displayName} (wallet)`,
+    at: nowISO()
+  });
+  s.sponsorships = s.sponsorships || [];
+  s.sponsorships.push({
+    id: generateId("sp"),
+    sponsor: sponsorName || mgr.displayName,
+    amount,
+    target,
+    status: 'active'
+  });
+  await persistStore();
+  res.json({ ok: true });
+});
+
 // Admin force settle a specific challenge (pick winner or cancel)
 app.post("/api/admin/settle-challenge", async (req, res) => {
   if (!DEMO_MODE) {
@@ -2133,7 +2174,8 @@ app.get("/api/standings", async (req, res) => {
     ...lb,
     projections,
     realLeagues,  // Admin can use this for real standings/H2H
-    leagueIds: ids
+    leagueIds: ids,
+    sponsorships: s.sponsorships || []
   });
 });
 
@@ -2161,9 +2203,46 @@ app.get("/api/manager/:id/full", async (req, res) => {
 
 // Initiate Paystack payment (real or demo)
 app.post("/api/payments/initiate", async (req, res) => {
-  const { managerId, competition } = req.body || {};
+  const { managerId, competition, sponsor } = req.body || {};
   const mgr = getManagerById(managerId);
   if (!mgr) return res.status(404).json({ error: "Manager not found" });
+
+  const s = await loadStore();
+
+  if (sponsor) {
+    const { target, amount: sAmount } = sponsor;
+    if (!target || !sAmount || sAmount <= 0) return res.status(400).json({ error: "Invalid sponsor data" });
+    const reference = `SP-${Date.now()}-${mgr.id.slice(-6)}`;
+    s.payments.push({
+      id: generateId("pay"),
+      managerId: mgr.id,
+      type: 'sponsor',
+      sponsorTarget: target,
+      amount: sAmount,
+      reference,
+      status: "pending",
+      initiatedAt: nowISO()
+    });
+    await persistStore();
+
+    if (DEMO_MODE || !PAYSTACK_PUBLIC) {
+      return res.json({
+        demo: true,
+        reference,
+        amount: sAmount,
+        authorizationUrl: null,
+        message: "Demo sponsor payment."
+      });
+    }
+
+    const initRes = await fetchPaystackInit(reference, sAmount, mgr, 'sponsor');
+    return res.json({
+      reference,
+      amount: sAmount,
+      authorizationUrl: initRes.authorization_url,
+      accessCode: initRes.access_code
+    });
+  }
 
   const comp = COMPETITIONS[competition];
   if (!comp) return res.status(400).json({ error: "Invalid competition" });
@@ -2176,7 +2255,6 @@ app.post("/api/payments/initiate", async (req, res) => {
   const totalAmount = comp.seasonFee + adminFee;
   const reference = `DL-${competition.toUpperCase()}-${Date.now()}-${mgr.id.slice(-6)}`;
 
-  const s = await loadStore();
   s.payments.push({
     id: generateId("pay"),
     managerId: mgr.id,

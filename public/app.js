@@ -1206,7 +1206,11 @@ function renderProjectionsLive() {
   }
 }
 
-let playerChallenges = [];
+let playerChallenges = JSON.parse(localStorage.getItem('dl_playerChallenges') || '[]');
+
+function savePlayerChallenges() {
+  localStorage.setItem('dl_playerChallenges', JSON.stringify(playerChallenges));
+}
 
 function renderChallengeArena() {
   const wrap = $('challenge-arena');
@@ -1265,9 +1269,10 @@ function showChallengeModal() {
     const stake = parseInt(document.getElementById('ch-stake').value) || 5000;
     const paidFromWallet = tryPayWithWallet(stake, 'challenge stake');
     playerChallenges.push({proposer: currentManager.displayName, opponent: opp, category: cat, stake, status: 'proposed', paidFromWallet});
+    savePlayerChallenges();
     closeModal();
     renderChallengeArena();
-    const payMsg = paidFromWallet ? 'Stake deducted from your wallet.' : 'No wallet balance - would use Paystack in real.';
+    const payMsg = paidFromWallet ? 'Stake deducted from your wallet.' : 'No wallet balance - use Paystack to pay stake.';
     alert(`Proposed! ${payMsg} Opponent accepts and pays stake (from wallet or Paystack). 10% house. Settlement after GW.`);
   };
 }
@@ -1276,7 +1281,8 @@ function acceptChallenge(i) {
   const ch = playerChallenges[i];
   const paid = tryPayWithWallet(ch.stake, 'accepting beef/challenge');
   ch.status = 'accepted';
-  const payMsg = paid ? 'Your stake paid from wallet.' : 'Insufficient wallet balance (would Paystack).';
+  savePlayerChallenges();
+  const payMsg = paid ? 'Your stake paid from wallet.' : 'Insufficient wallet balance - use Paystack.';
   // In real: call initiate for stake for both (wallet or Paystack)
   alert(`Accepted! ${payMsg} Both stakes secured. 10% house on settlement.`);
   renderChallengeArena();
@@ -1285,10 +1291,18 @@ function acceptChallenge(i) {
 function renderSponsoredAwards() {
   const wrap = $('sponsored-awards');
   if (!wrap) return;
-  wrap.innerHTML = `
-    <div>Best Captain GW5 - Sponsored by "Local Legend FC" +₦10,000</div>
-    <div class="text-xs">Total sponsored this season: ₦45,000</div>
-  `;
+  const spons = (standingsData && standingsData.sponsorships) || [];
+  if (spons.length === 0) {
+    wrap.innerHTML = `<div class="text-xs">No active sponsorships yet.</div>`;
+    return;
+  }
+  let total = 0;
+  let html = spons.map(sp => {
+    total += sp.amount || 0;
+    return `<div>🏆 ${sp.target} - Sponsored by ${sp.sponsor} +₦${sp.amount}</div>`;
+  }).join('');
+  html += `<div class="text-xs">Total sponsored this season: ₦${total}</div>`;
+  wrap.innerHTML = html;
 }
 
 function showSquadModal() {
@@ -1331,13 +1345,14 @@ function showSponsorModal() {
   const options = SPONSORED_AWARDS.map(a => `<option value="${a.id}">${a.name} - ${a.desc}</option>`).join('');
   c.innerHTML = `
     <div>
-      <div class="font-semibold mb-2">Sponsor an Award (Pay immediately to activate)</div>
-      <input id="sp-name" placeholder="Your name / brand" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
-      <select id="sp-target" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm" style="max-height:150px;overflow:auto;">
+      <div class="font-semibold mb-2">Sponsor an Award (static form - pay to confirm)</div>
+      <input id="sp-name" placeholder="Your name / brand (optional)" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
+      <select id="sp-target" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
         ${options}
       </select>
-      <button id="sp-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">SPONSOR (pay via Paystack now)</button>
-      <div class="text-[10px] mt-1">Choose award, then enter amount. Pay from wallet (if winnings balance) or Paystack. 10% house on payout.</div>
+      <input id="sp-amount" type="number" placeholder="Amount to sponsor (e.g. 10000)" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm" value="10000">
+      <button id="sp-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">SPONSOR &amp; PAY (wallet if balance, else Paystack)</button>
+      <div class="text-[10px] mt-1">Pay immediately to activate the award pot. 10% house on payout. Uses winnings wallet if available.</div>
     </div>
   `;
   modal.classList.remove('hidden');
@@ -1345,36 +1360,30 @@ function showSponsorModal() {
   document.getElementById('sp-submit').onclick = () => {
     const sponsorName = document.getElementById('sp-name').value.trim() || currentManager.displayName;
     const targetId = document.getElementById('sp-target').value;
+    const amountStr = document.getElementById('sp-amount').value;
+    const amount = parseInt(amountStr) || 0;
+    if (amount <= 0) return alert('Enter valid amount');
     const award = SPONSORED_AWARDS.find(a => a.id === targetId);
     if (!award) return alert('Select an award');
-    const amountStr = prompt(`Enter amount to sponsor for "${award.name}":`, '10000');
-    const amount = parseInt(amountStr) || 0;
-    if (amount <= 0) return;
     closeModal();
-    // Initiate pay immediately for sponsor
     initiateSponsorPayment(sponsorName, award, amount);
   };
 }
 
 async function initiateSponsorPayment(sponsorName, award, amount) {
-  // For sponsor, pay immediately - prefer wallet if balance
   try {
     const paidWallet = tryPayWithWallet(amount, `sponsoring ${award.name}`);
     if (paidWallet) {
-      const s = {sponsor: sponsorName, amount, target: award.id, status: 'active'};
-      // Would call backend to add after payment
+      await fetchJSON('/api/sponsor', {
+        method: 'POST',
+        body: JSON.stringify({ sponsorName, target: award.id, amount })
+      });
       renderSponsoredAwards();
       alert('Sponsor added from wallet balance.');
       return;
     }
-    // Use a special type or just simulate for now; in real extend initiatePayment or new endpoint
-    // For demo, add directly after 'pay'
-    alert(`In real: Paystack for ₦${amount} for ${award.name}. On success, add to sponsorships.`);
-    // Add to local after pay simulation
-    const s = {sponsor: sponsorName, amount, target: award.id, status: 'active'};
-    // Would call backend to add after payment
-    renderSponsoredAwards();
-    alert('Sponsor added (via Paystack in real).');
+    // Paystack path - will trigger confirmation and add on success
+    await initiatePayment(null, { target: award.id, amount });
   } catch (e) {
     alert('Sponsor failed: ' + e.message);
   }
@@ -1797,15 +1806,19 @@ function showUpdateBankModal() {
   showBankModal();
 }
 
-async function initiatePayment(comp) {
+async function initiatePayment(comp, sponsorOpts) {
   if (!currentManager) return alert('Log in first');
 
   const btnText = comp === 'fpl' ? 'FPL Season' : 'UCL Season';
+  const body = { managerId: currentManager.id, competition: comp };
+  if (sponsorOpts) {
+    body.sponsor = sponsorOpts;
+  }
   try {
     const res = await fetchJSON('/api/payments/initiate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ managerId: currentManager.id, competition: comp })
+      body: JSON.stringify(body)
     });
 
     if (res.alreadyPaid) {
@@ -2153,10 +2166,7 @@ function renderFplTailored() {
 
   // Personal Beef
   if ($('fpl-personal-beef')) {
-    $('fpl-personal-beef').innerHTML = `
-      <div>Beef of the Week: Beat your chosen rival by 10+ pts to win bragging rights + small pot.</div>
-      <div class="mt-1 text-[#666]">Current beefs running: 3 active. Propose one above.</div>
-    `;
+    $('fpl-personal-beef').innerHTML = `<div class="text-xs">Propose measurable beefs above (use static form with paid managers dropdown).</div>`;
   }
 
   // Ensure lineup viewer populated
@@ -2234,34 +2244,54 @@ function showManagerSquadWithInsight(managerId) {
 function renderSponsoredAwardsFpl() {
   const el = $('fpl-sponsored');
   if (!el) return;
-  // Show all (at least 10+ now)
-  el.innerHTML = SPONSORED_AWARDS.map(a => `<div class="mb-0.5">🏆 <strong>${a.name}</strong> by ${a.sponsor} — ₦${a.amount} • ${a.desc}</div>`).join('');
+  renderSponsoredAwards(); // use real
 }
 
 function showProposeAward() {
-  const options = SPONSORED_AWARDS.map((a, i) => `${i+1}. ${a.name} - ${a.desc}`).join('\n');
-  const choice = prompt(`Choose sponsored award preset:\n${options}\n\nOr enter custom name:`);
-  if (!choice) return;
-
-  let awardName = choice;
-  let customAmount = prompt('Enter award amount (sponsor pays this via Paystack, 10% house cut on win):', '5000');
-  const amount = parseInt(customAmount) || 5000;
-
-  // In real: create sponsorship with custom amount
-  alert(`Sponsored award "${awardName}" proposed for ₦${amount}. Sponsor pays (wallet if available or Paystack). 10% house on payout. Auto-awarded after GW using API.`);
-  // Add dynamically if needed
+  showSponsorModal();
 }
 
-function proposeBeef() {
-  const options = BEEF_PRESETS.map((b, i) => `${i+1}. ${b.name} - ${b.desc}`).join('\n');
-  const choice = prompt(`Choose personal beef preset (pay only AFTER other accepts):\n${options}\n\nEnter number or name:`);
-  if (!choice) return;
-  const opp = prompt('Opponent manager name/email:');
-  if (!opp) return;
-  const stakeStr = prompt('Stake amount (pay via wallet if balance, else Paystack only if accepted):', '5000');
-  const stake = parseInt(stakeStr) || 5000;
-  alert(`Beef "${choice}" vs ${opp} for ₦${stake} proposed. NO payment yet - other must accept first. Once accepted, stake paid (wallet or Paystack for both).`);
-  // Real: store proposed, on accept then initiate pay for stake (prefer wallet).
+function showBeefModal() {
+  const modal = $('modal');
+  const c = $('modal-content');
+  const paidFpl = (standingsData && standingsData.fpl || []).filter(m => m.fplPaid && m.id !== currentManager.id);
+  if (paidFpl.length === 0) return alert('No other paid FPL managers to challenge yet.');
+  const oppOptions = paidFpl.map(m => `<option value="${m.id}">${m.displayName}</option>`).join('');
+  const catOptions = BEEF_PRESETS.map(b => `<option value="${b.id}">${b.name} - ${b.desc}</option>`).join('');
+  c.innerHTML = `
+    <div>
+      <div class="font-semibold mb-2">Propose Personal Beef (static form - measurable)</div>
+      <select id="beef-opp" multiple class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm" size="4">
+        ${oppOptions}
+      </select>
+      <select id="beef-cat" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
+        ${catOptions}
+      </select>
+      <input id="beef-stake" type="number" value="5000" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
+      <button id="beef-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">PROPOSE (deduct from wallet if balance; Paystack on accept)</button>
+      <div class="text-[10px] mt-1">Select one or more paid FPL managers. Choose measurable category. Stake per. Paid from winnings wallet preferred.</div>
+    </div>
+  `;
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+  document.getElementById('beef-submit').onclick = () => {
+    const oppSel = document.getElementById('beef-opp');
+    const selectedIds = Array.from(oppSel.selectedOptions).map(o => o.value);
+    const catId = document.getElementById('beef-cat').value;
+    const stake = parseInt(document.getElementById('beef-stake').value) || 5000;
+    if (selectedIds.length === 0) return alert('Select opponents');
+    closeModal();
+    const total = stake * selectedIds.length;
+    const paid = tryPayWithWallet(total, 'beef stakes');
+    selectedIds.forEach(id => {
+      const oppM = paidFpl.find(m => m.id === id);
+      const oppName = oppM ? oppM.displayName : id;
+      playerChallenges.push({proposer: currentManager.displayName, opponent: oppName, category: catId, stake, status: 'proposed'});
+    });
+    savePlayerChallenges();
+    renderChallengeArena();
+    alert(`Proposed to ${selectedIds.length} managers. ${paid ? 'Deducted total from wallet.' : 'Will pay via Paystack on accepts.'}`);
+  };
 }
 
 async function settleCurrentRound(comp) {
@@ -2351,17 +2381,8 @@ function hideJoinGuideModal() {
 }
 
 function autoSettleAwards() {
-  // Demo: on sync, if standings, "settle" a couple of awards into ledger for the top managers
   if (!standingsData || !currentManager) return;
-  const fplTop = (standingsData.fpl || [])[0];
-  const uclTop = (standingsData.ucl || [])[0];
-  // Only simulate for current user or top if demo
-  if (fplTop && fplTop.id === currentManager.id) {
-    // Add a sample win to ledger if not already (demo only)
-    // In real would check round and avoid duplicates
-    console.log('Auto settled FPL award for you (see ledger)');
-  }
-  // The challenge room and ledger are the places to see the results
+  // Awards settled via backend auto logic after GW/MD; see ledger and challenge room.
 }
 
 function switchLeague(mode) {
