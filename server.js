@@ -173,48 +173,119 @@ let storeCache = null;
 let storeWriteLock = false;
 let db = null;
 
-function initSQLite() {
+function initSQLite(retries = 2) {
   if (db) return db;
   const dbPath = path.join(DATA_DIR, "dleague.db");
-  db = new Database(dbPath);
-  db.pragma("journal_mode = WAL"); // better durability
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS store (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    )
-  `);
-  console.log(`[store] SQLite initialized at ${dbPath}`);
-  return db;
+  const walPath = dbPath + '-wal';
+  const shmPath = dbPath + '-shm';
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      if (attempt > 0) {
+        // On retry, try to clean potentially stale WAL/SHM from unclean previous shutdown (common on Render sleep/wake)
+        try { if (fsSync.existsSync(walPath)) fsSync.unlinkSync(walPath); } catch {}
+        try { if (fsSync.existsSync(shmPath)) fsSync.unlinkSync(shmPath); } catch {}
+        console.log(`[store] Retrying SQLite init (attempt ${attempt}) after cleaning WAL/SHM`);
+      }
+      db = new Database(dbPath);
+      db.pragma("journal_mode = WAL");
+      db.pragma("synchronous = NORMAL");
+      db.pragma("wal_autocheckpoint = 1000");
+      try { db.pragma("wal_checkpoint(FULL)"); } catch (cpErr) { /* ignore checkpoint errors */ }
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS store (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )
+      `);
+      console.log(`[store] SQLite initialized at ${dbPath}`);
+      return db;
+    } catch (e) {
+      console.warn(`[store] SQLite init attempt ${attempt} failed: ${e.message}`);
+      db = null;
+      if (attempt === retries) {
+        throw e;
+      }
+    }
+  }
 }
 
 async function loadStore() {
   if (storeCache) return storeCache;
 
-  try {
+  const defaults = createEmptyStore();
+  const dbPath = path.join(DATA_DIR, "dleague.db");
+
+  const tryLoadFromDisk = () => {
     if (!db) initSQLite();
-
     const rows = db.prepare("SELECT key, value FROM store").all();
-    storeCache = {};
-
+    const loaded = {};
     for (const row of rows) {
-      storeCache[row.key] = JSON.parse(row.value);
+      loaded[row.key] = JSON.parse(row.value);
     }
+    return loaded;
+  };
 
-    // Ensure required keys exist
-    const defaults = createEmptyStore();
-    let needsPersist = false;
-    for (const [k, v] of Object.entries(defaults)) {
-      if (!(k in storeCache)) {
-        storeCache[k] = v;
-        needsPersist = true;
+  const loadFromLatestBackup = () => {
+    try {
+      const backupsDir = path.join(DATA_DIR, "backups");
+      if (!fsSync.existsSync(backupsDir)) return null;
+      const files = fsSync.readdirSync(backupsDir)
+        .filter(f => f.startsWith('store-') && f.endsWith('.json'))
+        .sort().reverse();
+      for (const f of files) {
+        try {
+          const p = path.join(backupsDir, f);
+          const raw = fsSync.readFileSync(p, "utf8");
+          const data = JSON.parse(raw);
+          if (data && (data.managers || []).length > 0) {
+            console.log(`[store] Recovered from backup: ${f}`);
+            return data;
+          }
+        } catch (bfErr) { /* try next backup */ }
+      }
+    } catch (e) { /* ignore */ }
+    return null;
+  };
+
+  try {
+    let loaded;
+    try {
+      loaded = tryLoadFromDisk();
+    } catch (loadErr) {
+      console.warn(`[store] Initial SQLite load failed: ${loadErr.message}. Attempting WAL recovery + backup...`);
+      // Force re-init with WAL cleanup (already retried inside initSQLite)
+      db = null;
+      try {
+        loaded = tryLoadFromDisk();
+      } catch (retryErr) {
+        const backupData = loadFromLatestBackup();
+        if (backupData) {
+          loaded = backupData;
+          console.log("[store] Using backup data (will persist on next write).");
+        } else {
+          throw retryErr; // will fall to outer catch which avoids wiping
+        }
       }
     }
 
+    storeCache = loaded || {};
+
+    // Ensure critical non-data keys (settings) without forcing empty data arrays over potentially missing keys
+    let needsPersist = false;
+    if (!storeCache.settings) {
+      storeCache.settings = { ...defaults.settings };
+      needsPersist = true;
+    }
+    // Initialize collection keys to arrays only if completely absent (first run); do not overwrite or persist empty if key missing after partial load
+    ['managers','payments','scores','ledger','h2h','challenges','sponsorships','events'].forEach(k => {
+      if (!Array.isArray(storeCache[k])) storeCache[k] = [];
+    });
+    if (!storeCache.cup) storeCache.cup = { ...defaults.cup };
+
     console.log(`[store] Loaded from SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
 
-    // Normalize ONLY for old season data at the very start of 2026/27. 
-    // NEVER trigger on currentRound > 1 during live season - protects registered managers, scores, lock state.
+    // Normalize ONLY for old season data...
     if (storeCache.settings && (storeCache.settings.seasonName.includes("2025/26") || storeCache.settings.seasonName.includes("25/26"))) {
       storeCache.settings.seasonName = "2026/27 D League";
       storeCache.settings.currentRound = { fpl: 1, ucl: 1 };
@@ -227,38 +298,41 @@ async function loadStore() {
 
     if (needsPersist) await persistStore();
 
-    // Migrate old boolean leagueLocked to per-comp object
+    // Migrate old boolean...
     if (typeof storeCache.settings.leagueLocked === 'boolean') {
       const wasLocked = storeCache.settings.leagueLocked;
       storeCache.settings.leagueLocked = { fpl: wasLocked, ucl: wasLocked };
       needsPersist = true;
     }
 
-    // One-time migration from old store.json (if exists and SQLite is empty)
+    // One-time migration from old store.json - make much stricter to avoid overwriting good data
     const oldStorePath = STORE_FILE;
-    if (Object.keys(storeCache).length <= Object.keys(defaults).length && fsSync.existsSync(oldStorePath)) {
+    const hasManagers = Array.isArray(storeCache.managers) && storeCache.managers.length > 0;
+    if (!hasManagers && fsSync.existsSync(oldStorePath)) {
       try {
         const raw = fsSync.readFileSync(oldStorePath, "utf8");
         const oldData = JSON.parse(raw);
-        storeCache = { ...defaults, ...oldData };
-        await persistStore();
-        console.log("[store] Migrated data from old store.json to SQLite");
-        // Optionally rename old file
+        if (oldData && Array.isArray(oldData.managers) && oldData.managers.length > 0) {
+          storeCache = { ...defaults, ...oldData };
+          await persistStore();
+          console.log("[store] Migrated managers from old store.json to SQLite");
+        }
         try { fsSync.renameSync(oldStorePath, oldStorePath + ".migrated"); } catch {}
       } catch (migErr) {
-        console.warn("[store] Old store.json migration failed:", migErr.message);
+        console.warn("[store] Old store.json migration skipped/failed:", migErr.message);
       }
     }
 
     // Heal any paid managers lost during migration or prior bad updates
-    // This guarantees people who paid can still log in.
     await recoverOrphanedPaidManagers();
 
     return storeCache;
   } catch (e) {
-    console.warn(`[store] SQLite load failed: ${e.message}. Starting fresh.`);
+    console.warn(`[store] SQLite load failed after recovery attempts: ${e.message}. Using in-memory empty for this run (disk data preserved if possible).`);
+    // IMPORTANT: Do NOT createEmpty + persist here. That was wiping managers on transient errors (e.g. Render sleep/wake WAL issues).
+    // Return a fresh empty cache in memory only. Real data on disk should still be there on next successful load.
     storeCache = createEmptyStore();
-    await persistStore();
+    // Do not persist the empty store - let a future successful load or explicit write repopulate.
     return storeCache;
   }
 }
@@ -305,8 +379,11 @@ function getStore() {
       for (const row of rows) {
         storeCache[row.key] = JSON.parse(row.value);
       }
-    } catch {
-      storeCache = createEmptyStore();
+      console.log(`[store] getStore loaded: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
+    } catch (e) {
+      console.warn(`[store] getStore load failed: ${e.message}. Returning fresh empty without caching (rely on loadStore).`);
+      // Return a throw-away empty so we don't cache a wipe state. Real data should come from loadStore().
+      return createEmptyStore();
     }
   }
   return storeCache;
@@ -2588,6 +2665,11 @@ async function boot() {
   const store = await loadStore();
   console.log(`[BOOT] Store loaded with ${store.managers?.length || 0} managers (non-demo: protected mode)`);
 
+  // Force a WAL checkpoint early to help with unclean shutdowns from Render sleep/wake
+  try {
+    if (db) db.pragma("wal_checkpoint(FULL)");
+  } catch (cpErr) { console.warn("[store] early checkpoint warning:", cpErr.message); }
+
   // Always recover any paid people whose manager records were dropped. Payments + scores + ledger are source of truth.
   await recoverOrphanedPaidManagers();
 
@@ -2634,4 +2716,17 @@ async function boot() {
 boot().catch(err => {
   console.error("Boot failed", err);
   process.exit(1);
+});
+
+// Best-effort WAL checkpoint on shutdown (helps durability across sleeps/deploys)
+['SIGINT', 'SIGTERM', 'SIGUSR2'].forEach(sig => {
+  process.on(sig, () => {
+    try {
+      if (db) {
+        db.pragma("wal_checkpoint(FULL)");
+        console.log("[store] WAL checkpoint on shutdown");
+      }
+    } catch (e) { /* ignore */ }
+    process.exit(0);
+  });
 });
