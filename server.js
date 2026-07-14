@@ -271,8 +271,9 @@ async function loadStore() {
 
     storeCache = loaded || {};
 
-    // Ensure critical non-data keys (settings) without forcing empty data arrays over potentially missing keys
     let needsPersist = false;
+
+    // Ensure critical non-data keys (settings) without forcing empty data arrays over potentially missing keys
     if (!storeCache.settings) {
       storeCache.settings = { ...defaults.settings };
       needsPersist = true;
@@ -283,7 +284,23 @@ async function loadStore() {
     });
     if (!storeCache.cup) storeCache.cup = { ...defaults.cup };
 
+    // Prefer backup if it has more managers than what was loaded from DB (in case of partial/stale DB row)
+    const backupData = loadFromLatestBackup();
+    if (backupData && Array.isArray(backupData.managers) && backupData.managers.length > (storeCache.managers || []).length) {
+      storeCache = backupData;
+      console.log("[store] Preferred more complete backup over DB data.");
+      needsPersist = true;
+    }
+
     console.log(`[store] Loaded from SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
+
+    // If loaded has fewer managers than a backup, prefer backup and mark for persist
+    const backupData2 = loadFromLatestBackup();
+    if (backupData2 && Array.isArray(backupData2.managers) && backupData2.managers.length > (storeCache.managers || []).length) {
+      storeCache = backupData2;
+      console.log("[store] Switched to more complete backup data on load.");
+      needsPersist = true;
+    }
 
     // Normalize ONLY for old season data...
     if (storeCache.settings && (storeCache.settings.seasonName.includes("2025/26") || storeCache.settings.seasonName.includes("25/26"))) {
