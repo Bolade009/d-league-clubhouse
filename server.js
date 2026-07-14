@@ -165,7 +165,8 @@ function createEmptyStore() {
     },
     challenges: [],
     sponsorships: [], // {id, sponsor, amount, target: 'gw_winner'|'best_captain'|'league_winner' etc, round? }
-    events: []
+    events: [],
+    complaints: [] // {id, managerId, email, title, description, relatedRound?, at, status: 'open'|'resolved'}
   };
 }
 
@@ -323,7 +324,7 @@ async function loadStore() {
       needsPersist = true;
     }
     // Initialize collection keys to arrays only if completely absent (first run); do not overwrite or persist empty if key missing after partial load
-    ['managers','payments','scores','ledger','h2h','challenges','sponsorships','events'].forEach(k => {
+    ['managers','payments','scores','ledger','h2h','challenges','sponsorships','events','complaints'].forEach(k => {
       if (!Array.isArray(storeCache[k])) storeCache[k] = [];
     });
     if (!storeCache.cup) storeCache.cup = { ...defaults.cup };
@@ -338,7 +339,7 @@ async function loadStore() {
     function mergeSources(primary, ...others) {
       const result = { ...primary };
       // Start from primary (usually the freshest SQLite or sidecar)
-      ['managers', 'payments', 'ledger', 'scores', 'events', 'sponsorships', 'challenges', 'h2h'].forEach(key => {
+      ['managers', 'payments', 'ledger', 'scores', 'events', 'sponsorships', 'challenges', 'h2h', 'complaints'].forEach(key => {
         if (!Array.isArray(result[key])) result[key] = [];
       });
       if (!result.settings) result.settings = { ...defaults.settings };
@@ -357,8 +358,8 @@ async function loadStore() {
       });
       result.managers = Array.from(mgrById.values());
 
-      // Ledger, payments, scores etc: union by id (preserve *all* historical + recent winnings/settlements)
-      ['ledger', 'payments', 'scores', 'events', 'sponsorships', 'challenges'].forEach(key => {
+      // Ledger, payments, scores, complaints etc: union by id (preserve *all* historical + recent winnings/settlements)
+      ['ledger', 'payments', 'scores', 'events', 'sponsorships', 'challenges', 'complaints'].forEach(key => {
         const byId = new Map((result[key] || []).map(item => [item.id || JSON.stringify(item), item]));
         allSources.forEach(src => {
           (src[key] || []).forEach(item => {
@@ -401,6 +402,11 @@ async function loadStore() {
 
     if (afterCount > beforeCount) {
       console.log(`[store] Reconciled extra managers from sidecar/backup: ${beforeCount} -> ${afterCount}. Recent ledger/payments preserved.`);
+      needsPersist = true;
+    }
+
+    // Always persist the reconciled state to the atomic sidecar so the freshest full picture (managers + ledger) becomes the new durable current-state
+    if ((sidecar || bestBackup) && !needsPersist) {
       needsPersist = true;
     }
 
@@ -2257,6 +2263,54 @@ app.post("/api/admin/cancel-sponsorship", async (req, res) => {
   res.json({ ok: true, message: `Sponsorship by ${removed.sponsor} cancelled.` });
 });
 
+// Admin manual credit / adjustment for known missing winnings (e.g. after recovery from lost state)
+// Adds directly to ledger so wallet balance updates immediately. Use negative amount for debit.
+app.post("/api/admin/manual-credit", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { managerId, email, amount, note, competition } = req.body || {};
+  if (!amount || !note) return res.status(400).json({ error: "amount and note required" });
+
+  const s = await loadStore();
+  let targetMgr = null;
+  if (managerId) targetMgr = s.managers.find(m => m.id === managerId);
+  if (!targetMgr && email) targetMgr = s.managers.find(m => m.email && m.email.toLowerCase() === String(email).toLowerCase());
+
+  if (!targetMgr) return res.status(404).json({ error: "Manager not found (use managerId or email)" });
+
+  const credit = {
+    id: generateId("ldg"),
+    type: "manual_credit",
+    managerId: targetMgr.id,
+    competition: competition || "fpl",
+    round: s.settings.currentRound ? (s.settings.currentRound.fpl || null) : null,
+    amount: Number(amount),
+    note: String(note).slice(0, 300),
+    at: nowISO(),
+    by: "admin"
+  };
+  s.ledger.push(credit);
+  await logEvent("manual_credit", { managerId: targetMgr.id, email: targetMgr.email, amount: credit.amount, note: credit.note });
+  await persistStore();
+  res.json({ ok: true, message: `Manual credit of ₦${amount} added to ${targetMgr.displayName}. Wallet will reflect on next refresh.`, ledgerEntry: credit });
+});
+
 // Admin sets the real league IDs for FPL classic, H2H, and UCL for accurate standings, auto-awards, H2H
 app.post("/api/admin/set-leagues", async (req, res) => {
   if (!DEMO_MODE) {
@@ -2434,6 +2488,33 @@ app.post("/api/sponsor", async (req, res) => {
   });
   await persistStore();
   res.json({ ok: true });
+});
+
+// Manager submits a complaint / issue (visible to admin in events + overview)
+app.post("/api/manager/complaint", async (req, res) => {
+  const mgr = getAuthenticatedManager(req);
+  if (!mgr) return res.status(401).json({ error: "Login required" });
+
+  const { title, description, relatedRound } = req.body || {};
+  if (!title || !description) return res.status(400).json({ error: "title and description required" });
+
+  const s = await loadStore();
+  const complaint = {
+    id: generateId("cmp"),
+    managerId: mgr.id,
+    email: mgr.email,
+    displayName: mgr.displayName,
+    title: String(title).slice(0, 200),
+    description: String(description).slice(0, 2000),
+    relatedRound: relatedRound || null,
+    at: nowISO(),
+    status: 'open'
+  };
+  s.complaints = s.complaints || [];
+  s.complaints.unshift(complaint); // newest first
+  await logEvent("complaint_submitted", { managerId: mgr.id, email: mgr.email, title: complaint.title, id: complaint.id });
+  await persistStore();
+  res.json({ ok: true, complaintId: complaint.id, message: "Complaint received. The commissioner will review it." });
 });
 
 // Admin force settle a specific challenge (pick winner or cancel)
@@ -2890,7 +2971,8 @@ app.get("/api/admin/overview", async (req, res) => {
     sponsorships,
     managers: managersSummary,
     totalHouseCommission,
-    leagueLocked: s.settings.leagueLocked || { fpl: false, ucl: false }
+    leagueLocked: s.settings.leagueLocked || { fpl: false, ucl: false },
+    complaints: (s.complaints || []).slice(0, 30)
   });
 });
 

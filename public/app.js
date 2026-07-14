@@ -637,6 +637,52 @@ async function loadAdminOverview() {
     } else if (dash) {
       dash.appendChild(panel);
     }
+
+    // Complaints section (new for go-live)
+    const compWrap = document.createElement('div');
+    compWrap.className = 'mt-4 p-4 bg-[#161616] border border-[#333] rounded-2xl';
+    const complaints = data.complaints || [];
+    let compHtml = complaints.length ? complaints.map(c => `
+      <div class="mb-2 p-2 bg-black/30 rounded text-xs">
+        <div><strong>${c.displayName || c.email}</strong> • ${c.title} <span class="text-[10px] text-[#666]">(${new Date(c.at).toLocaleDateString()})</span> <span class="px-1 rounded ${c.status==='open'?'bg-yellow-700':'bg-green-700'}">${c.status}</span></div>
+        <div class="text-[#aaa]">${(c.description||'').slice(0,180)}</div>
+        ${c.relatedRound ? `<div class="text-[10px] text-[#888]">Round: ${c.relatedRound}</div>` : ''}
+      </div>`).join('') : '<div class="text-[#666] text-xs">No complaints yet.</div>';
+    compWrap.innerHTML = `<div class="font-semibold mb-2">COMPLAINTS / ISSUES FROM MANAGERS</div>${compHtml}`;
+    panel.appendChild(compWrap);
+
+    // Manual credit form for lost winnings recovery
+    const creditWrap = document.createElement('div');
+    creditWrap.className = 'mt-4 p-4 bg-[#161616] border border-[#ffcc00] rounded-2xl';
+    const mgrOpts = (data.managers || []).map(m => `<option value="${m.id}">${m.displayName} (${m.email})</option>`).join('');
+    creditWrap.innerHTML = `
+      <div class="font-semibold mb-2 text-[#ffcc00]">MANUAL CREDIT / ADJUSTMENT (for missing winnings after recovery)</div>
+      <div class="flex flex-wrap gap-2 items-end">
+        <select id="credit-mgr" class="bg-[#111] border border-[#444] text-sm p-1 rounded">${mgrOpts}</select>
+        <input id="credit-amt" type="number" placeholder="Amount e.g. 4500" class="bg-[#111] border border-[#444] text-sm p-1 rounded w-28" value="4500">
+        <input id="credit-note" placeholder="Note e.g. GW9 winner - recovered" class="bg-[#111] border border-[#444] text-sm p-1 rounded flex-1 min-w-[180px]">
+        <button onclick="submitManualCredit()" class="px-4 py-1 bg-[#ffcc00] text-black font-bold rounded text-sm">CREDIT WALLET</button>
+      </div>
+      <div class="text-[10px] mt-1 text-[#888]">Adds ledger entry. Use positive for credit (missing win). Negative to correct. Wallet recalcs automatically on refresh.</div>
+    `;
+    panel.appendChild(creditWrap);
+
+    // Quick full export button
+    const exportBtn = document.createElement('button');
+    exportBtn.className = 'mt-3 px-4 py-1 text-xs bg-[#222] hover:bg-[#333] border border-[#444] rounded';
+    exportBtn.textContent = 'DOWNLOAD FULL EXPORT (current-state + ledger + everything) → save offline';
+    exportBtn.onclick = () => {
+      const token = prompt('Enter your EXPORT_TOKEN:');
+      if (!token) return;
+      const url = `/api/export/full?token=${encodeURIComponent(token)}`;
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `d-league-full-export-${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    };
+    panel.appendChild(exportBtn);
   } catch(e) { console.warn('admin overview failed', e); }
 }
 
@@ -685,6 +731,30 @@ async function approveJoinRequestFromBtn(btn) {
     loadAdminOverview(); // refresh the panel
   } catch (e) {
     alert('Approve failed: ' + (e.message || e));
+  }
+}
+
+async function submitManualCredit() {
+  const mgrSelect = document.getElementById('credit-mgr');
+  const amtEl = document.getElementById('credit-amt');
+  const noteEl = document.getElementById('credit-note');
+  if (!mgrSelect || !amtEl || !noteEl) return;
+  const managerId = mgrSelect.value;
+  const amount = Number(amtEl.value);
+  const note = noteEl.value.trim();
+  if (!managerId || !amount || !note) return alert('Select manager, amount and note');
+  if (!confirm(`Credit ₦${amount} to selected manager with note: ${note}?`)) return;
+  try {
+    const res = await fetchJSON('/api/admin/manual-credit', {
+      method: 'POST',
+      body: JSON.stringify({ managerId, amount, note })
+    });
+    alert(res.message || 'Credit added.');
+    loadAdminOverview(); // refresh
+    // also refresh main if open
+    if (typeof loadAllData === 'function') loadAllData();
+  } catch (e) {
+    alert('Credit failed: ' + (e.message || e));
   }
 }
 
@@ -1381,6 +1451,42 @@ function showSponsorModal() {
     if (!award) return alert('Select an award');
     closeModal();
     initiateSponsorPayment(sponsorName, award, amount);
+  };
+}
+
+function showComplaintModal() {
+  if (!currentManager) return alert('Login first');
+  const modal = $('modal');
+  const c = $('modal-content');
+  c.innerHTML = `
+    <div>
+      <div class="font-semibold mb-2 text-[#00ff85]">Report Issue / Complaint to Commissioner</div>
+      <input id="cmp-title" placeholder="Short title (e.g. Missing winnings for GW9)" class="w-full p-2 bg-[#111] border border-[#333] mb-2 text-sm rounded" />
+      <textarea id="cmp-desc" rows="4" placeholder="Describe the issue, round, amount if relevant, any details..." class="w-full p-2 bg-[#111] border border-[#333] mb-2 text-sm rounded"></textarea>
+      <input id="cmp-round" placeholder="Related round (optional, e.g. 9 or MD3)" class="w-full p-1 bg-[#111] border border-[#333] mb-2 text-sm rounded" />
+      <button id="cmp-submit" class="w-full py-2 bg-[#00ff85] text-black font-bold rounded text-sm">SUBMIT COMPLAINT</button>
+      <div class="text-[10px] mt-1 text-[#666]">This goes to the commissioner via the admin log. You will see confirmation.</div>
+    </div>
+  `;
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+
+  document.getElementById('cmp-submit').onclick = async () => {
+    const title = document.getElementById('cmp-title').value.trim();
+    const description = document.getElementById('cmp-desc').value.trim();
+    const relatedRound = document.getElementById('cmp-round').value.trim() || null;
+    if (!title || !description) return alert('Title and description required');
+    try {
+      await fetchJSON('/api/manager/complaint', {
+        method: 'POST',
+        body: JSON.stringify({ title, description, relatedRound })
+      });
+      closeModal();
+      alert('Complaint submitted. Thank you — the commissioner has been notified.');
+      // optional: reload events if admin, but for manager just done
+    } catch (e) {
+      alert('Submit failed: ' + (e.message || e));
+    }
   };
 }
 
