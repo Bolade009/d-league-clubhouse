@@ -173,6 +173,55 @@ let storeCache = null;
 let storeWriteLock = false;
 let db = null;
 
+// Module-level best-backup finder (usable from boot, recover, etc). Scans for max managers.
+function findBestBackupData() {
+  try {
+    const backupsDir = path.join(DATA_DIR, "backups");
+    if (!fsSync.existsSync(backupsDir)) return null;
+    const candidates = [];
+
+    // Stable non-pruned first
+    for (const stable of ['store-best.json', 'store-latest.json']) {
+      const p = path.join(backupsDir, stable);
+      if (fsSync.existsSync(p)) {
+        try {
+          const data = JSON.parse(fsSync.readFileSync(p, "utf8"));
+          const count = (data && Array.isArray(data.managers)) ? data.managers.length : 0;
+          if (count > 0) candidates.push({ file: stable, count, data });
+        } catch {}
+      }
+    }
+
+    const files = fsSync.readdirSync(backupsDir)
+      .filter(f => f.startsWith('store-') && f.endsWith('.json') && !f.includes('best') && !f.includes('latest'));
+    for (const f of files) {
+      try {
+        const p = path.join(backupsDir, f);
+        const data = JSON.parse(fsSync.readFileSync(p, "utf8"));
+        const count = (data && Array.isArray(data.managers)) ? data.managers.length : 0;
+        if (count > 0) candidates.push({ file: f, count, data });
+      } catch {}
+    }
+
+    if (candidates.length === 0) return null;
+
+    const looksDemo = (m) => !m || !m.email || String(m.email).includes("@dleague.ng") || String(m.displayName || "").toLowerCase().includes("demo");
+    // Score: real count (exclude obvious demo) + tiny recency bonus. Sort prefers highest real count then newer file name.
+    candidates.forEach(c => {
+      const mgrs = c.data.managers || [];
+      const demoCount = mgrs.filter(looksDemo).length;
+      c.realCount = Math.max(0, mgrs.length - demoCount);
+      c.isRecent = /2026-07-(1[0-9]|0[5-9])/.test(c.file); // bias recent month-ish
+    });
+    candidates.sort((a, b) => (b.realCount - a.realCount) || (b.file.localeCompare(a.file)) || (b.count - a.count) );
+
+    const best = candidates[0];
+    console.log(`[store] Best backup found: ${best.file} (total ${best.count}, real-ish ${best.realCount} managers)`);
+    return best.data;
+  } catch (e) { /* ignore */ }
+  return null;
+}
+
 function initSQLite(retries = 2) {
   if (db) return db;
   const dbPath = path.join(DATA_DIR, "dleague.db");
@@ -226,27 +275,8 @@ async function loadStore() {
     return loaded;
   };
 
-  const loadFromLatestBackup = () => {
-    try {
-      const backupsDir = path.join(DATA_DIR, "backups");
-      if (!fsSync.existsSync(backupsDir)) return null;
-      const files = fsSync.readdirSync(backupsDir)
-        .filter(f => f.startsWith('store-') && f.endsWith('.json'))
-        .sort().reverse();
-      for (const f of files) {
-        try {
-          const p = path.join(backupsDir, f);
-          const raw = fsSync.readFileSync(p, "utf8");
-          const data = JSON.parse(raw);
-          if (data && (data.managers || []).length > 0) {
-            console.log(`[store] Recovered from backup: ${f}`);
-            return data;
-          }
-        } catch (bfErr) { /* try next backup */ }
-      }
-    } catch (e) { /* ignore */ }
-    return null;
-  };
+  // Use module-level (hoisted) for consistency; wrapper keeps old name in scope
+  const findBestBackup = () => findBestBackupData();
 
   try {
     let loaded;
@@ -259,10 +289,10 @@ async function loadStore() {
       try {
         loaded = tryLoadFromDisk();
       } catch (retryErr) {
-        const backupData = loadFromLatestBackup();
+        const backupData = findBestBackup();
         if (backupData) {
           loaded = backupData;
-          console.log("[store] Using backup data (will persist on next write).");
+          console.log("[store] Using BEST backup data (max managers) after DB fail.");
         } else {
           throw retryErr; // will fall to outer catch which avoids wiping
         }
@@ -284,23 +314,16 @@ async function loadStore() {
     });
     if (!storeCache.cup) storeCache.cup = { ...defaults.cup };
 
-    // Prefer backup if it has more managers than what was loaded from DB (in case of partial/stale DB row)
-    const backupData = loadFromLatestBackup();
-    if (backupData && Array.isArray(backupData.managers) && backupData.managers.length > (storeCache.managers || []).length) {
-      storeCache = backupData;
-      console.log("[store] Preferred more complete backup over DB data.");
+    // PERMANENT RECOVERY: always prefer the backup with strictly more managers (max count). This survives pruning + partial SQLite on free tier wakes/deploys.
+    const bestBackup = findBestBackup();
+    const dbCount = (storeCache.managers || []).length;
+    if (bestBackup && Array.isArray(bestBackup.managers) && bestBackup.managers.length > dbCount) {
+      storeCache = bestBackup;
+      console.log(`[store] FORCED restore from best backup: ${bestBackup.managers.length} managers (was ${dbCount} from DB).`);
       needsPersist = true;
     }
 
     console.log(`[store] Loaded from SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
-
-    // If loaded has fewer managers than a backup, prefer backup and mark for persist
-    const backupData2 = loadFromLatestBackup();
-    if (backupData2 && Array.isArray(backupData2.managers) && backupData2.managers.length > (storeCache.managers || []).length) {
-      storeCache = backupData2;
-      console.log("[store] Switched to more complete backup data on load.");
-      needsPersist = true;
-    }
 
     // Normalize ONLY for old season data...
     if (storeCache.settings && (storeCache.settings.seasonName.includes("2025/26") || storeCache.settings.seasonName.includes("25/26"))) {
@@ -345,11 +368,18 @@ async function loadStore() {
 
     return storeCache;
   } catch (e) {
-    console.warn(`[store] SQLite load failed after recovery attempts: ${e.message}. Using in-memory empty for this run (disk data preserved if possible).`);
-    // IMPORTANT: Do NOT createEmpty + persist here. That was wiping managers on transient errors (e.g. Render sleep/wake WAL issues).
-    // Return a fresh empty cache in memory only. Real data on disk should still be there on next successful load.
+    console.warn(`[store] SQLite load failed after recovery attempts: ${e.message}. Attempting ultimate best-backup rescue...`);
+    const best = findBestBackup();
+    if (best && (best.managers || []).length > 0) {
+      storeCache = best;
+      console.log(`[store] Rescued from best backup in final catch: ${(best.managers || []).length} managers. Will persist.`);
+      // Persist it so SQLite gets repopulated for future
+      // (persistStore is async but we can fire-and-forget here; boot will also persist via needs logic)
+      setTimeout(() => { persistStore().catch(()=>{}); }, 50);
+      return storeCache;
+    }
+    // Last resort: empty in-memory only (disk + backups are untouched)
     storeCache = createEmptyStore();
-    // Do not persist the empty store - let a future successful load or explicit write repopulate.
     return storeCache;
   }
 }
@@ -370,15 +400,57 @@ async function persistStore() {
     tx(storeCache);
     console.log(`[store] Persisted to SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
 
-    // Extra safety: always write a timestamped json backup alongside (survives even if db has issues)
+    // Extra safety: timestamped + stable latest + "best" (highest managers ever). Prune carefully to never lose high-count history.
     try {
       const backupsDir = path.join(DATA_DIR, "backups");
       if (!fsSync.existsSync(backupsDir)) fsSync.mkdirSync(backupsDir, { recursive: true });
-      const backupPath = path.join(backupsDir, `store-${new Date().toISOString().replace(/[:.]/g,'-')}.json`);
-      fsSync.writeFileSync(backupPath, JSON.stringify(storeCache, null, 2));
-      // keep only last 10 backups
-      const files = fsSync.readdirSync(backupsDir).filter(f => f.startsWith('store-')).sort().reverse();
-      files.slice(10).forEach(f => { try { fsSync.unlinkSync(path.join(backupsDir, f)); } catch {} });
+      const currentCount = (storeCache.managers || []).length;
+
+      // 1. Timestamped for history
+      const tsPath = path.join(backupsDir, `store-${new Date().toISOString().replace(/[:.]/g,'-')}.json`);
+      fsSync.writeFileSync(tsPath, JSON.stringify(storeCache, null, 2));
+
+      // 2. Always overwrite store-latest.json (quick stable fallback)
+      fsSync.writeFileSync(path.join(backupsDir, 'store-latest.json'), JSON.stringify(storeCache, null, 2));
+
+      // 3. Only promote to store-best.json when we see a new high (or equal on first)
+      const bestPath = path.join(backupsDir, 'store-best.json');
+      let bestCount = 0;
+      try {
+        const prev = JSON.parse(fsSync.readFileSync(bestPath, 'utf8'));
+        bestCount = (prev.managers || []).length;
+      } catch {}
+      if (currentCount >= bestCount && currentCount > 0) {
+        fsSync.writeFileSync(bestPath, JSON.stringify(storeCache, null, 2));
+        if (currentCount > bestCount) console.log(`[backup] New best snapshot: ${currentCount} managers -> store-best.json`);
+      }
+
+      // 4. Smart prune: keep last ~12 + any that match or exceed current bestCount (protect history of good states)
+      const all = fsSync.readdirSync(backupsDir)
+        .filter(f => f.startsWith('store-') && f.endsWith('.json'))
+        .map(f => {
+          let c = 0;
+          try {
+            const d = JSON.parse(fsSync.readFileSync(path.join(backupsDir, f), 'utf8'));
+            c = (d.managers || []).length;
+          } catch {}
+          return { f, c };
+        });
+      const keepCount = Math.max(bestCount, currentCount);
+      // Keep newest first, plus all that have >= keepCount
+      const sortedNewest = [...all].sort((a,b) => b.f.localeCompare(a.f)); // rough newest by name ts
+      const toDelete = [];
+      let kept = 0;
+      for (const item of sortedNewest) {
+        const isStable = item.f.includes('best') || item.f.includes('latest');
+        const isHigh = item.c >= keepCount && item.c > 0;
+        if (isStable || isHigh || kept < 12) {
+          kept++;
+        } else {
+          toDelete.push(item.f);
+        }
+      }
+      toDelete.forEach(f => { try { fsSync.unlinkSync(path.join(backupsDir, f)); } catch {} });
     } catch (bErr) { console.warn("[backup] failed", bErr.message); }
   } catch (e) {
     console.error("[store] Persist failed:", e.message);
@@ -397,6 +469,7 @@ function getStore() {
         storeCache[row.key] = JSON.parse(row.value);
       }
       console.log(`[store] getStore loaded: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
+      // If getStore direct read sees low, do not auto override here (loadStore owns the best-backup logic). Rely on callers using loadStore.
     } catch (e) {
       console.warn(`[store] getStore load failed: ${e.message}. Returning fresh empty without caching (rely on loadStore).`);
       // Return a throw-away empty so we don't cache a wipe state. Real data should come from loadStore().
@@ -1689,11 +1762,29 @@ async function recoverOrphanedPaidManagers() {
   const existing = new Set(s.managers.map(m => m.id));
   const realPaidIds = [...new Set(confirmed.map(p => p.managerId))].filter(id => !looksLikeDemo(id));
 
+  // Load best backup once for possible full profile hydration (permanent fix for lost names/codes on bad loads)
+  const best = findBestBackupData();
+  const bestMgrs = best && Array.isArray(best.managers) ? best.managers : [];
+
   const recovered = [];
   for (const mid of realPaidIds) {
     if (!existing.has(mid)) {
+      // Try to recover FULL original profile from the best backup if the id exists there
+      const fromBest = bestMgrs.find(m => m.id === mid);
       const short = mid.slice(-6);
-      const stub = {
+      const stub = fromBest ? {
+        id: mid,
+        displayName: fromBest.displayName || `Paid Manager ${short}`,
+        email: fromBest.email || `paid-${short}@d-league.local`,
+        accessCode: fromBest.accessCode || `PAID-${short.toUpperCase()}`,
+        fpl: fromBest.fpl || { teamId: "", teamName: "" },
+        ucl: fromBest.ucl || { teamId: "", teamName: "" },
+        payoutDetails: fromBest.payoutDetails || "",
+        fplClubName: fromBest.fplClubName || "",
+        createdAt: fromBest.createdAt || nowISO(),
+        _recoveredFromPayments: true,
+        _hydratedFromBackup: true
+      } : {
         id: mid,
         displayName: `Paid Manager ${short}`,
         email: `paid-${short}@d-league.local`,
@@ -1707,8 +1798,8 @@ async function recoverOrphanedPaidManagers() {
       };
       s.managers.push(stub);
       existing.add(mid);
-      recovered.push({ id: mid, email: stub.email, code: stub.accessCode });
-      await logEvent("manager_recovered_from_orphan_payments", { managerId: mid, tempEmail: stub.email });
+      recovered.push({ id: mid, email: stub.email, code: stub.accessCode, hydrated: !!fromBest });
+      await logEvent("manager_recovered_from_orphan_payments", { managerId: mid, tempEmail: stub.email, hydrated: !!fromBest });
       changed = true;
     }
   }
@@ -1717,7 +1808,7 @@ async function recoverOrphanedPaidManagers() {
     await persistStore();
     if (recovered.length > 0) {
       console.log("🚨 Recovered real paid managers (demo data explicitly ignored):");
-      recovered.forEach(r => console.log("   ", r.id));
+      recovered.forEach(r => console.log("   ", r.id, r.hydrated ? "(full details from backup)" : "(stub)"));
     }
   }
   return recovered;
@@ -1932,6 +2023,48 @@ app.post("/api/admin/restore-paid-manager", async (req, res) => {
     ok: true,
     manager: view,
     message: `Paid manager ${managerId} restored/updated. They can now login with the new email + code. Paid status preserved from payment records.`
+  });
+});
+
+// PERMANENT RECOVERY endpoint: force the server to load from the best backup (highest manager count) and persist it.
+// Call with admin auth (x-admin-token = SYNC_TOKEN or logged-in admin bearer). Safe to call on seeing 0 managers.
+app.post("/api/admin/restore-from-best-backup", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const best = findBestBackupData();
+  if (!best || !(best.managers || []).length) {
+    return res.status(404).json({ error: "No best backup with managers found on disk" });
+  }
+
+  const before = (getStore().managers || []).length;
+  storeCache = best;
+  await persistStore();
+  const after = (getStore().managers || []).length;
+
+  await logEvent("forced_restore_from_best_backup", { before, after, source: "admin" });
+  console.log(`[RECOVERY] Admin forced restore from best backup: ${before} -> ${after} managers`);
+
+  res.json({
+    ok: true,
+    before,
+    after,
+    message: `Restored from best backup. Managers: ${before} -> ${after}. All real profiles (names, codes, FPL IDs) should now be present.`
   });
 });
 
@@ -2679,8 +2812,20 @@ app.get("*", (req, res) => {
 // ============ BOOT ============
 
 async function boot() {
-  const store = await loadStore();
-  console.log(`[BOOT] Store loaded with ${store.managers?.length || 0} managers (non-demo: protected mode)`);
+  console.log("[BOOT] Starting with hardened persistence (best-backup max-managers recovery + stable latest/best.json + WAL checkpoints)");
+
+  let store = await loadStore();
+  console.log(`[BOOT] Initial loadStore: ${store.managers?.length || 0} managers, payments: ${(store.payments||[]).length}`);
+
+  // Always attempt best backup rescue at boot if current is suspiciously low (permanent solution)
+  const bestAtBoot = findBestBackupData();
+  const bootDbCount = (store.managers || []).length;
+  if (bestAtBoot && (bestAtBoot.managers || []).length > bootDbCount) {
+    store = bestAtBoot;
+    storeCache = bestAtBoot;
+    console.log(`[BOOT] Boot-time FORCE restore from best-backup -> ${bestAtBoot.managers.length} managers`);
+    await persistStore().catch(()=>{});
+  }
 
   // Force a WAL checkpoint early to help with unclean shutdowns from Render sleep/wake
   try {
@@ -2699,6 +2844,16 @@ async function boot() {
 
   // Run recovery again after possible demo seed (demo seed can wipe but we heal paid)
   await recoverOrphanedPaidManagers();
+
+  // Final count after everything (for logs on Render deploys)
+  const finalS = getStore();
+  const finalMgrCount = (finalS.managers || []).length;
+  const finalPayCount = (finalS.payments || []).length;
+  const bestCount = bestAtBoot ? (bestAtBoot.managers || []).length : 0;
+  console.log(`[BOOT FINAL] Managers: ${finalMgrCount} | Payments: ${finalPayCount} | Best-backup-known: ${bestCount}`);
+  if (finalMgrCount <= 1) {
+    console.warn("[BOOT WARNING] Low manager count. If you have real paid users, use /api/admin/restore-from-best-backup (with admin token) or check data/backups/store-best.json on disk.");
+  }
 
   app.listen(PORT, () => {
     console.log(`\n✅  D League Clubhouse is running!`);

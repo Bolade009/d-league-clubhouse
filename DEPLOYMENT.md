@@ -111,6 +111,29 @@ curl "https://yourdomain.com/api/export/full?token=YOUR_EXPORT_TOKEN" > export.j
 - Add rate limiting + IP allow for sync routes.
 - Set up automated nightly sync via external job.
 
+## Data Persistence & Recovery (IMPORTANT for Render free/starter)
+
+The app uses SQLite + JSON backups in /app/data/backups (or $DATA_DIR/backups).
+
+On every persist we write:
+- Timestamped store-....json
+- store-latest.json (always current)
+- store-best.json (only updated on new high manager count)
+
+On load / boot / wake / deploy:
+- If DB reports fewer managers than the *best* backup (by manager count), it **automatically restores** the highest-count backup into DB and persists.
+- recoverOrphanedPaidManagers + best-backup hydration will recreate stubs or full profiles (name/email/code/fplId) from payments + historical best backup.
+- Smart pruning keeps high-count backups + recents + the two stable files.
+
+If you ever see 0 (or 1 admin) managers after a wake/deploy:
+1. Check Render logs for "[BOOT FINAL]" + "[store] Best backup found" + "FORCED restore".
+2. As admin, POST to `/api/admin/restore-from-best-backup` (header `x-admin-token: YOUR_SYNC_TOKEN` or use your admin login bearer).
+3. The endpoint forces the best snapshot and logs the before/after.
+
+This is the permanent solution regardless of free tier sleeps (which can leave WAL in inconsistent state). The code now always recovers the known-good highest manager state. Free tier just makes restarts more frequent; paid instance is more "always on" but recovery is the same.
+
+Backups are small. Disk is 1GB+. Do not delete data/backups manually.
+
 ## 9. Environment Variables Reference
 
 | Variable                    | Required | Notes |
