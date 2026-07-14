@@ -275,6 +275,20 @@ async function loadStore() {
     return loaded;
   };
 
+  const tryLoadCurrentState = () => {
+    try {
+      const p = path.join(DATA_DIR, 'current-state.json');
+      if (fsSync.existsSync(p)) {
+        const data = JSON.parse(fsSync.readFileSync(p, 'utf8'));
+        if (data && Array.isArray(data.managers)) {
+          console.log(`[store] Loaded current-state.json sidecar with ${data.managers.length} managers`);
+          return data;
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return null;
+  };
+
   // Use module-level (hoisted) for consistency; wrapper keeps old name in scope
   const findBestBackup = () => findBestBackupData();
 
@@ -314,12 +328,86 @@ async function loadStore() {
     });
     if (!storeCache.cup) storeCache.cup = { ...defaults.cup };
 
-    // PERMANENT RECOVERY: always prefer the backup with strictly more managers (max count). This survives pruning + partial SQLite on free tier wakes/deploys.
+    // === ROBUST MULTI-SOURCE RECONCILE (the permanent solution) ===
+    // Load up to 3 sources: SQLite (primary), atomic current-state.json sidecar (very durable), best historical backup (last resort).
+    // Then MERGE instead of blindly replacing with a potentially stale backup.
+    // This guarantees we keep the *most current ledger, winnings, pots* while recovering any missing managers.
     const bestBackup = findBestBackup();
-    const dbCount = (storeCache.managers || []).length;
-    if (bestBackup && Array.isArray(bestBackup.managers) && bestBackup.managers.length > dbCount) {
+    const sidecar = tryLoadCurrentState();
+
+    function mergeSources(primary, ...others) {
+      const result = { ...primary };
+      // Start from primary (usually the freshest SQLite or sidecar)
+      ['managers', 'payments', 'ledger', 'scores', 'events', 'sponsorships', 'challenges', 'h2h'].forEach(key => {
+        if (!Array.isArray(result[key])) result[key] = [];
+      });
+      if (!result.settings) result.settings = { ...defaults.settings };
+
+      const allSources = [primary, ...others].filter(Boolean);
+
+      // Managers: union by id (recover any that existed in any source)
+      const mgrById = new Map(result.managers.map(m => [m.id, m]));
+      allSources.forEach(src => {
+        (src.managers || []).forEach(m => {
+          if (m && m.id && !mgrById.has(m.id)) {
+            mgrById.set(m.id, m);
+            console.log(`[store] Merged missing manager from other source: ${m.email || m.displayName}`);
+          }
+        });
+      });
+      result.managers = Array.from(mgrById.values());
+
+      // Ledger, payments, scores etc: union by id (preserve *all* historical + recent winnings/settlements)
+      ['ledger', 'payments', 'scores', 'events', 'sponsorships', 'challenges'].forEach(key => {
+        const byId = new Map((result[key] || []).map(item => [item.id || JSON.stringify(item), item]));
+        allSources.forEach(src => {
+          (src[key] || []).forEach(item => {
+            const iid = item.id || JSON.stringify(item);
+            if (!byId.has(iid)) {
+              byId.set(iid, item);
+            }
+          });
+        });
+        result[key] = Array.from(byId.values());
+      });
+
+      // For revenue/pot numbers, take the maximum seen (never lose money tracking)
+      const moneyKeys = ['totalFplRevenue', 'totalUclRevenue', 'houseFplAdmin', 'houseUclAdmin',
+                         'fplOverallPot', 'fplCupPot', 'uclOverallPot', 'h2hOverallPot'];
+      moneyKeys.forEach(k => {
+        let maxVal = (result.settings[k] || 0);
+        allSources.forEach(src => {
+          const v = (src.settings && src.settings[k]) || 0;
+          if (v > maxVal) maxVal = v;
+        });
+        result.settings[k] = maxVal;
+      });
+
+      // Prefer the most recent lastPersistedAt
+      let newestAt = result.settings.lastPersistedAt || '';
+      allSources.forEach(src => {
+        const at = (src.settings && src.settings.lastPersistedAt) || '';
+        if (at > newestAt) newestAt = at;
+      });
+      if (newestAt) result.settings.lastPersistedAt = newestAt;
+
+      return result;
+    }
+
+    // Apply merge (this is the key permanent change: we enrich, we do not clobber recent ledger with old backup)
+    const beforeCount = (storeCache.managers || []).length;
+    storeCache = mergeSources(storeCache, sidecar, bestBackup);
+    const afterCount = (storeCache.managers || []).length;
+
+    if (afterCount > beforeCount) {
+      console.log(`[store] Reconciled extra managers from sidecar/backup: ${beforeCount} -> ${afterCount}. Recent ledger/payments preserved.`);
+      needsPersist = true;
+    }
+
+    // Only fall back to full best-backup replace as absolute last resort (if primary sources had 0 managers)
+    if (beforeCount === 0 && afterCount === 0 && bestBackup && (bestBackup.managers || []).length > 0) {
       storeCache = bestBackup;
-      console.log(`[store] FORCED restore from best backup: ${bestBackup.managers.length} managers (was ${dbCount} from DB).`);
+      console.log(`[store] Last-resort full restore from best backup (no data in DB or sidecar).`);
       needsPersist = true;
     }
 
@@ -368,13 +456,18 @@ async function loadStore() {
 
     return storeCache;
   } catch (e) {
-    console.warn(`[store] SQLite load failed after recovery attempts: ${e.message}. Attempting ultimate best-backup rescue...`);
+    console.warn(`[store] SQLite load failed after recovery attempts: ${e.message}. Trying sidecar + best-backup...`);
+    const sidecar = tryLoadCurrentState();
     const best = findBestBackup();
+    if (sidecar && (sidecar.managers || []).length > 0) {
+      storeCache = sidecar;
+      console.log(`[store] Rescued from current-state.json sidecar in catch: ${(sidecar.managers || []).length} managers.`);
+      setTimeout(() => { persistStore().catch(()=>{}); }, 50);
+      return storeCache;
+    }
     if (best && (best.managers || []).length > 0) {
       storeCache = best;
       console.log(`[store] Rescued from best backup in final catch: ${(best.managers || []).length} managers. Will persist.`);
-      // Persist it so SQLite gets repopulated for future
-      // (persistStore is async but we can fire-and-forget here; boot will also persist via needs logic)
       setTimeout(() => { persistStore().catch(()=>{}); }, 50);
       return storeCache;
     }
@@ -399,6 +492,12 @@ async function persistStore() {
 
     tx(storeCache);
     console.log(`[store] Persisted to SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
+    // Force a full checkpoint after every successful write — helps a lot with Render wake reliability
+    try { if (db) db.pragma("wal_checkpoint(FULL)"); } catch {}
+
+    // CRITICAL: Always set lastPersistedAt so we can prefer freshest data across sources
+    if (!storeCache.settings) storeCache.settings = {};
+    storeCache.settings.lastPersistedAt = nowISO();
 
     // Extra safety: timestamped + stable latest + "best" (highest managers ever). Prune carefully to never lose high-count history.
     try {
@@ -425,7 +524,18 @@ async function persistStore() {
         if (currentCount > bestCount) console.log(`[backup] New best snapshot: ${currentCount} managers -> store-best.json`);
       }
 
-      // 4. Smart prune: keep last ~12 + any that match or exceed current bestCount (protect history of good states)
+      // 4. ATOMIC current-state.json sidecar (the most reliable way to survive Render sleep/wake unclean shutdowns)
+      // Write to .tmp then rename = atomic on POSIX filesystems. This gives us a fresh full snapshot we can always trust.
+      try {
+        const statePath = path.join(DATA_DIR, 'current-state.json');
+        const tmpPath = statePath + '.tmp';
+        fsSync.writeFileSync(tmpPath, JSON.stringify(storeCache, null, 2));
+        fsSync.renameSync(tmpPath, statePath);
+      } catch (sideErr) {
+        console.warn("[sidecar] Failed to write current-state.json:", sideErr.message);
+      }
+
+      // 5. Smart prune: keep last ~12 + any that match or exceed current bestCount (protect history of good states)
       const all = fsSync.readdirSync(backupsDir)
         .filter(f => f.startsWith('store-') && f.endsWith('.json'))
         .map(f => {
@@ -1762,26 +1872,35 @@ async function recoverOrphanedPaidManagers() {
   const existing = new Set(s.managers.map(m => m.id));
   const realPaidIds = [...new Set(confirmed.map(p => p.managerId))].filter(id => !looksLikeDemo(id));
 
-  // Load best backup once for possible full profile hydration (permanent fix for lost names/codes on bad loads)
+  // Load best + sidecar for possible full profile hydration (permanent fix for lost names/codes on bad loads)
   const best = findBestBackupData();
   const bestMgrs = best && Array.isArray(best.managers) ? best.managers : [];
+  let sideMgrs = [];
+  try {
+    const p = path.join(DATA_DIR, 'current-state.json');
+    if (fsSync.existsSync(p)) {
+      const sdata = JSON.parse(fsSync.readFileSync(p, 'utf8'));
+      sideMgrs = Array.isArray(sdata.managers) ? sdata.managers : [];
+    }
+  } catch {}
+  const hydrateSources = [...bestMgrs, ...sideMgrs];
 
   const recovered = [];
   for (const mid of realPaidIds) {
     if (!existing.has(mid)) {
-      // Try to recover FULL original profile from the best backup if the id exists there
-      const fromBest = bestMgrs.find(m => m.id === mid);
+      // Try to recover FULL original profile from best/sidecar if the id exists there
+      const fromHydrate = hydrateSources.find(m => m.id === mid);
       const short = mid.slice(-6);
-      const stub = fromBest ? {
+      const stub = fromHydrate ? {
         id: mid,
-        displayName: fromBest.displayName || `Paid Manager ${short}`,
-        email: fromBest.email || `paid-${short}@d-league.local`,
-        accessCode: fromBest.accessCode || `PAID-${short.toUpperCase()}`,
-        fpl: fromBest.fpl || { teamId: "", teamName: "" },
-        ucl: fromBest.ucl || { teamId: "", teamName: "" },
-        payoutDetails: fromBest.payoutDetails || "",
-        fplClubName: fromBest.fplClubName || "",
-        createdAt: fromBest.createdAt || nowISO(),
+        displayName: fromHydrate.displayName || `Paid Manager ${short}`,
+        email: fromHydrate.email || `paid-${short}@d-league.local`,
+        accessCode: fromHydrate.accessCode || `PAID-${short.toUpperCase()}`,
+        fpl: fromHydrate.fpl || { teamId: "", teamName: "" },
+        ucl: fromHydrate.ucl || { teamId: "", teamName: "" },
+        payoutDetails: fromHydrate.payoutDetails || "",
+        fplClubName: fromHydrate.fplClubName || "",
+        createdAt: fromHydrate.createdAt || nowISO(),
         _recoveredFromPayments: true,
         _hydratedFromBackup: true
       } : {
@@ -1798,8 +1917,8 @@ async function recoverOrphanedPaidManagers() {
       };
       s.managers.push(stub);
       existing.add(mid);
-      recovered.push({ id: mid, email: stub.email, code: stub.accessCode, hydrated: !!fromBest });
-      await logEvent("manager_recovered_from_orphan_payments", { managerId: mid, tempEmail: stub.email, hydrated: !!fromBest });
+      recovered.push({ id: mid, email: stub.email, code: stub.accessCode, hydrated: !!fromHydrate });
+      await logEvent("manager_recovered_from_orphan_payments", { managerId: mid, tempEmail: stub.email, hydrated: !!fromHydrate });
       changed = true;
     }
   }
@@ -2812,19 +2931,41 @@ app.get("*", (req, res) => {
 // ============ BOOT ============
 
 async function boot() {
-  console.log("[BOOT] Starting with hardened persistence (best-backup max-managers recovery + stable latest/best.json + WAL checkpoints)");
+  console.log("[BOOT] Starting with hardened persistence (current-state.json sidecar + multi-source merge + WAL checkpoints)");
 
   let store = await loadStore();
   console.log(`[BOOT] Initial loadStore: ${store.managers?.length || 0} managers, payments: ${(store.payments||[]).length}`);
 
-  // Always attempt best backup rescue at boot if current is suspiciously low (permanent solution)
+  // Log exactly who we have (very useful on Render deploys)
+  const loadedEmails = (store.managers || []).map(m => m.email || m.displayName || m.id).slice(0, 20);
+  console.log("[BOOT] Loaded manager emails/names:", loadedEmails.join(", ") || "(none)");
+
+  // Always attempt enrichment at boot using sidecar/best (merge only, keep freshest ledger/winnings)
   const bestAtBoot = findBestBackupData();
-  const bootDbCount = (store.managers || []).length;
-  if (bestAtBoot && (bestAtBoot.managers || []).length > bootDbCount) {
-    store = bestAtBoot;
-    storeCache = bestAtBoot;
-    console.log(`[BOOT] Boot-time FORCE restore from best-backup -> ${bestAtBoot.managers.length} managers`);
-    await persistStore().catch(()=>{});
+  const sideAtBoot = (() => {
+    try {
+      const p = path.join(DATA_DIR, 'current-state.json');
+      return fsSync.existsSync(p) ? JSON.parse(fsSync.readFileSync(p, 'utf8')) : null;
+    } catch { return null; }
+  })();
+  const beforeBoot = (store.managers || []).length;
+  if (sideAtBoot || bestAtBoot) {
+    const mgrById = new Map((store.managers || []).map(m => [m.id, m]));
+    let added = 0;
+    [sideAtBoot, bestAtBoot].forEach(src => {
+      (src && src.managers || []).forEach(m => {
+        if (m && m.id && !mgrById.has(m.id)) {
+          mgrById.set(m.id, m);
+          added++;
+        }
+      });
+    });
+    if (added > 0) {
+      store.managers = Array.from(mgrById.values());
+      storeCache = store;
+      console.log(`[BOOT] Boot enrichment added ${added} managers from sidecar/best (ledger + recent winnings preserved).`);
+      await persistStore().catch(()=>{});
+    }
   }
 
   // Force a WAL checkpoint early to help with unclean shutdowns from Render sleep/wake
@@ -2849,10 +2990,12 @@ async function boot() {
   const finalS = getStore();
   const finalMgrCount = (finalS.managers || []).length;
   const finalPayCount = (finalS.payments || []).length;
-  const bestCount = bestAtBoot ? (bestAtBoot.managers || []).length : 0;
-  console.log(`[BOOT FINAL] Managers: ${finalMgrCount} | Payments: ${finalPayCount} | Best-backup-known: ${bestCount}`);
+  const finalLedgerCount = (finalS.ledger || []).length;
+  const finalSide = (() => { try { const p = path.join(DATA_DIR, 'current-state.json'); return fsSync.existsSync(p) ? JSON.parse(fsSync.readFileSync(p,'utf8')) : null; } catch{ return null; } })();
+  console.log(`[BOOT FINAL] Managers: ${finalMgrCount} | Payments: ${finalPayCount} | Ledger entries: ${finalLedgerCount}`);
+  console.log(`[BOOT FINAL] current-state.json present: ${!!finalSide} with ${(finalSide && finalSide.managers ? finalSide.managers.length : 0)} managers`);
   if (finalMgrCount <= 1) {
-    console.warn("[BOOT WARNING] Low manager count. If you have real paid users, use /api/admin/restore-from-best-backup (with admin token) or check data/backups/store-best.json on disk.");
+    console.warn("[BOOT WARNING] Low manager count after all recovery. Check Render disk mount + use admin restore endpoints if needed. Re-add via /api/admin/add-manager (it will create or update by email).");
   }
 
   app.listen(PORT, () => {
