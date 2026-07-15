@@ -638,6 +638,28 @@ async function loadAdminOverview() {
       dash.appendChild(panel);
     }
 
+    // === Persistence health box (solid way to check if data is correct after restarts) ===
+    (async () => {
+      try {
+        const pstatus = await fetchJSON('/api/admin/persistence-status');
+        const pbox = document.createElement('div');
+        pbox.className = 'mt-4 p-3 bg-[#1a1a1a] border border-[#ffcc00] rounded-2xl text-xs';
+        const side = pstatus.sidecarManagers || 0;
+        const dbm = pstatus.dbManagers || 0;
+        const emails = (pstatus.sidecarSampleEmails || []).join(', ');
+        pbox.innerHTML = `
+          <div class="font-bold text-[#ffcc00] mb-1">PERSISTENCE HEALTH (use this after every add + restart)</div>
+          <div>Sidecar: <b>${side}</b> managers | DB: <b>${dbm}</b> | Best backup seen: ${pstatus.bestBackupManagersSeen || 0}</div>
+          <div class="mt-1">Sample emails from solid sidecar: ${emails || '(none)'}</div>
+          <div class="mt-1 text-[#888]">Last sidecar persist: ${pstatus.sidecarLastPersisted || 'unknown'}</div>
+          <button onclick="reconcileAndPersist()" class="mt-2 px-3 py-1 bg-[#ffcc00] text-black rounded text-xs font-bold">FORCE RECONCILE &amp; SAVE BEST STATE</button>
+        `;
+        panel.appendChild(pbox);
+      } catch (e) {
+        console.warn('Could not load persistence status', e);
+      }
+    })();
+
     // Complaints section (new for go-live)
     const compWrap = document.createElement('div');
     compWrap.className = 'mt-4 p-4 bg-[#161616] border border-[#333] rounded-2xl';
@@ -731,6 +753,17 @@ async function approveJoinRequestFromBtn(btn) {
     loadAdminOverview(); // refresh the panel
   } catch (e) {
     alert('Approve failed: ' + (e.message || e));
+  }
+}
+
+async function reconcileAndPersist() {
+  if (!confirm('Force the server to reconcile the best possible state (sidecar + DB + backups) and save it? This is safe.')) return;
+  try {
+    const res = await fetchJSON('/api/admin/restore-from-best-backup', { method: 'POST' });
+    alert(res.message || 'Reconciled and persisted best state.');
+    loadAdminOverview();
+  } catch (e) {
+    alert('Reconcile failed: ' + (e.message || e) + ' — try the curl persistence-status instead.');
   }
 }
 

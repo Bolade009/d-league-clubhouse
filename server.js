@@ -294,34 +294,45 @@ async function loadStore() {
   const findBestBackup = () => findBestBackupData();
 
   try {
-    let loaded;
-
-    // Prefer the atomic sidecar first if it looks good — it's our most reliable full snapshot across restarts.
-    const sidecarFirst = tryLoadCurrentState();
-    if (sidecarFirst && Array.isArray(sidecarFirst.managers) && sidecarFirst.managers.length > 0) {
-      console.log(`[store] Preferring current-state.json sidecar as primary source (${sidecarFirst.managers.length} managers)`);
-      loaded = sidecarFirst;
+    // Always collect from all three sources and pick the "richest" one.
+    // This is the key to making managers + data "always correct" even after bad restarts.
+    const sidecarData = tryLoadCurrentState();
+    let dbData = null;
+    try {
+      dbData = tryLoadFromDisk();
+    } catch (e) {
+      console.warn(`[store] DB load failed during collection: ${e.message}`);
     }
+    const bestBackupData = findBestBackup();
 
-    if (!loaded) {
-      try {
-        loaded = tryLoadFromDisk();
-      } catch (loadErr) {
-        console.warn(`[store] Initial SQLite load failed: ${loadErr.message}. Attempting WAL recovery + backup...`);
-        // Force re-init with WAL cleanup (already retried inside initSQLite)
-        db = null;
-        try {
-          loaded = tryLoadFromDisk();
-        } catch (retryErr) {
-          const backupData = findBestBackup();
-          if (backupData) {
-            loaded = backupData;
-            console.log("[store] Using BEST backup data (max managers) after DB fail.");
-          } else {
-            throw retryErr; // will fall to outer catch which avoids wiping
-          }
-        }
+    const sources = [
+      { name: 'sidecar', data: sidecarData },
+      { name: 'db', data: dbData },
+      { name: 'bestBackup', data: bestBackupData }
+    ].filter(s => s.data && Array.isArray(s.data.managers));
+
+    // Pick the best source: highest manager count, tie-break by lastPersistedAt and ledger size
+    let bestSource = null;
+    let bestScore = -1;
+
+    sources.forEach(src => {
+      const mgrs = src.data.managers || [];
+      const ledgerLen = (src.data.ledger || []).length;
+      const persistedAt = (src.data.settings && src.data.settings.lastPersistedAt) || '';
+      const score = mgrs.length * 10000 + ledgerLen + (persistedAt ? 1 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        bestSource = { ...src, mgrCount: mgrs.length, ledgerLen };
       }
+    });
+
+    let loaded;
+    if (bestSource) {
+      loaded = bestSource.data;
+      console.log(`[store] Selected best source: ${bestSource.name} (${bestSource.mgrCount} managers, ${bestSource.ledgerLen} ledger entries)`);
+    } else {
+      // fallback to whatever we can
+      loaded = dbData || sidecarData || bestBackupData || {};
     }
 
     storeCache = loaded || {};
@@ -405,20 +416,20 @@ async function loadStore() {
       return result;
     }
 
-    // Apply merge (this is the key permanent change: we enrich, we do not clobber recent ledger with old backup)
+    // Apply merge on top of the best source (union managers + all ledger entries etc.)
     const beforeCount = (storeCache.managers || []).length;
+    const sidecar = sidecarData;
+    const bestBackup = bestBackupData;
     storeCache = mergeSources(storeCache, sidecar, bestBackup);
     const afterCount = (storeCache.managers || []).length;
 
     if (afterCount > beforeCount) {
-      console.log(`[store] Reconciled extra managers from sidecar/backup: ${beforeCount} -> ${afterCount}. Recent ledger/payments preserved.`);
-      needsPersist = true;
+      console.log(`[store] Reconciled extra managers: ${beforeCount} -> ${afterCount}. All ledger entries preserved.`);
     }
 
-    // Always persist the reconciled state to the atomic sidecar so the freshest full picture (managers + ledger) becomes the new durable current-state
-    if ((sidecar || bestBackup) && !needsPersist) {
-      needsPersist = true;
-    }
+    // ALWAYS persist after loading so the richest possible state becomes the new sidecar + DB.
+    // This is what makes the system "self-healing" on every restart.
+    needsPersist = true;
 
     // Only fall back to full best-backup replace as absolute last resort (if primary sources had 0 managers)
     if (beforeCount === 0 && afterCount === 0 && bestBackup && (bestBackup.managers || []).length > 0) {
@@ -3108,7 +3119,7 @@ app.get("/api/admin/persistence-status", async (req, res) => {
     sidecarSampleEmails: sideEmails,
     bestBackupManagersSeen: bestBackupCount,
     latestBackupSample: latestBackup,
-    note: "If sidecarManagers > dbManagers, the next load should reconcile it in. Check Render disk is mounted and no recent errors in logs."
+    note: "This shows the raw truth on disk right now. The server always picks the richest source (most managers + ledger) on load and saves it. Use the button in Admin Cockpit to force it."
   });
 });
 
@@ -3175,7 +3186,16 @@ async function boot() {
   // Run recovery again after possible demo seed (demo seed can wipe but we heal paid)
   await recoverOrphanedPaidManagers();
 
-  // Final count after everything (for logs on Render deploys)
+  // Final aggressive self-heal on every boot: re-run loadStore (which now always picks the richest source and merges)
+  // then force a persist. This is our best guarantee that managers + full ledger are correct after any restart.
+  try {
+    const healed = await loadStore();
+    await persistStore();
+    console.log(`[BOOT FINAL SELF-HEAL] Healed & persisted: ${(healed.managers||[]).length} managers, ${(healed.ledger||[]).length} ledger entries`);
+  } catch (e) {
+    console.warn('[BOOT FINAL SELF-HEAL] failed', e.message);
+  }
+
   const finalS = getStore();
   const finalMgrCount = (finalS.managers || []).length;
   const finalPayCount = (finalS.payments || []).length;
