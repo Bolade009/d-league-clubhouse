@@ -665,12 +665,15 @@ async function loadAdminOverview() {
         const side = pstatus.sidecarManagers || 0;
         const dbm = pstatus.dbManagers || 0;
         const emails = (pstatus.sidecarSampleEmails || []).join(', ');
+        const atomics = pstatus.atomicFiles || {};
+        const atomicSummary = Object.keys(atomics).map(k => `${k}:${atomics[k].count || 0}`).join(' ');
         pbox.innerHTML = `
-          <div class="font-bold text-[#ffcc00] mb-1">PERSISTENCE HEALTH (use this after every add + restart)</div>
-          <div>Sidecar: <b>${side}</b> managers | DB: <b>${dbm}</b> | Best backup seen: ${pstatus.bestBackupManagersSeen || 0}</div>
-          <div class="mt-1">Sample emails from solid sidecar: ${emails || '(none)'}</div>
-          <div class="mt-1 text-[#888]">Last sidecar persist: ${pstatus.sidecarLastPersisted || 'unknown'}</div>
-          <button onclick="reconcileAndPersist()" class="mt-2 px-3 py-1 bg-[#ffcc00] text-black rounded text-xs font-bold">FORCE RECONCILE &amp; SAVE BEST STATE</button>
+          <div class="font-bold text-[#ffcc00] mb-1">PERSISTENCE HEALTH (auto on every boot — no manual watching needed)</div>
+          <div>Sidecar: <b>${side}</b> managers | DB: <b>${dbm}</b> | Best backup: ${pstatus.bestBackupManagersSeen || 0}</div>
+          <div class="mt-1">Atom ics (freshest per collection): ${atomicSummary}</div>
+          <div class="mt-1">Sample emails: ${emails || '(none)'}</div>
+          <div class="mt-1 text-[#888]">Last: ${pstatus.sidecarLastPersisted || 'unknown'}</div>
+          <button onclick="reconcileAndPersist()" class="mt-2 px-3 py-1 bg-[#ffcc00] text-black rounded text-xs font-bold">FORCE RECONCILE (rarely needed)</button>
         `;
         panel.appendChild(pbox);
       } catch (e) {

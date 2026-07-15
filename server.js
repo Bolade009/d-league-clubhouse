@@ -311,12 +311,50 @@ async function loadStore() {
     }
   }
 
+  // Ultra-reliable atomic writes for critical mutable collections.
+  // These small files are our primary defense against loss on free-tier sleeps/wakes.
+  // We write them on every user mutation (beef, payment, sponsor, etc.).
+  function writeAtomicCollection(name, data) {
+    try {
+      const p = path.join(DATA_DIR, `current-${name}.json`);
+      const tmp = p + '.tmp';
+      fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2));
+      fsSync.renameSync(tmp, p);
+      try {
+        const fd = fsSync.openSync(p, 'r');
+        fsSync.fsyncSync(fd);
+        fsSync.closeSync(fd);
+      } catch {}
+    } catch (e) {
+      console.warn(`[atomic] Failed to write ${name}:`, e.message);
+    }
+  }
+
+  function loadAtomicCollection(name) {
+    try {
+      const p = path.join(DATA_DIR, `current-${name}.json`);
+      if (fsSync.existsSync(p)) {
+        return JSON.parse(fsSync.readFileSync(p, 'utf8'));
+      }
+    } catch (e) {}
+    return null;
+  }
+
   // Use module-level (hoisted) for consistency; wrapper keeps old name in scope
   const findBestBackup = () => findBestBackupData();
 
   try {
-    // Always collect from all three sources and pick the "richest" one.
-    // This is the key to making managers + data "always correct" even after bad restarts.
+    // Load per-collection atomic files first (these are written on every mutation and are the most up-to-date for user data).
+    const atomicManagers = loadAtomicCollection('managers');
+    const atomicPayments = loadAtomicCollection('payments');
+    const atomicLedger = loadAtomicCollection('ledger');
+    const atomicBeefs = loadAtomicCollection('beefs');
+    const atomicSponsorships = loadAtomicCollection('sponsorships');
+    const atomicChallenges = loadAtomicCollection('challenges');
+    const atomicComplaints = loadAtomicCollection('complaints');
+    const atomicSettings = loadAtomicCollection('settings');
+
+    // Full sources for fallback
     const sidecarData = tryLoadCurrentState();
     let dbData = null;
     try {
@@ -357,6 +395,16 @@ async function loadStore() {
       // fallback to whatever we can
       loaded = dbData || sidecarData || bestBackupData || {};
     }
+
+    // Override/merge with per-collection atomics — these are freshest because they are written on every beef/payment/sponsor etc.
+    if (atomicManagers && Array.isArray(atomicManagers)) loaded.managers = atomicManagers;
+    if (atomicPayments && Array.isArray(atomicPayments)) loaded.payments = atomicPayments;
+    if (atomicLedger && Array.isArray(atomicLedger)) loaded.ledger = atomicLedger;
+    if (atomicBeefs && Array.isArray(atomicBeefs)) loaded.beefs = atomicBeefs;
+    if (atomicSponsorships && Array.isArray(atomicSponsorships)) loaded.sponsorships = atomicSponsorships;
+    if (atomicChallenges && Array.isArray(atomicChallenges)) loaded.challenges = atomicChallenges;
+    if (atomicComplaints && Array.isArray(atomicComplaints)) loaded.complaints = atomicComplaints;
+    if (atomicSettings && typeof atomicSettings === 'object') loaded.settings = { ...(loaded.settings || {}), ...atomicSettings };
 
     storeCache = loaded || {};
 
@@ -497,6 +545,17 @@ async function loadStore() {
     // Heal any paid managers lost during migration or prior bad updates
     await recoverOrphanedPaidManagers();
 
+    // After any load, immediately promote the current state to per-collection atomics.
+    // This ensures that even if we loaded from an older full sidecar, the latest merged view is durable.
+    writeAtomicCollection('managers', storeCache.managers);
+    writeAtomicCollection('payments', storeCache.payments);
+    writeAtomicCollection('ledger', storeCache.ledger);
+    writeAtomicCollection('beefs', storeCache.beefs || []);
+    writeAtomicCollection('sponsorships', storeCache.sponsorships || []);
+    writeAtomicCollection('challenges', storeCache.challenges || []);
+    writeAtomicCollection('complaints', storeCache.complaints || []);
+    if (storeCache.settings) writeAtomicCollection('settings', storeCache.settings);
+
     return storeCache;
   } catch (e) {
     console.warn(`[store] SQLite load failed after recovery attempts: ${e.message}. Trying sidecar + best-backup...`);
@@ -535,6 +594,13 @@ async function persistStore() {
 
     // Write durable sidecar FIRST (atomic) before touching DB.
     writeAtomicSidecar(storeCache);
+    // Also write per-collection atomics on every persist (belt and suspenders)
+    writeAtomicCollection('managers', storeCache.managers);
+    writeAtomicCollection('payments', storeCache.payments);
+    writeAtomicCollection('ledger', storeCache.ledger);
+    writeAtomicCollection('beefs', storeCache.beefs || []);
+    writeAtomicCollection('sponsorships', storeCache.sponsorships || []);
+    writeAtomicCollection('settings', storeCache.settings || {});
 
     tx(storeCache);
     console.log(`[store] Persisted to SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
@@ -790,7 +856,10 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
 
   await logEvent("payment_confirmed", { managerId, competition, reference, amount });
   updateSeasonPots(s);
-  writeAtomicSidecar(s); // extra durability for payment (money!)
+  writeAtomicSidecar(s);
+  writeAtomicCollection('payments', s.payments);
+  writeAtomicCollection('ledger', s.ledger);
+  writeAtomicCollection('managers', s.managers);
   await persistStore();
   return payment;
 }
@@ -2397,6 +2466,8 @@ app.post("/api/admin/set-leagues", async (req, res) => {
     fplH2h: fplH2h || "",
     ucl: ucl || ""
   };
+  writeAtomicSidecar(s);
+  writeAtomicCollection('settings', s.settings);
   await persistStore();
   await logEvent("leagues_configured", { fplClassic, fplH2h, ucl });
   res.json({ ok: true, leagueIds: s.settings.leagueIds, message: "League IDs saved. Standings will use real FPL data where possible." });
@@ -2544,6 +2615,9 @@ app.post("/api/sponsor", async (req, res) => {
     target,
     status: 'active'
   });
+  writeAtomicSidecar(s);
+  writeAtomicCollection('sponsorships', s.sponsorships);
+  writeAtomicCollection('ledger', s.ledger);
   await persistStore();
   res.json({ ok: true });
 });
@@ -2598,8 +2672,9 @@ app.post("/api/beef/propose", async (req, res) => {
   s.beefs = s.beefs || [];
   s.beefs.push(beef);
   await logEvent("beef_proposed", { beefId: beef.id, proposer: mgr.email, stake: beef.stake, category });
-  // Force sidecar for durability
   writeAtomicSidecar(s);
+  writeAtomicCollection('beefs', s.beefs);
+  writeAtomicCollection('ledger', s.ledger);
   await persistStore();
   res.json({ ok: true, beef });
 });
@@ -3147,6 +3222,28 @@ app.get("/api/admin/persistence-status", async (req, res) => {
   const sidecarPath = path.join(DATA_DIR, "current-state.json");
   const backupsDir = path.join(DATA_DIR, "backups");
 
+  // Check our per-collection atomic files (the most frequently written for user data)
+  const atomicFiles = ['managers', 'payments', 'ledger', 'beefs', 'sponsorships', 'settings'];
+  const atomicStatus = {};
+  atomicFiles.forEach(name => {
+    const p = path.join(DATA_DIR, `current-${name}.json`);
+    try {
+      if (fsSync.existsSync(p)) {
+        const stat = fsSync.statSync(p);
+        const data = JSON.parse(fsSync.readFileSync(p, 'utf8'));
+        atomicStatus[name] = {
+          exists: true,
+          mtime: stat.mtime.toISOString(),
+          count: Array.isArray(data) ? data.length : (typeof data === 'object' ? Object.keys(data).length : 0)
+        };
+      } else {
+        atomicStatus[name] = { exists: false };
+      }
+    } catch (e) {
+      atomicStatus[name] = { exists: false, error: e.message };
+    }
+  });
+
   let dbMgrCount = 0, dbPayCount = 0;
   try {
     if (!db) initSQLite(0);
@@ -3198,7 +3295,8 @@ app.get("/api/admin/persistence-status", async (req, res) => {
     sidecarSampleEmails: sideEmails,
     bestBackupManagersSeen: bestBackupCount,
     latestBackupSample: latestBackup,
-    note: "Server always picks richest (managers + ledger + beefs/payments) and auto-promotes on boot. Yellow box in Admin Cockpit shows this live + one-click fix. No more manual most of the time."
+    atomicFiles: atomicStatus,
+    note: "Per-collection atomics (managers/payments/ledger/beefs etc.) are written on every user action. On boot we pick the freshest combination. Yellow box + auto self-heal on every restart. Use exports for extra safety net."
   });
 });
 
