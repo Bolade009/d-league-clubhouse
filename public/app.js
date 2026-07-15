@@ -667,7 +667,7 @@ async function loadAdminOverview() {
         const emails = (pstatus.sidecarSampleEmails || []).join(', ');
         const atomics = pstatus.atomicFiles || {};
         const atomicSummary = Object.keys(atomics).map(k => `${k}:${atomics[k].count || 0}`).join(' ');
-        const pingInfo = pstatus.healthPingCount ? ` | Pings received: ${pstatus.healthPingCount} (last: ${pstatus.lastHealthPing || 'n/a'})` : '';
+        const pingInfo = pstatus.healthPingCount != null ? ` | Pings: ${pstatus.healthPingCount} (last ${pstatus.lastHealthPing ? new Date(pstatus.lastHealthPing).toLocaleTimeString() : 'n/a'})` : ' | No pings tracked yet (cron may need time or redeploy)';
         pbox.innerHTML = `
           <div class="font-bold text-[#ffcc00] mb-1">PERSISTENCE HEALTH (auto on every boot — no manual watching needed)</div>
           <div>Sidecar: <b>${side}</b> managers | DB: <b>${dbm}</b> | Best backup: ${pstatus.bestBackupManagersSeen || 0}${pingInfo}</div>

@@ -599,19 +599,22 @@ async function persistStore() {
     if (!db) initSQLite();
 
     // Safety guard: never clobber good data with empty managers on a persist
-    if (storeCache.managers && storeCache.managers.length === 0) {
-      const bestMgrs = loadAtomicCollection('managers');
-      if (bestMgrs && bestMgrs.length > 0) {
-        console.warn('[persist] Guard: refusing to overwrite with 0 managers; restoring from atomic');
-        storeCache.managers = bestMgrs;
-        // try to restore other critical too
-        const bestPays = loadAtomicCollection('payments');
-        if (bestPays) storeCache.payments = bestPays;
-        const bestLed = loadAtomicCollection('ledger');
-        if (bestLed) storeCache.ledger = bestLed;
-        const bestBeefs = loadAtomicCollection('beefs');
-        if (bestBeefs) storeCache.beefs = bestBeefs;
-      }
+    // Strong guard: if current has fewer managers than best on disk, restore the best
+    const currentMgrCount = (storeCache.managers || []).length;
+    const bestMgrs = loadAtomicCollection('managers') || [];
+    if (bestMgrs.length > currentMgrCount) {
+      console.warn(`[persist] Guard: current has ${currentMgrCount} managers, best atomic has ${bestMgrs.length} — restoring best`);
+      storeCache.managers = bestMgrs;
+      const bestPays = loadAtomicCollection('payments');
+      if (bestPays) storeCache.payments = bestPays;
+      const bestLed = loadAtomicCollection('ledger');
+      if (bestLed) storeCache.ledger = bestLed;
+      const bestBeefs = loadAtomicCollection('beefs');
+      if (bestBeefs) storeCache.beefs = bestBeefs;
+      const bestSpon = loadAtomicCollection('sponsorships');
+      if (bestSpon) storeCache.sponsorships = bestSpon;
+      const bestSet = loadAtomicCollection('settings');
+      if (bestSet) storeCache.settings = { ...(storeCache.settings || {}), ...bestSet };
     }
 
     const insert = db.prepare("INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)");
@@ -3429,6 +3432,35 @@ async function boot() {
   console.log("   - Or from your GO54: */5 * * * * curl -s " + (process.env.RENDER_EXTERNAL_URL || 'https://d-league-clubhouse.onrender.com') + "/health > /dev/null");
   console.log("   - Or leave admin cockpit tab open (it auto-pings /health every 60s)");
   console.log("   /health now does full auto-heal on every ping.");
+
+  // VERY EARLY: promote best state from disk atomics before any other logic or persist
+  // This ensures even on fresh deploy process, we load the best known data first.
+  try {
+    const atomicM = loadAtomicCollection('managers');
+    const atomicP = loadAtomicCollection('payments');
+    const atomicL = loadAtomicCollection('ledger');
+    const atomicB = loadAtomicCollection('beefs');
+    const side = tryLoadCurrentState();
+    const bestB = findBestBackupData();
+
+    let bestState = {};
+    const candidates = [atomicM ? {managers: atomicM} : null, side, bestB].filter(Boolean);
+    candidates.forEach(c => {
+      if (!bestState.managers || (c.managers && c.managers.length > (bestState.managers || []).length)) {
+        bestState = c;
+      }
+    });
+    if (bestState.managers && bestState.managers.length > 0) {
+      storeCache = { ...createEmptyStore(), ...bestState };
+      if (atomicP) storeCache.payments = atomicP;
+      if (atomicL) storeCache.ledger = atomicL;
+      if (atomicB) storeCache.beefs = atomicB;
+      writeAtomicSidecar(storeCache);
+      console.log(`[BOOT EARLY PROMOTE] Loaded best state with ${storeCache.managers.length} managers from disk`);
+    }
+  } catch (e) {
+    console.warn('[BOOT EARLY PROMOTE] failed', e.message);
+  }
 
   let store = await loadStore();
   console.log(`[BOOT] Initial loadStore: ${store.managers?.length || 0} managers, payments: ${(store.payments||[]).length}`);
