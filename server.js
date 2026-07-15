@@ -543,6 +543,19 @@ async function loadStore() {
     // Heal any paid managers lost during migration or prior bad updates
     await recoverOrphanedPaidManagers();
 
+    // Auto-recover richer state if current looks low (free tier safety)
+    const atomicMgrs = loadAtomicCollection('managers');
+    if (atomicMgrs && atomicMgrs.length > (storeCache.managers || []).length) {
+      console.log(`[store] Auto-recovery: atomics have ${atomicMgrs.length} managers vs ${ (storeCache.managers || []).length } - promoting`);
+      storeCache.managers = atomicMgrs;
+      const p = loadAtomicCollection('payments');
+      if (p) storeCache.payments = p;
+      const l = loadAtomicCollection('ledger');
+      if (l) storeCache.ledger = l;
+      const b = loadAtomicCollection('beefs');
+      if (b) storeCache.beefs = b;
+    }
+
     // After any load, immediately promote the current state to per-collection atomics.
     // This ensures that even if we loaded from an older full sidecar, the latest merged view is durable.
     writeAtomicCollection('managers', storeCache.managers);
