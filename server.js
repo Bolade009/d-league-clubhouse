@@ -295,21 +295,31 @@ async function loadStore() {
 
   try {
     let loaded;
-    try {
-      loaded = tryLoadFromDisk();
-    } catch (loadErr) {
-      console.warn(`[store] Initial SQLite load failed: ${loadErr.message}. Attempting WAL recovery + backup...`);
-      // Force re-init with WAL cleanup (already retried inside initSQLite)
-      db = null;
+
+    // Prefer the atomic sidecar first if it looks good — it's our most reliable full snapshot across restarts.
+    const sidecarFirst = tryLoadCurrentState();
+    if (sidecarFirst && Array.isArray(sidecarFirst.managers) && sidecarFirst.managers.length > 0) {
+      console.log(`[store] Preferring current-state.json sidecar as primary source (${sidecarFirst.managers.length} managers)`);
+      loaded = sidecarFirst;
+    }
+
+    if (!loaded) {
       try {
         loaded = tryLoadFromDisk();
-      } catch (retryErr) {
-        const backupData = findBestBackup();
-        if (backupData) {
-          loaded = backupData;
-          console.log("[store] Using BEST backup data (max managers) after DB fail.");
-        } else {
-          throw retryErr; // will fall to outer catch which avoids wiping
+      } catch (loadErr) {
+        console.warn(`[store] Initial SQLite load failed: ${loadErr.message}. Attempting WAL recovery + backup...`);
+        // Force re-init with WAL cleanup (already retried inside initSQLite)
+        db = null;
+        try {
+          loaded = tryLoadFromDisk();
+        } catch (retryErr) {
+          const backupData = findBestBackup();
+          if (backupData) {
+            loaded = backupData;
+            console.log("[store] Using BEST backup data (max managers) after DB fail.");
+          } else {
+            throw retryErr; // will fall to outer catch which avoids wiping
+          }
         }
       }
     }
@@ -496,6 +506,16 @@ async function persistStore() {
       }
     });
 
+    // Write durable sidecar FIRST (atomic) before touching DB. This gives the best chance the full state (incl new manager) survives unclean shutdowns.
+    try {
+      const statePath = path.join(DATA_DIR, 'current-state.json');
+      const tmpPath = statePath + '.tmp';
+      fsSync.writeFileSync(tmpPath, JSON.stringify(storeCache, null, 2));
+      fsSync.renameSync(tmpPath, statePath);
+    } catch (sideErr) {
+      console.warn("[sidecar] Failed to write current-state.json (pre-db):", sideErr.message);
+    }
+
     tx(storeCache);
     console.log(`[store] Persisted to SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
     // Force a full checkpoint after every successful write — helps a lot with Render wake reliability
@@ -530,17 +550,7 @@ async function persistStore() {
         if (currentCount > bestCount) console.log(`[backup] New best snapshot: ${currentCount} managers -> store-best.json`);
       }
 
-      // 4. ATOMIC current-state.json sidecar (the most reliable way to survive Render sleep/wake unclean shutdowns)
-      // Write to .tmp then rename = atomic on POSIX filesystems. This gives us a fresh full snapshot we can always trust.
-      try {
-        const statePath = path.join(DATA_DIR, 'current-state.json');
-        const tmpPath = statePath + '.tmp';
-        fsSync.writeFileSync(tmpPath, JSON.stringify(storeCache, null, 2));
-        fsSync.renameSync(tmpPath, statePath);
-      } catch (sideErr) {
-        console.warn("[sidecar] Failed to write current-state.json:", sideErr.message);
-      }
-
+      // 4. (Sidecar already written at start of persist for max durability before DB tx)
       // 5. Smart prune: keep last ~12 + any that match or exceed current bestCount (protect history of good states)
       const all = fsSync.readdirSync(backupsDir)
         .filter(f => f.startsWith('store-') && f.endsWith('.json'))
@@ -2044,6 +2054,14 @@ app.post("/api/admin/add-manager", async (req, res) => {
     if (uclId) existing.ucl = { teamId: uclId, teamName: fplClubName || existing.ucl?.teamName || '' };
     if (fplClubName) existing.fplClubName = fplClubName;
     await persistStore();
+    try {
+      const fresh = await loadStore();
+      const statePath = path.join(DATA_DIR, 'current-state.json');
+      const tmpPath = statePath + '.tmp';
+      fsSync.writeFileSync(tmpPath, JSON.stringify(fresh, null, 2));
+      fsSync.renameSync(tmpPath, statePath);
+      console.log(`[add-manager-update] Updated ${email}. Sidecar now has ${(fresh.managers || []).length} managers`);
+    } catch (e) { console.warn("extra sidecar on update failed", e.message); }
     await logEvent("manager_updated_by_admin", { id: existing.id, email, name, fplClubName, fplId });
     return res.json({ ok: true, manager: { id: existing.id, displayName: name, email, accessCode }, message: "Existing manager updated (details refreshed, paid status and history untouched)." });
   }
@@ -2063,6 +2081,21 @@ app.post("/api/admin/add-manager", async (req, res) => {
   };
   s.managers.push(mgr);
   await persistStore();
+  // Extra belt-and-suspenders for Render: re-load and force a sidecar write so the new manager is definitely in the durable snapshot
+  try {
+    const fresh = await loadStore();
+    if (!fresh.managers.find(m => m.email && m.email.toLowerCase() === email.toLowerCase())) {
+      console.warn("[add-manager] New manager not visible after persist — forcing extra sidecar write");
+    }
+    // Explicitly write sidecar again with current state
+    const statePath = path.join(DATA_DIR, 'current-state.json');
+    const tmpPath = statePath + '.tmp';
+    fsSync.writeFileSync(tmpPath, JSON.stringify(fresh || s, null, 2));
+    fsSync.renameSync(tmpPath, statePath);
+    console.log(`[add-manager] Manager ${email} added. Current managers in sidecar after force: ${(fresh.managers || []).length}`);
+  } catch (e) {
+    console.warn("[add-manager] extra sidecar force failed", e.message);
+  }
   await logEvent("manager_added", { email, name, fplClubName, by: "admin", accessCode });
 
   // Auto-send access code email if SMTP is configured
@@ -3003,6 +3036,80 @@ app.post("/api/settle/run", async (req, res) => {
   if (comp === "fpl" || !comp) await settleWeeklyPot("fpl", (await loadStore()).settings.currentRound.fpl);
   if (comp === "ucl" || !comp) await settleWeeklyPot("ucl", (await loadStore()).settings.currentRound.ucl);
   res.json({ ok: true, message: "Settlements processed, payouts initiated where possible." });
+});
+
+// Debug endpoint for persistence health (admin only). Shows exactly what is on disk right now.
+app.get("/api/admin/persistence-status", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const dbPath = path.join(DATA_DIR, "dleague.db");
+  const sidecarPath = path.join(DATA_DIR, "current-state.json");
+  const backupsDir = path.join(DATA_DIR, "backups");
+
+  let dbMgrCount = 0, dbPayCount = 0;
+  try {
+    if (!db) initSQLite(0);
+    const mgrRow = db.prepare("SELECT value FROM store WHERE key = ?").get("managers");
+    const payRow = db.prepare("SELECT value FROM store WHERE key = ?").get("payments");
+    dbMgrCount = mgrRow ? JSON.parse(mgrRow.value || "[]").length : 0;
+    dbPayCount = payRow ? JSON.parse(payRow.value || "[]").length : 0;
+  } catch (e) { /* ignore */ }
+
+  let sideMgrCount = 0, sideLast = null, sideEmails = [];
+  try {
+    if (fsSync.existsSync(sidecarPath)) {
+      const data = JSON.parse(fsSync.readFileSync(sidecarPath, "utf8"));
+      sideMgrCount = (data.managers || []).length;
+      sideLast = data.settings && data.settings.lastPersistedAt;
+      sideEmails = (data.managers || []).map(m => m.email).filter(Boolean).slice(0, 10);
+    }
+  } catch (e) { /* */ }
+
+  let latestBackup = null, bestBackupCount = 0;
+  try {
+    if (fsSync.existsSync(backupsDir)) {
+      const files = fsSync.readdirSync(backupsDir).filter(f => f.startsWith("store-") && f.endsWith(".json")).sort().reverse();
+      for (const f of files) {
+        try {
+          const d = JSON.parse(fsSync.readFileSync(path.join(backupsDir, f), "utf8"));
+          const c = (d.managers || []).length;
+          if (!latestBackup) latestBackup = { file: f, count: c };
+          if (c > bestBackupCount) bestBackupCount = c;
+        } catch {}
+      }
+    }
+  } catch (e) {}
+
+  res.json({
+    dataDir: DATA_DIR,
+    dbFile: dbPath,
+    dbManagers: dbMgrCount,
+    dbPayments: dbPayCount,
+    sidecarFile: sidecarPath,
+    sidecarExists: fsSync.existsSync(sidecarPath),
+    sidecarManagers: sideMgrCount,
+    sidecarLastPersisted: sideLast,
+    sidecarSampleEmails: sideEmails,
+    bestBackupManagersSeen: bestBackupCount,
+    latestBackupSample: latestBackup,
+    note: "If sidecarManagers > dbManagers, the next load should reconcile it in. Check Render disk is mounted and no recent errors in logs."
+  });
 });
 
 // Catch all for SPA
