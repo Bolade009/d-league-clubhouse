@@ -224,6 +224,53 @@ function findBestBackupData() {
   return null;
 }
 
+// === TOP LEVEL DURABLE WRITE HELPERS (hoisted so persistStore, boot, mutations can use them) ===
+// These are the key to watertight on free tier sleeps: atomic + fsync JSON sidecars written early and often.
+function writeAtomicSidecar(data) {
+  try {
+    const statePath = path.join(DATA_DIR, 'current-state.json');
+    const tmpPath = statePath + '.tmp';
+    const json = JSON.stringify(data, null, 2);
+    fsSync.writeFileSync(tmpPath, json);
+    fsSync.renameSync(tmpPath, statePath);
+    try {
+      const fd = fsSync.openSync(statePath, 'r');
+      fsSync.fsyncSync(fd);
+      fsSync.closeSync(fd);
+    } catch {}
+    return true;
+  } catch (e) {
+    console.warn('[sidecar] writeAtomicSidecar failed:', e.message);
+    return false;
+  }
+}
+
+function writeAtomicCollection(name, data) {
+  try {
+    const p = path.join(DATA_DIR, `current-${name}.json`);
+    const tmp = p + '.tmp';
+    fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    fsSync.renameSync(tmp, p);
+    try {
+      const fd = fsSync.openSync(p, 'r');
+      fsSync.fsyncSync(fd);
+      fsSync.closeSync(fd);
+    } catch {}
+  } catch (e) {
+    console.warn(`[atomic] Failed to write ${name}:`, e.message);
+  }
+}
+
+function loadAtomicCollection(name) {
+  try {
+    const p = path.join(DATA_DIR, `current-${name}.json`);
+    if (fsSync.existsSync(p)) {
+      return JSON.parse(fsSync.readFileSync(p, 'utf8'));
+    }
+  } catch (e) {}
+  return null;
+}
+
 function initSQLite(retries = 2) {
   if (db) return db;
   const dbPath = path.join(DATA_DIR, "dleague.db");
@@ -290,55 +337,6 @@ async function loadStore() {
     } catch (e) { /* ignore */ }
     return null;
   };
-
-  function writeAtomicSidecar(data) {
-    try {
-      const statePath = path.join(DATA_DIR, 'current-state.json');
-      const tmpPath = statePath + '.tmp';
-      const json = JSON.stringify(data, null, 2);
-      fsSync.writeFileSync(tmpPath, json);
-      fsSync.renameSync(tmpPath, statePath);
-      // Best effort fsync for durability on Render wake
-      try {
-        const fd = fsSync.openSync(statePath, 'r');
-        fsSync.fsyncSync(fd);
-        fsSync.closeSync(fd);
-      } catch {}
-      return true;
-    } catch (e) {
-      console.warn('[sidecar] writeAtomicSidecar failed:', e.message);
-      return false;
-    }
-  }
-
-  // Ultra-reliable atomic writes for critical mutable collections.
-  // These small files are our primary defense against loss on free-tier sleeps/wakes.
-  // We write them on every user mutation (beef, payment, sponsor, etc.).
-  function writeAtomicCollection(name, data) {
-    try {
-      const p = path.join(DATA_DIR, `current-${name}.json`);
-      const tmp = p + '.tmp';
-      fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2));
-      fsSync.renameSync(tmp, p);
-      try {
-        const fd = fsSync.openSync(p, 'r');
-        fsSync.fsyncSync(fd);
-        fsSync.closeSync(fd);
-      } catch {}
-    } catch (e) {
-      console.warn(`[atomic] Failed to write ${name}:`, e.message);
-    }
-  }
-
-  function loadAtomicCollection(name) {
-    try {
-      const p = path.join(DATA_DIR, `current-${name}.json`);
-      if (fsSync.existsSync(p)) {
-        return JSON.parse(fsSync.readFileSync(p, 'utf8'));
-      }
-    } catch (e) {}
-    return null;
-  }
 
   // Use module-level (hoisted) for consistency; wrapper keeps old name in scope
   const findBestBackup = () => findBestBackupData();
@@ -584,6 +582,22 @@ async function persistStore() {
   storeWriteLock = true;
   try {
     if (!db) initSQLite();
+
+    // Safety guard: never clobber good data with empty managers on a persist
+    if (storeCache.managers && storeCache.managers.length === 0) {
+      const bestMgrs = loadAtomicCollection('managers');
+      if (bestMgrs && bestMgrs.length > 0) {
+        console.warn('[persist] Guard: refusing to overwrite with 0 managers; restoring from atomic');
+        storeCache.managers = bestMgrs;
+        // try to restore other critical too
+        const bestPays = loadAtomicCollection('payments');
+        if (bestPays) storeCache.payments = bestPays;
+        const bestLed = loadAtomicCollection('ledger');
+        if (bestLed) storeCache.ledger = bestLed;
+        const bestBeefs = loadAtomicCollection('beefs');
+        if (bestBeefs) storeCache.beefs = bestBeefs;
+      }
+    }
 
     const insert = db.prepare("INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)");
     const tx = db.transaction((store) => {
