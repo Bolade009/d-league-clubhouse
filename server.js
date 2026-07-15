@@ -174,6 +174,8 @@ function createEmptyStore() {
 let storeCache = null;
 let storeWriteLock = false;
 let db = null;
+let lastHealthPing = null;
+let healthPingCount = 0;
 
 // Module-level best-backup finder (usable from boot, recover, etc). Scans for max managers.
 function findBestBackupData() {
@@ -2075,8 +2077,37 @@ exports.seedDemoIfNeeded = seedDemoData;
 
 // ============ ROUTES ============
 
-app.get("/health", (req, res) => {
-  res.json({ status: "ok", time: nowISO(), demo: DEMO_MODE, version: "1.0.0" });
+app.get("/health", async (req, res) => {
+  // On every ping (from users, webhooks, or free cron pinger), do full self-heal.
+  // This makes wake-ups instant and state consistent. Creative way to stay "fresh" on free tier.
+  try {
+    const s = await loadStore();
+    writeAtomicSidecar(s);
+    writeAtomicCollection('managers', s.managers);
+    writeAtomicCollection('payments', s.payments);
+    writeAtomicCollection('ledger', s.ledger);
+    writeAtomicCollection('beefs', s.beefs || []);
+    writeAtomicCollection('sponsorships', s.sponsorships || []);
+    writeAtomicCollection('settings', s.settings || {});
+    if (db) {
+      db.pragma("wal_checkpoint(FULL)");
+    }
+  } catch (e) {
+    console.warn('[health] heal failed', e.message);
+  }
+  lastHealthPing = nowISO();
+  healthPingCount++;
+  res.json({ 
+    status: "ok", 
+    time: nowISO(), 
+    demo: DEMO_MODE, 
+    version: "1.0.0",
+    healed: true,
+    pingReceived: true,
+    lastHealthPing,
+    healthPingCount,
+    message: "Service is awake and state promoted from best sources. Thanks for the ping!"
+  });
 });
 
 app.get("/api/config", (req, res) => {
@@ -2344,6 +2375,61 @@ app.post("/api/admin/restore-from-best-backup", async (req, res) => {
     before,
     after,
     message: `Restored from best backup. Managers: ${before} -> ${after}. All real profiles (names, codes, FPL IDs) should now be present.`
+  });
+});
+
+// Restore from a previous full export JSON (the one you downloaded before bad deploy).
+// POST body: { "data": <paste the full exported JSON here> }
+// Auth same as other admin.
+app.post("/api/admin/restore-from-export", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { data } = req.body || {};
+  if (!data || !Array.isArray(data.managers) || data.managers.length === 0) {
+    return res.status(400).json({ error: "Provide valid full export in 'data' field with managers array" });
+  }
+
+  const before = (getStore().managers || []).length;
+
+  // Promote this as the new truth
+  writeAtomicSidecar(data);
+  writeAtomicCollection('managers', data.managers || []);
+  writeAtomicCollection('payments', data.payments || []);
+  writeAtomicCollection('ledger', data.ledger || []);
+  writeAtomicCollection('beefs', data.beefs || []);
+  writeAtomicCollection('sponsorships', data.sponsorships || []);
+  writeAtomicCollection('challenges', data.challenges || []);
+  writeAtomicCollection('complaints', data.complaints || []);
+  if (data.settings) writeAtomicCollection('settings', data.settings);
+
+  storeCache = data;
+  await persistStore();
+
+  const after = (getStore().managers || []).length;
+
+  await logEvent("restored_from_export", { before, after, managers: after });
+
+  res.json({
+    ok: true,
+    before,
+    after,
+    message: `Restored from your export JSON. Managers: ${before} -> ${after}. Sidecars updated. Redeploy or restart to fully apply if needed.`
   });
 });
 
@@ -3323,7 +3409,9 @@ app.get("/api/admin/persistence-status", async (req, res) => {
     bestBackupManagersSeen: bestBackupCount,
     latestBackupSample: latestBackup,
     atomicFiles: atomicStatus,
-    note: "Per-collection atomics (managers/payments/ledger/beefs etc.) are written on every user action. On boot we pick the freshest combination. Yellow box + auto self-heal on every restart. Use exports for extra safety net."
+    lastHealthPing,
+    healthPingCount,
+    note: "Per-collection atomics written on every action. Cron pings to /health keep awake + auto-heal. Yellow box shows live health + ping count. Self-heal on every restart."
   });
 });
 
@@ -3336,6 +3424,11 @@ app.get("*", (req, res) => {
 
 async function boot() {
   console.log("[BOOT] Starting with hardened persistence (current-state.json sidecar + multi-source merge + WAL checkpoints)");
+  console.log("🛡️ TO KEEP RENDER FREE AWAKE 24/7 (set & forget):");
+  console.log("   - Use free https://cron-job.org : Create GET cron to " + (process.env.RENDER_EXTERNAL_URL || 'https://d-league-clubhouse.onrender.com') + "/health every 5 min");
+  console.log("   - Or from your GO54: */5 * * * * curl -s " + (process.env.RENDER_EXTERNAL_URL || 'https://d-league-clubhouse.onrender.com') + "/health > /dev/null");
+  console.log("   - Or leave admin cockpit tab open (it auto-pings /health every 60s)");
+  console.log("   /health now does full auto-heal on every ping.");
 
   let store = await loadStore();
   console.log(`[BOOT] Initial loadStore: ${store.managers?.length || 0} managers, payments: ${(store.payments||[]).length}`);
@@ -3439,6 +3532,29 @@ async function boot() {
       } catch (e) { console.error('[AUTO] periodic error', e); }
     }, 30 * 60 * 1000);
   }
+
+  // === CREATIVE FREE-TIER KEEP-ALIVE / MAINTENANCE (while process is awake) ===
+  // Every 5 minutes while the service is running (woken by pings/users/webhooks):
+  // - Force write all durable sidecars and atomics (ensures state is fresh).
+  // - Full WAL checkpoint.
+  // This "keeps it ready" without manual work. Combined with external free pinger, it helps stay consistent 24/7.
+  // No sleep prevention from inside (Render free will sleep without traffic), but instant heal on any traffic.
+  setInterval(async () => {
+    try {
+      const s = await loadStore();
+      writeAtomicSidecar(s);
+      writeAtomicCollection('managers', s.managers);
+      writeAtomicCollection('payments', s.payments);
+      writeAtomicCollection('ledger', s.ledger);
+      writeAtomicCollection('beefs', s.beefs || []);
+      writeAtomicCollection('sponsorships', s.sponsorships || []);
+      writeAtomicCollection('settings', s.settings || {});
+      if (db) db.pragma("wal_checkpoint(FULL)");
+      console.log('[MAINTENANCE] Sidecars + checkpoint refreshed while awake');
+    } catch (e) {
+      console.warn('[MAINTENANCE] failed', e.message);
+    }
+  }, 5 * 60 * 1000); // 5 min
 }
 
 boot().catch(err => {

@@ -667,15 +667,33 @@ async function loadAdminOverview() {
         const emails = (pstatus.sidecarSampleEmails || []).join(', ');
         const atomics = pstatus.atomicFiles || {};
         const atomicSummary = Object.keys(atomics).map(k => `${k}:${atomics[k].count || 0}`).join(' ');
+        const pingInfo = pstatus.healthPingCount ? ` | Pings received: ${pstatus.healthPingCount} (last: ${pstatus.lastHealthPing || 'n/a'})` : '';
         pbox.innerHTML = `
           <div class="font-bold text-[#ffcc00] mb-1">PERSISTENCE HEALTH (auto on every boot — no manual watching needed)</div>
-          <div>Sidecar: <b>${side}</b> managers | DB: <b>${dbm}</b> | Best backup: ${pstatus.bestBackupManagersSeen || 0}</div>
+          <div>Sidecar: <b>${side}</b> managers | DB: <b>${dbm}</b> | Best backup: ${pstatus.bestBackupManagersSeen || 0}${pingInfo}</div>
           <div class="mt-1">Atom ics (freshest per collection): ${atomicSummary}</div>
           <div class="mt-1">Sample emails: ${emails || '(none)'}</div>
           <div class="mt-1 text-[#888]">Last: ${pstatus.sidecarLastPersisted || 'unknown'}</div>
           <button onclick="reconcileAndPersist()" class="mt-2 px-3 py-1 bg-[#ffcc00] text-black rounded text-xs font-bold">FORCE RECONCILE (rarely needed)</button>
+          <button onclick="restoreFromExportPrompt()" class="mt-2 ml-2 px-3 py-1 bg-blue-600 text-white rounded text-xs font-bold">RESTORE FROM MY PREVIOUS EXPORT JSON</button>
+
+          <div class="mt-3 pt-2 border-t border-[#333]">
+            <div class="font-bold text-[#00ff85] mb-1">🛡️ FREE TIER SLEEP PREVENTION (set & forget, no manual after)</div>
+            <div class="text-[10px]">Render free sleeps after ~15min no traffic (root of WAL/sidecar issues). Use a <b>free external pinger</b> to send traffic to /health every 5 min. This wakes it automatically.</div>
+            <div class="mt-1">1. Go to <a href="https://cron-job.org" target="_blank" class="underline">cron-job.org</a> (free, no CC) or UptimeRobot.</div>
+            <div class="mt-1">2. Create job pinging exactly: <code class="bg-black px-1">${window.location.origin}/health</code> every 5 minutes (GET).</div>
+            <div class="mt-1">From your GO54/other hosting: Add to crontab: <code class="bg-black px-1">*/5 * * * * curl -s ${window.location.origin}/health &gt;/dev/null</code></div>
+            <div class="mt-1 text-[10px] text-[#888]">Our /health now does full auto-heal + sidecar promote on every ping. Combined with the 5min maintenance loop while awake, state stays consistent. GitHub Actions also works (free).</div>
+            <div class="mt-1 text-[10px]">Tip: Leave this admin tab open — it auto-pings every 60s to help during your session. Keep Mac plugged in.</div>
+          </div>
         `;
         panel.appendChild(pbox);
+
+        // Creative autorefresh pinger: if admin tab stays open, it pings /health every 60s.
+        // Helps keep the service "warm" during active sessions without external setup.
+        setInterval(() => {
+          fetch('/health').catch(() => {});
+        }, 60 * 1000);
       } catch (e) {
         console.warn('Could not load persistence status', e);
       }
@@ -785,6 +803,23 @@ async function reconcileAndPersist() {
     loadAdminOverview();
   } catch (e) {
     alert('Reconcile failed: ' + (e.message || e) + ' — try the curl persistence-status instead.');
+  }
+}
+
+async function restoreFromExportPrompt() {
+  const jsonStr = prompt('Paste the FULL content of your previous export JSON here (the one you downloaded before the bad deploy). It must be valid JSON starting with { "managers": [...');
+  if (!jsonStr) return;
+  try {
+    const data = JSON.parse(jsonStr);
+    if (!data || !Array.isArray(data.managers)) throw new Error('Invalid export - must have managers array');
+    const res = await fetchJSON('/api/admin/restore-from-export', {
+      method: 'POST',
+      body: JSON.stringify({ data })
+    });
+    alert(res.message || 'Restored from export.');
+    loadAdminOverview();
+  } catch (e) {
+    alert('Restore failed: ' + (e.message || e) + '\nMake sure you pasted the entire valid JSON from your previous good export.');
   }
 }
 
