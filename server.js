@@ -350,13 +350,6 @@ async function loadStore() {
     });
     if (!storeCache.cup) storeCache.cup = { ...defaults.cup };
 
-    // === ROBUST MULTI-SOURCE RECONCILE (the permanent solution) ===
-    // Load up to 3 sources: SQLite (primary), atomic current-state.json sidecar (very durable), best historical backup (last resort).
-    // Then MERGE instead of blindly replacing with a potentially stale backup.
-    // This guarantees we keep the *most current ledger, winnings, pots* while recovering any missing managers.
-    const bestBackup = findBestBackup();
-    const sidecar = tryLoadCurrentState();
-
     function mergeSources(primary, ...others) {
       const result = { ...primary };
       // Start from primary (usually the freshest SQLite or sidecar)
