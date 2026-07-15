@@ -323,7 +323,25 @@ async function loadAllData() {
     loadTicker().catch(e => console.warn('ticker failed', e)),
     loadH2H().catch(e => console.warn('h2h failed', e)),
     loadChallenges().catch(e => console.warn('challenges failed', e)),
-    loadProjections().catch(e => console.warn('projections failed', e))
+    loadProjections().catch(e => console.warn('projections failed', e)),
+    // Fetch server beefs so user-generated beefs survive restarts (localStorage is UI cache only now)
+    fetchJSON('/api/beefs').then(d => {
+      if (d && Array.isArray(d.beefs)) {
+        d.beefs.forEach(sb => {
+          const exists = playerChallenges.findIndex(pc => pc.serverId === sb.id);
+          if (exists === -1) {
+            playerChallenges.push({
+              serverId: sb.id,
+              proposer: sb.proposerName || 'manager',
+              opponent: (sb.opponentIds || []).join(','),
+              category: sb.category,
+              stake: sb.stake,
+              status: sb.status
+            });
+          }
+        });
+      }
+    }).catch(e => console.warn('server beefs load failed', e))
   ];
   await Promise.allSettled(loads);
   renderManagerHero();
@@ -2427,7 +2445,7 @@ function showBeefModal() {
   `;
   modal.classList.remove('hidden');
   modal.classList.add('flex');
-  document.getElementById('beef-submit').onclick = () => {
+  document.getElementById('beef-submit').onclick = async () => {
     const oppSel = document.getElementById('beef-opp');
     const selectedIds = Array.from(oppSel.selectedOptions).map(o => o.value);
     const catId = document.getElementById('beef-cat').value;
@@ -2436,6 +2454,18 @@ function showBeefModal() {
     closeModal();
     const total = stake * selectedIds.length;
     const paid = tryPayWithWallet(total, 'beef stakes');
+    try {
+      // Persist to server so beefs survive restarts (no more local-only loss)
+      for (const id of selectedIds) {
+        await fetchJSON('/api/beef/propose', {
+          method: 'POST',
+          body: JSON.stringify({ opponentIds: [id], category: catId, stake, paidFromWallet: paid })
+        });
+      }
+    } catch (e) {
+      console.warn('Server beef propose failed, keeping local', e);
+    }
+    // still keep local for immediate UI
     selectedIds.forEach(id => {
       const oppM = paidFpl.find(m => m.id === id);
       const oppName = oppM ? oppM.displayName : id;

@@ -166,7 +166,8 @@ function createEmptyStore() {
     challenges: [],
     sponsorships: [], // {id, sponsor, amount, target: 'gw_winner'|'best_captain'|'league_winner' etc, round? }
     events: [],
-    complaints: [] // {id, managerId, email, title, description, relatedRound?, at, status: 'open'|'resolved'}
+    complaints: [], // {id, managerId, email, title, description, relatedRound?, at, status: 'open'|'resolved'}
+    beefs: [] // server-persisted personal beefs: {id, proposerId, opponentIds, category, stake, status, paidFromWallet, at, ...}
   };
 }
 
@@ -290,6 +291,26 @@ async function loadStore() {
     return null;
   };
 
+  function writeAtomicSidecar(data) {
+    try {
+      const statePath = path.join(DATA_DIR, 'current-state.json');
+      const tmpPath = statePath + '.tmp';
+      const json = JSON.stringify(data, null, 2);
+      fsSync.writeFileSync(tmpPath, json);
+      fsSync.renameSync(tmpPath, statePath);
+      // Best effort fsync for durability on Render wake
+      try {
+        const fd = fsSync.openSync(statePath, 'r');
+        fsSync.fsyncSync(fd);
+        fsSync.closeSync(fd);
+      } catch {}
+      return true;
+    } catch (e) {
+      console.warn('[sidecar] writeAtomicSidecar failed:', e.message);
+      return false;
+    }
+  }
+
   // Use module-level (hoisted) for consistency; wrapper keeps old name in scope
   const findBestBackup = () => findBestBackupData();
 
@@ -318,8 +339,10 @@ async function loadStore() {
     sources.forEach(src => {
       const mgrs = src.data.managers || [];
       const ledgerLen = (src.data.ledger || []).length;
+      const payLen = (src.data.payments || []).length;
+      const beefLen = (src.data.beefs || []).length;
       const persistedAt = (src.data.settings && src.data.settings.lastPersistedAt) || '';
-      const score = mgrs.length * 10000 + ledgerLen + (persistedAt ? 1 : 0);
+      const score = mgrs.length * 10000 + ledgerLen * 10 + payLen * 5 + beefLen * 5 + (persistedAt ? 1 : 0);
       if (score > bestScore) {
         bestScore = score;
         bestSource = { ...src, mgrCount: mgrs.length, ledgerLen };
@@ -345,7 +368,7 @@ async function loadStore() {
       needsPersist = true;
     }
     // Initialize collection keys to arrays only if completely absent (first run); do not overwrite or persist empty if key missing after partial load
-    ['managers','payments','scores','ledger','h2h','challenges','sponsorships','events','complaints'].forEach(k => {
+    ['managers','payments','scores','ledger','h2h','challenges','sponsorships','events','complaints','beefs'].forEach(k => {
       if (!Array.isArray(storeCache[k])) storeCache[k] = [];
     });
     if (!storeCache.cup) storeCache.cup = { ...defaults.cup };
@@ -353,7 +376,7 @@ async function loadStore() {
     function mergeSources(primary, ...others) {
       const result = { ...primary };
       // Start from primary (usually the freshest SQLite or sidecar)
-      ['managers', 'payments', 'ledger', 'scores', 'events', 'sponsorships', 'challenges', 'h2h', 'complaints'].forEach(key => {
+      ['managers', 'payments', 'ledger', 'scores', 'events', 'sponsorships', 'challenges', 'h2h', 'complaints', 'beefs'].forEach(key => {
         if (!Array.isArray(result[key])) result[key] = [];
       });
       if (!result.settings) result.settings = { ...defaults.settings };
@@ -373,7 +396,7 @@ async function loadStore() {
       result.managers = Array.from(mgrById.values());
 
       // Ledger, payments, scores, complaints etc: union by id (preserve *all* historical + recent winnings/settlements)
-      ['ledger', 'payments', 'scores', 'events', 'sponsorships', 'challenges', 'complaints'].forEach(key => {
+      ['ledger', 'payments', 'scores', 'events', 'sponsorships', 'challenges', 'complaints', 'beefs'].forEach(key => {
         const byId = new Map((result[key] || []).map(item => [item.id || JSON.stringify(item), item]));
         allSources.forEach(src => {
           (src[key] || []).forEach(item => {
@@ -510,15 +533,8 @@ async function persistStore() {
       }
     });
 
-    // Write durable sidecar FIRST (atomic) before touching DB. This gives the best chance the full state (incl new manager) survives unclean shutdowns.
-    try {
-      const statePath = path.join(DATA_DIR, 'current-state.json');
-      const tmpPath = statePath + '.tmp';
-      fsSync.writeFileSync(tmpPath, JSON.stringify(storeCache, null, 2));
-      fsSync.renameSync(tmpPath, statePath);
-    } catch (sideErr) {
-      console.warn("[sidecar] Failed to write current-state.json (pre-db):", sideErr.message);
-    }
+    // Write durable sidecar FIRST (atomic) before touching DB.
+    writeAtomicSidecar(storeCache);
 
     tx(storeCache);
     console.log(`[store] Persisted to SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
@@ -774,6 +790,7 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
 
   await logEvent("payment_confirmed", { managerId, competition, reference, amount });
   updateSeasonPots(s);
+  writeAtomicSidecar(s); // extra durability for payment (money!)
   await persistStore();
   return payment;
 }
@@ -857,6 +874,7 @@ async function settleWeeklyPot(comp, round) {
     });
   }
 
+  writeAtomicSidecar(s);
   await persistStore();
   await logEvent("pot_settled", { comp, round, winners: tiedWinners.map(w => w.managerId), amount: pot.winnerShare });
 
@@ -910,7 +928,10 @@ async function settleOpenChallenges() {
       settled++;
     }
   }
-  if (settled) await persistStore();
+  if (settled) {
+    writeAtomicSidecar(s);
+    await persistStore();
+  }
   return settled;
 }
 
@@ -2554,6 +2575,66 @@ app.post("/api/manager/complaint", async (req, res) => {
   res.json({ ok: true, complaintId: complaint.id, message: "Complaint received. The commissioner will review it." });
 });
 
+// Server-persisted personal beefs (critical for not losing user data on restarts)
+app.post("/api/beef/propose", async (req, res) => {
+  const mgr = getAuthenticatedManager(req);
+  if (!mgr) return res.status(401).json({ error: "Login required" });
+
+  const { opponentIds, category, stake, paidFromWallet } = req.body || {};
+  if (!opponentIds || !category || !stake) return res.status(400).json({ error: "opponentIds, category, stake required" });
+
+  const s = await loadStore();
+  const beef = {
+    id: generateId("beef"),
+    proposerId: mgr.id,
+    proposerName: mgr.displayName,
+    opponentIds: Array.isArray(opponentIds) ? opponentIds : [opponentIds],
+    category,
+    stake: Number(stake),
+    status: "proposed",
+    paidFromWallet: !!paidFromWallet,
+    at: nowISO()
+  };
+  s.beefs = s.beefs || [];
+  s.beefs.push(beef);
+  await logEvent("beef_proposed", { beefId: beef.id, proposer: mgr.email, stake: beef.stake, category });
+  // Force sidecar for durability
+  writeAtomicSidecar(s);
+  await persistStore();
+  res.json({ ok: true, beef });
+});
+
+app.post("/api/beef/accept", async (req, res) => {
+  const mgr = getAuthenticatedManager(req);
+  if (!mgr) return res.status(401).json({ error: "Login required" });
+
+  const { beefId } = req.body || {};
+  const s = await loadStore();
+  const beef = (s.beefs || []).find(b => b.id === beefId);
+  if (!beef) return res.status(404).json({ error: "Beef not found" });
+  if (beef.status !== "proposed") return res.status(400).json({ error: "Beef not in proposed state" });
+
+  beef.status = "accepted";
+  beef.acceptedBy = mgr.id;
+  beef.acceptedAt = nowISO();
+  await logEvent("beef_accepted", { beefId, accepter: mgr.email });
+  writeAtomicSidecar(s);
+  await persistStore();
+  res.json({ ok: true, beef });
+});
+
+// Return active beefs for the logged in user or all (admin sees all)
+app.get("/api/beefs", async (req, res) => {
+  const mgr = getAuthenticatedManager(req);
+  const s = await loadStore();
+  let beefs = s.beefs || [];
+  if (mgr) {
+    // show only relevant to this manager
+    beefs = beefs.filter(b => b.proposerId === mgr.id || (b.opponentIds || []).includes(mgr.id));
+  }
+  res.json({ beefs });
+});
+
 // Admin force settle a specific challenge (pick winner or cancel)
 app.post("/api/admin/settle-challenge", async (req, res) => {
   if (!DEMO_MODE) {
@@ -3075,13 +3156,15 @@ app.get("/api/admin/persistence-status", async (req, res) => {
     dbPayCount = payRow ? JSON.parse(payRow.value || "[]").length : 0;
   } catch (e) { /* ignore */ }
 
-  let sideMgrCount = 0, sideLast = null, sideEmails = [];
+  let sideMgrCount = 0, sideLast = null, sideEmails = [], sideBeefCount = 0;
+  let sidecarData = null;
   try {
     if (fsSync.existsSync(sidecarPath)) {
-      const data = JSON.parse(fsSync.readFileSync(sidecarPath, "utf8"));
-      sideMgrCount = (data.managers || []).length;
-      sideLast = data.settings && data.settings.lastPersistedAt;
-      sideEmails = (data.managers || []).map(m => m.email).filter(Boolean).slice(0, 10);
+      sidecarData = JSON.parse(fsSync.readFileSync(sidecarPath, "utf8"));
+      sideMgrCount = (sidecarData.managers || []).length;
+      sideBeefCount = (sidecarData.beefs || []).length;
+      sideLast = sidecarData.settings && sidecarData.settings.lastPersistedAt;
+      sideEmails = (sidecarData.managers || []).map(m => m.email).filter(Boolean).slice(0, 10);
     }
   } catch (e) { /* */ }
 
@@ -3100,6 +3183,8 @@ app.get("/api/admin/persistence-status", async (req, res) => {
     }
   } catch (e) {}
 
+  const sideBeefs = sidecarData ? (sidecarData.beefs || []).length : 0;
+  const dbBeefs = 0; // would require full parse
   res.json({
     dataDir: DATA_DIR,
     dbFile: dbPath,
@@ -3108,11 +3193,12 @@ app.get("/api/admin/persistence-status", async (req, res) => {
     sidecarFile: sidecarPath,
     sidecarExists: fsSync.existsSync(sidecarPath),
     sidecarManagers: sideMgrCount,
+    sidecarBeefs: sideBeefCount,
     sidecarLastPersisted: sideLast,
     sidecarSampleEmails: sideEmails,
     bestBackupManagersSeen: bestBackupCount,
     latestBackupSample: latestBackup,
-    note: "This shows the raw truth on disk right now. The server always picks the richest source (most managers + ledger) on load and saves it. Use the button in Admin Cockpit to force it."
+    note: "Server always picks richest (managers + ledger + beefs/payments) and auto-promotes on boot. Yellow box in Admin Cockpit shows this live + one-click fix. No more manual most of the time."
   });
 });
 
