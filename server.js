@@ -53,6 +53,23 @@ if (process.env.SMTP_HOST) {
   } catch (e) { console.warn("Mailer setup failed", e.message); }
 }
 
+async function sendEmail(to, subject, text) {
+  if (!mailer || !to) return false;
+  try {
+    await mailer.sendMail({
+      from: process.env.FROM_EMAIL || ADMIN_EMAIL,
+      to,
+      subject,
+      text
+    });
+    console.log(`[email] Sent to ${to}: ${subject}`);
+    return true;
+  } catch (e) {
+    console.error("[email] Failed to send:", e.message);
+    return false;
+  }
+}
+
 // Security & limits
 app.use(helmet({
   contentSecurityPolicy: {
@@ -874,6 +891,9 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
       target: payment.sponsorTarget,
       status: 'active'
     });
+    // Notify after confirmed payment
+    const text = `Thank you! Your sponsorship of ₦${payment.amount} for "${payment.sponsorTarget}" via Paystack is confirmed and active.`;
+    await sendEmail(mgr.email, 'Sponsorship Confirmed - D League', text);
   } else {
     // Track revenue for season pots (exclude pure house admin fees)
     const compDef = COMPETITIONS[competition];
@@ -2436,6 +2456,69 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
   });
 });
 
+// Admin confirms a manual payout request (no double debit — just marks the pending request as completed).
+// This is the "best alternative" for full admin control over actual bank transfers.
+app.post("/api/admin/confirm-payout", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { managerId, amount } = req.body || {};
+  if (!managerId || !amount) return res.status(400).json({ error: "managerId and amount required" });
+
+  const s = await loadStore();
+  // Find the most recent payout_requested for this manager with matching amount
+  const pending = (s.ledger || []).slice().reverse().find(l =>
+    l.type === "payout_requested" &&
+    l.managerId === managerId &&
+    Math.abs(l.amount) === Number(amount)
+  );
+
+  if (pending) {
+    pending.note = `Payout confirmed by admin — manual bank transfer completed.`;
+    pending.type = "payout_confirmed";
+    pending.confirmedAt = nowISO();
+  } else {
+    // Fallback: just add a note entry
+    s.ledger.push({
+      id: generateId("ldg"),
+      type: "payout_confirmed",
+      managerId,
+      amount: -Number(amount),
+      note: `Payout confirmed by admin — manual bank transfer completed.`,
+      at: nowISO()
+    });
+  }
+
+  await logEvent("payout_confirmed_manual", { managerId, amount });
+  writeAtomicSidecar(s);
+  writeAtomicCollection('ledger', s.ledger);
+  await persistStore();
+
+  // Notify the manager
+  const mgr = s.managers.find(m => m.id === managerId);
+  if (mgr && mgr.email) {
+    const mgrText = `Your payout request for ₦${amount} has been confirmed by admin. The manual bank transfer has been processed. Check your ledger.`;
+    await sendEmail(mgr.email, `D League Payout Confirmed - ₦${amount}`, mgrText);
+  }
+
+  res.json({ ok: true, message: "Payout request marked confirmed. Ledger updated. Manager notified. No additional debit." });
+});
+
 // Admin cancel challenge
 app.post("/api/admin/cancel-challenge", async (req, res) => {
   if (!DEMO_MODE) {
@@ -2634,28 +2717,28 @@ app.post("/api/wallet/request-payout", async (req, res) => {
   if (payoutAmount <= 0) return res.status(400).json({ error: "Invalid amount or insufficient balance" });
   if (!mgr.payoutDetails) return res.status(400).json({ error: "No bank details saved. Update profile first." });
 
-  // Trigger Paystack transfer
-  const transferResult = await initiateTransfer(mgr.id, payoutAmount, "Wallet withdrawal");
-  
-  // Record the request/withdrawal in ledger even if transfer pending
+  // Record request (manual by default for admin control)
   const s = await loadStore();
   s.ledger.push({
     id: generateId("ldg"),
-    type: "withdrawal_requested",
+    type: "payout_requested",
     managerId: mgr.id,
     amount: -payoutAmount,
-    note: `Withdrawal request (Paystack transfer initiated to saved bank)`,
+    note: `Payout requested to saved bank details. Awaiting admin confirmation.`,
     at: nowISO(),
-    transferResult
+    payoutDetails: mgr.payoutDetails
   });
   await persistStore();
+
+  // Notify admin via email (best alternative for manual control)
+  const adminText = `PAYOUT REQUEST\n\nManager: ${mgr.displayName} (${mgr.email})\nAmount: ₦${payoutAmount}\nBank details: ${mgr.payoutDetails || 'not set'}\n\nUse admin cockpit to confirm and update ledger (or initiate manual Paystack transfer).\nLedger entry ID will be in events.`;
+  await sendEmail(ADMIN_EMAIL, `D League Payout Request: ${mgr.displayName} - ₦${payoutAmount}`, adminText);
 
   res.json({ 
     ok: true, 
     requested: payoutAmount, 
     newBalance: getWalletBalance(mgr.id), 
-    transfer: transferResult,
-    message: "Payout requested. Check your bank and ledger. Transfer via Paystack initiated from league balance."
+    message: "Payout requested. Admin notified via email. They will confirm and update ledger (or handle manually outside Paystack). Check your ledger for the request entry. Bank transfer done manually by admin."
   });
 });
 
@@ -2735,6 +2818,11 @@ app.post("/api/sponsor", async (req, res) => {
   writeAtomicCollection('sponsorships', s.sponsorships);
   writeAtomicCollection('ledger', s.ledger);
   await persistStore();
+
+  // Notify sponsor via email
+  const text = `Thank you! Your sponsorship of ₦${amount} for "${target}" has been recorded.\n\nIt will boost the pot for the award winner. Check the app for updates.`;
+  await sendEmail(mgr.email, 'Sponsorship Confirmed - D League', text);
+
   res.json({ ok: true });
 });
 
@@ -2792,6 +2880,20 @@ app.post("/api/beef/propose", async (req, res) => {
   writeAtomicCollection('beefs', s.beefs);
   writeAtomicCollection('ledger', s.ledger);
   await persistStore();
+
+  // Notify opponents via email (if configured) and log for WhatsApp share
+  const s2 = await loadStore();
+  for (const oppId of beef.opponentIds) {
+    const opp = s2.managers.find(m => m.id === oppId);
+    if (opp && opp.email) {
+      const text = `Hi ${opp.displayName},\n\n${beef.proposerName} has challenged you in D League!\n\nCategory: ${beef.category}\nStake: ₦${beef.stake}\nStatus: proposed (pay stake to accept)\n\nLog in to accept: ${process.env.RENDER_EXTERNAL_URL || 'https://d-league-clubhouse.onrender.com'}\n\nWhatsApp your group if needed.`;
+      await sendEmail(opp.email, `D League Beef Challenge from ${beef.proposerName}`, text);
+    }
+  }
+  // Confirm to proposer
+  const textProposer = `Your beef challenge to ${beef.opponentIds.length} manager(s) for "${beef.category}" (₦${beef.stake}) has been recorded. Opponents notified via email if configured.`;
+  await sendEmail(mgr.email, 'Beef Proposed - D League', textProposer);
+
   res.json({ ok: true, beef });
 });
 
@@ -2811,6 +2913,15 @@ app.post("/api/beef/accept", async (req, res) => {
   await logEvent("beef_accepted", { beefId, accepter: mgr.email });
   writeAtomicSidecar(s);
   await persistStore();
+
+  // Notify proposer
+  const s2 = await loadStore();
+  const proposer = s2.managers.find(m => m.id === beef.proposerId);
+  if (proposer && proposer.email) {
+    const text = `Hi ${proposer.displayName},\n\n${mgr.displayName} has accepted your beef challenge "${beef.category}" for ₦${beef.stake}!\n\nCheck the app for details and settlement after the round.`;
+    await sendEmail(proposer.email, 'Beef Accepted - D League', text);
+  }
+
   res.json({ ok: true, beef });
 });
 

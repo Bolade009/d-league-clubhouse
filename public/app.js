@@ -229,7 +229,7 @@ function showDashboard() {
   if (prevWallet) prevWallet.remove();
 
   const hasBank = !!(currentManager.payoutDetails && currentManager.payoutDetails.length > 10);
-  let bankStatus = hasBank ? `<span class="text-[#00ff85] text-xs ml-1">✓ Bank on file — auto Paystack payouts enabled</span>` : `<span class="text-amber-400 text-xs ml-1">⚠ No bank set. Click to add for auto-settlements</span>`;
+  let bankStatus = hasBank ? `<span class="text-[#00ff85] text-xs ml-1">✓ Bank on file — admin confirmed manual payouts</span>` : `<span class="text-amber-400 text-xs ml-1">⚠ No bank set. Click to add for manual admin payouts</span>`;
 
   const walletEl = document.createElement('div');
   walletEl.className = 'wallet-row mt-2 text-sm flex flex-wrap items-center gap-x-3 gap-y-1';
@@ -349,6 +349,7 @@ async function loadAllData() {
   renderSquadChips();
   renderProjectionsLive();
   renderChallengeArena();
+  showPendingBeefsBanner();
   renderSponsoredAwards();
   renderLineupViewer();
 
@@ -728,6 +729,26 @@ async function loadAdminOverview() {
     `;
     panel.appendChild(creditWrap);
 
+    // Pending payout requests (admin confirms to update ledger - best for manual control)
+    const pendingWrap = document.createElement('div');
+    pendingWrap.className = 'mt-4 p-4 bg-[#161616] border border-[#ff9900] rounded-2xl';
+    const pendingPayouts = (data.recentLedger || []).filter(l => l.type === 'payout_requested' && l.amount < 0);
+    let pendingHtml = '<div class="font-semibold mb-2 text-[#ff9900]">PENDING PAYOUT REQUESTS (admin confirm to finalize ledger)</div>';
+    if (pendingPayouts.length) {
+      pendingPayouts.forEach(p => {
+        const mgr = (data.managers || []).find(m => m.id === p.managerId);
+        pendingHtml += `
+          <div class="mb-2 p-2 bg-black/30 rounded text-xs">
+            ${mgr ? mgr.displayName : p.managerId} — ₦${Math.abs(p.amount)} • ${p.note}<br>
+            <button onclick="confirmManualPayout('${p.managerId}', ${Math.abs(p.amount)})" class="mt-1 px-2 py-0.5 bg-[#ff9900] text-black text-[10px] rounded">CONFIRM & UPDATE LEDGER</button>
+          </div>`;
+      });
+    } else {
+      pendingHtml += '<div class="text-[#666] text-xs">No pending requests.</div>';
+    }
+    pendingWrap.innerHTML = pendingHtml;
+    panel.appendChild(pendingWrap);
+
     // Quick full export button
     const exportBtn = document.createElement('button');
     exportBtn.className = 'mt-3 px-4 py-1 text-xs bg-[#222] hover:bg-[#333] border border-[#444] rounded';
@@ -844,6 +865,20 @@ async function submitManualCredit() {
     if (typeof loadAllData === 'function') loadAllData();
   } catch (e) {
     alert('Credit failed: ' + (e.message || e));
+  }
+}
+
+async function confirmManualPayout(managerId, amount) {
+  if (!confirm(`Confirm manual payout of ₦${amount} to this manager? This marks the request complete (no double debit).`)) return;
+  try {
+    const res = await fetchJSON('/api/admin/confirm-payout', {
+      method: 'POST',
+      body: JSON.stringify({ managerId, amount })
+    });
+    alert(res.message || 'Payout confirmed.');
+    loadAdminOverview();
+  } catch (e) {
+    alert('Confirm failed: ' + (e.message || e));
   }
 }
 
@@ -1589,6 +1624,10 @@ async function initiateSponsorPayment(sponsorName, award, amount) {
       });
       renderSponsoredAwards();
       alert('Sponsor added from wallet balance.');
+      const waText = `D League Sponsorship: ${sponsorName} just sponsored ${award.name} for ₦${amount}! Boosting the pot. ${location.origin}`;
+      if (confirm('Share this sponsorship via WhatsApp?')) {
+        window.open(`https://wa.me/?text=${encodeURIComponent(waText)}`, '_blank');
+      }
       return;
     }
     // Paystack path - will trigger confirmation and add on success
@@ -2512,7 +2551,27 @@ function showBeefModal() {
     savePlayerChallenges();
     renderChallengeArena();
     alert(`Proposed to ${selectedIds.length} managers. ${paid ? 'Deducted total from wallet.' : 'Will pay via Paystack on accepts.'}`);
+
+    // WhatsApp share enabled - generate share text for the group or opponents
+    const catName = BEEF_PRESETS.find(b => b.id === catId)?.name || catId;
+    const waText = `D League Beef: ${currentManager.displayName} challenges ${selectedIds.map(id => paidFpl.find(m=>m.id===id)?.displayName).join(', ')} to "${catName}" for ₦${stake} each. Check Clubhouse to accept! ${location.origin}`;
+    if (confirm('Share this beef challenge via WhatsApp?')) {
+      window.open(`https://wa.me/?text=${encodeURIComponent(waText)}`, '_blank');
+    }
   };
+}
+
+// Show pending beefs banner for awareness (in-app notification, no config needed)
+function showPendingBeefsBanner() {
+  const wrap = $('challenge-arena');
+  if (!wrap || !playerChallenges.length) return;
+  const pending = playerChallenges.filter(ch => ch.status === 'proposed' && (ch.opponent === currentManager?.displayName || ch.serverId /* from load */));
+  if (pending.length > 0) {
+    const banner = document.createElement('div');
+    banner.className = 'p-2 bg-yellow-900 text-yellow-200 text-xs rounded mb-2';
+    banner.innerHTML = `⚔️ You have ${pending.length} pending beef challenge(s)! Check below or the arena.`;
+    if (wrap.firstChild) wrap.insertBefore(banner, wrap.firstChild);
+  }
 }
 
 async function settleCurrentRound(comp) {
