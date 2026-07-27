@@ -229,7 +229,7 @@ function showDashboard() {
   if (prevWallet) prevWallet.remove();
 
   const hasBank = !!(currentManager.payoutDetails && currentManager.payoutDetails.length > 10);
-  let bankStatus = hasBank ? `<span class="text-[#00ff85] text-xs ml-1">✓ Bank on file — admin confirmed manual payouts</span>` : `<span class="text-amber-400 text-xs ml-1">⚠ No bank set. Click to add for manual admin payouts</span>`;
+  let bankStatus = hasBank ? `<span class="text-[#00ff85] text-xs ml-1">✓ Bank on file — auto Paystack payouts enabled</span>` : `<span class="text-amber-400 text-xs ml-1">⚠ No bank set. Click to add for auto payouts</span>`;
 
   const walletEl = document.createElement('div');
   walletEl.className = 'wallet-row mt-2 text-sm flex flex-wrap items-center gap-x-3 gap-y-1';
@@ -729,22 +729,50 @@ async function loadAdminOverview() {
     `;
     panel.appendChild(creditWrap);
 
-    // Pending payout requests (admin confirms to update ledger - best for manual control)
+    // RECENT PAYOUT ACTIVITY — shows auto successes + any manual so admin sees full history/updates + ledger state
+    const payoutWrap = document.createElement('div');
+    payoutWrap.className = 'mt-4 p-4 bg-[#161616] border border-[#00ff85] rounded-2xl';
+    const payoutEntries = (data.recentLedger || []).filter(l => (l.type || '').toLowerCase().includes('payout'));
+    let payoutHtml = '<div class="font-semibold mb-2 text-[#00ff85]">RECENT PAYOUTS (auto + manual) — visible to admin in updates/history + ledger updated</div>';
+    if (payoutEntries.length) {
+      payoutEntries.slice().reverse().forEach(p => {  // show newest first
+        const mgr = (data.managers || []).find(m => m.id === p.managerId);
+        const t = (p.type || '').toLowerCase();
+        const isAuto = t.includes('completed');
+        const isConfirmed = t.includes('confirmed');
+        const isPending = t.includes('requested');
+        const status = isAuto ? 'AUTO SUCCESS' : (isConfirmed ? 'MANUAL CONFIRMED' : (isPending ? 'PENDING (auto failed)' : p.type));
+        const statusClass = (isAuto || isConfirmed) ? 'bg-[#00ff85] text-black' : 'bg-amber-600';
+        payoutHtml += `
+          <div class="mb-2 p-2 bg-black/30 rounded text-xs">
+            ${mgr ? mgr.displayName : p.managerId} — ₦${Math.abs(p.amount || 0)} 
+            <span class="px-1 rounded ${statusClass}">${status}</span><br>
+            <span class="text-[10px]">${p.note || ''}</span>
+            <span class="text-[10px] text-[#666] block">${p.at || ''}</span>
+          </div>`;
+      });
+    } else {
+      payoutHtml += '<div class="text-[#666] text-xs">No payout records yet.</div>';
+    }
+    payoutWrap.innerHTML = payoutHtml;
+    panel.appendChild(payoutWrap);
+
+    // PENDING only for auto-fail cases (manual is the fallback option, not default)
     const pendingWrap = document.createElement('div');
     pendingWrap.className = 'mt-4 p-4 bg-[#161616] border border-[#ff9900] rounded-2xl';
-    const pendingPayouts = (data.recentLedger || []).filter(l => l.type === 'payout_requested' && l.amount < 0);
-    let pendingHtml = '<div class="font-semibold mb-2 text-[#ff9900]">PENDING PAYOUT REQUESTS (admin confirm to finalize ledger)</div>';
+    const pendingPayouts = (data.recentLedger || []).filter(l => l.type === 'payout_requested' && (l.amount || 0) < 0);
+    let pendingHtml = '<div class="font-semibold mb-2 text-[#ff9900]">PENDING PAYOUTS — AUTO FAILED (manual transfer is fallback ONLY; confirm here after you pay outside)</div>';
     if (pendingPayouts.length) {
       pendingPayouts.forEach(p => {
         const mgr = (data.managers || []).find(m => m.id === p.managerId);
         pendingHtml += `
           <div class="mb-2 p-2 bg-black/30 rounded text-xs">
             ${mgr ? mgr.displayName : p.managerId} — ₦${Math.abs(p.amount)} • ${p.note}<br>
-            <button onclick="confirmManualPayout('${p.managerId}', ${Math.abs(p.amount)})" class="mt-1 px-2 py-0.5 bg-[#ff9900] text-black text-[10px] rounded">CONFIRM & UPDATE LEDGER</button>
+            <button onclick="confirmManualPayout('${p.managerId}', ${Math.abs(p.amount)})" class="mt-1 px-2 py-0.5 bg-[#ff9900] text-black text-[10px] rounded">CONFIRM MANUAL (update ledger, no double debit)</button>
           </div>`;
       });
     } else {
-      pendingHtml += '<div class="text-[#666] text-xs">No pending requests.</div>';
+      pendingHtml += '<div class="text-[#666] text-xs">No auto-failed pending requests. Successful autos appear in the Recent Payouts box above.</div>';
     }
     pendingWrap.innerHTML = pendingHtml;
     panel.appendChild(pendingWrap);
@@ -869,7 +897,7 @@ async function submitManualCredit() {
 }
 
 async function confirmManualPayout(managerId, amount) {
-  if (!confirm(`Confirm manual payout of ₦${amount} to this manager? This marks the request complete (no double debit).`)) return;
+  if (!confirm(`Confirm MANUAL payout (fallback after auto failed) of ₦${amount}? This just marks the prior request complete in ledger (no double debit).`)) return;
   try {
     const res = await fetchJSON('/api/admin/confirm-payout', {
       method: 'POST',
@@ -1833,7 +1861,7 @@ async function requestPayout() {
     alert('Invalid amount.');
     return;
   }
-  if (!confirm(`Request ₦${amount} to your bank? This will trigger Paystack transfer from league balance.`)) return;
+  if (!confirm(`Request ₦${amount} to your bank? (DEFAULT: auto Paystack transfer from league balance. If it fails, admin will handle manually as fallback.)`)) return;
 
   try {
     const res = await fetchJSON('/api/wallet/request-payout', {
@@ -2022,7 +2050,7 @@ async function submitBankForm(ev, type) {
       method: 'POST',
       body: JSON.stringify({ payoutDetails: details })
     });
-    alert('Bank details saved. Paystack will use these for automatic transfers and settlements.');
+    alert('Bank details saved. Auto Paystack payouts enabled for wallet requests and settlements.');
     currentManager.payoutDetails = details;
     closeBankModal();
 

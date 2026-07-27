@@ -2456,8 +2456,9 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
   });
 });
 
-// Admin confirms a manual payout request (no double debit — just marks the pending request as completed).
-// This is the "best alternative" for full admin control over actual bank transfers.
+// Admin confirms manual payout (fallback ONLY when auto Paystack failed).
+// Finds the original request entry (which already debited) and flips its type/note.
+// Never double-debits. Successes from auto are already recorded as payout_completed.
 app.post("/api/admin/confirm-payout", async (req, res) => {
   if (!DEMO_MODE) {
     const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
@@ -2481,30 +2482,33 @@ app.post("/api/admin/confirm-payout", async (req, res) => {
   if (!managerId || !amount) return res.status(400).json({ error: "managerId and amount required" });
 
   const s = await loadStore();
-  // Find the most recent payout_requested for this manager with matching amount
-  const pending = (s.ledger || []).slice().reverse().find(l =>
-    l.type === "payout_requested" &&
+  const amt = Number(amount);
+  // Find most recent payout request/pending/completed for this manager+amount (reverse for newest)
+  // IMPORTANT: never add a second negative debit here — the original request already debited the wallet.
+  const payoutEntry = (s.ledger || []).slice().reverse().find(l =>
     l.managerId === managerId &&
-    Math.abs(l.amount) === Number(amount)
+    Math.abs(l.amount || 0) === amt &&
+    (l.type === "payout_requested" || l.type === "payout_completed" || l.type === "payout_confirmed")
   );
 
-  if (pending) {
-    pending.note = `Payout confirmed by admin — manual bank transfer completed.`;
-    pending.type = "payout_confirmed";
-    pending.confirmedAt = nowISO();
+  if (payoutEntry) {
+    payoutEntry.note = `Payout confirmed by admin — manual bank transfer completed.`;
+    payoutEntry.type = "payout_confirmed";
+    payoutEntry.confirmedAt = nowISO();
   } else {
-    // Fallback: just add a note entry
+    // No matching debit entry found — do NOT create a new negative (would double-debit).
+    // Record a zero-amount confirmation note only for audit.
     s.ledger.push({
       id: generateId("ldg"),
       type: "payout_confirmed",
       managerId,
-      amount: -Number(amount),
-      note: `Payout confirmed by admin — manual bank transfer completed.`,
+      amount: 0,
+      note: `Admin manual payout confirmed (no prior request entry) — external transfer of ₦${amt} recorded for audit.`,
       at: nowISO()
     });
   }
 
-  await logEvent("payout_confirmed_manual", { managerId, amount });
+  await logEvent("payout_confirmed_manual", { managerId, amount: amt });
   writeAtomicSidecar(s);
   writeAtomicCollection('ledger', s.ledger);
   await persistStore();
@@ -2512,11 +2516,11 @@ app.post("/api/admin/confirm-payout", async (req, res) => {
   // Notify the manager
   const mgr = s.managers.find(m => m.id === managerId);
   if (mgr && mgr.email) {
-    const mgrText = `Your payout request for ₦${amount} has been confirmed by admin. The manual bank transfer has been processed. Check your ledger.`;
+    const mgrText = `Your payout request for ₦${amount} has been confirmed by admin (after auto Paystack attempt failed). The manual bank transfer has been processed. Check your ledger.`;
     await sendEmail(mgr.email, `D League Payout Confirmed - ₦${amount}`, mgrText);
   }
 
-  res.json({ ok: true, message: "Payout request marked confirmed. Ledger updated. Manager notified. No additional debit." });
+  res.json({ ok: true, message: "Manual payout confirmed (fallback path). Ledger entry updated (no double debit). Manager notified by email." });
 });
 
 // Admin cancel challenge
@@ -2717,28 +2721,57 @@ app.post("/api/wallet/request-payout", async (req, res) => {
   if (payoutAmount <= 0) return res.status(400).json({ error: "Invalid amount or insufficient balance" });
   if (!mgr.payoutDetails) return res.status(400).json({ error: "No bank details saved. Update profile first." });
 
-  // Record request (manual by default for admin control)
+  // DEFAULT: Attempt auto Paystack payout
+  const transferResult = await initiateTransfer(mgr.id, payoutAmount, "Wallet withdrawal");
+
   const s = await loadStore();
+  let entryType = "payout_requested";
+  let note = `Payout to bank requested`;
+
+  // Determine real outcome: Paystack /transfer returns {status: true, data: {status: 'success'|'pending'|'failed', ...}}
+  // Treat 'success' or initial 'pending' (queued from our balance) as initiated-ok for auto-complete record.
+  // Only failures (explicit error, !status, or data.status==='failed') go to manual fallback path.
+  let autoSucceeded = false;
+  if (transferResult && transferResult.success) {
+    const d = transferResult.data || {};
+    const ps = (d.status || '').toLowerCase();
+    if (ps === 'success' || ps === 'pending' || ps === '') {
+      autoSucceeded = true;
+    }
+  }
+
+  if (autoSucceeded) {
+    entryType = "payout_completed";
+    note = `Auto Paystack payout to bank successful`;
+  } else {
+    note = `Auto Paystack payout FAILED or pending. Admin notified for manual handling.`;
+    // Notify admin only on failure/pending
+    const adminText = `PAYOUT AUTO FAILED (manual is fallback option only)\n\nManager: ${mgr.displayName} (${mgr.email})\nAmount: ₦${payoutAmount}\nBank details: ${mgr.payoutDetails || 'not set'}\n\nTransfer result: ${JSON.stringify(transferResult)}\n\nOpen admin cockpit → see in RECENT PAYOUTS + PENDING box. Do real bank transfer (or Paystack manual), then click CONFIRM MANUAL to flip the ledger entry (no double debit). Success autos are already recorded as payout_completed.`;
+    await sendEmail(ADMIN_EMAIL, `D League Payout AUTO FAILED: ${mgr.displayName} - ₦${payoutAmount}`, adminText);
+  }
+
   s.ledger.push({
     id: generateId("ldg"),
-    type: "payout_requested",
+    type: entryType,
     managerId: mgr.id,
     amount: -payoutAmount,
-    note: `Payout requested to saved bank details. Awaiting admin confirmation.`,
+    note,
     at: nowISO(),
-    payoutDetails: mgr.payoutDetails
+    payoutDetails: mgr.payoutDetails,
+    transferResult
   });
   await persistStore();
 
-  // Notify admin via email (best alternative for manual control)
-  const adminText = `PAYOUT REQUEST\n\nManager: ${mgr.displayName} (${mgr.email})\nAmount: ₦${payoutAmount}\nBank details: ${mgr.payoutDetails || 'not set'}\n\nUse admin cockpit to confirm and update ledger (or initiate manual Paystack transfer).\nLedger entry ID will be in events.`;
-  await sendEmail(ADMIN_EMAIL, `D League Payout Request: ${mgr.displayName} - ₦${payoutAmount}`, adminText);
+  const message = autoSucceeded
+    ? "Payout requested and auto-completed via Paystack. Check your bank and ledger."
+    : "Payout requested. Auto attempt failed — admin has been notified and can handle manually.";
 
   res.json({ 
     ok: true, 
     requested: payoutAmount, 
     newBalance: getWalletBalance(mgr.id), 
-    message: "Payout requested. Admin notified via email. They will confirm and update ledger (or handle manually outside Paystack). Check your ledger for the request entry. Bank transfer done manually by admin."
+    transfer: transferResult,
+    message
   });
 });
 
@@ -3358,8 +3391,8 @@ app.get("/api/admin/overview", async (req, res) => {
   const paidFpl = getEligibleManagers("fpl").length;
   const paidUcl = getEligibleManagers("ucl").length;
 
-  const recentLedger = (s.ledger || []).slice(0, 30);
-  const recentEvents = (s.events || []).slice(0, 50); // more for admin cockpit history
+  const recentLedger = (s.ledger || []).slice(-30);
+  const recentEvents = (s.events || []).slice(-50); // more for admin cockpit history
   const allChallenges = (s.challenges || []);
   const sponsorships = (s.sponsorships || []);
   const totalHouseCommission = (s.ledger || []).filter(l => l.type === "house_commission").reduce((sum, l) => sum + Math.abs(l.amount || 0), 0);
