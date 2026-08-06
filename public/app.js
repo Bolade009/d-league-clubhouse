@@ -677,6 +677,7 @@ async function loadAdminOverview() {
           <div class="mt-1 text-[#888]">Last: ${pstatus.sidecarLastPersisted || 'unknown'}</div>
           <button onclick="reconcileAndPersist()" class="mt-2 px-3 py-1 bg-[#ffcc00] text-black rounded text-xs font-bold">FORCE RECONCILE (rarely needed)</button>
           <button onclick="restoreFromExportPrompt()" class="mt-2 ml-2 px-3 py-1 bg-blue-600 text-white rounded text-xs font-bold">RESTORE FROM MY PREVIOUS EXPORT JSON</button>
+          <button onclick="restoreFromBestBackup()" class="mt-2 ml-2 px-3 py-1 bg-emerald-600 text-white rounded text-xs font-bold">RESTORE FROM BEST BACKUP ON DISK (no paste)</button>
 
           <div class="mt-3 pt-2 border-t border-[#333]">
             <div class="font-bold text-[#00ff85] mb-1">🛡️ FREE TIER SLEEP PREVENTION (set & forget, no manual after)</div>
@@ -869,6 +870,17 @@ async function restoreFromExportPrompt() {
     loadAdminOverview();
   } catch (e) {
     alert('Restore failed: ' + (e.message || e) + '\nMake sure you pasted the entire valid JSON from your previous good export.');
+  }
+}
+
+async function restoreFromBestBackup() {
+  if (!confirm('Restore the richest backup snapshot currently on disk (managers + ledger + beefs + awards + everything)? This is safe and fast - no JSON paste needed.')) return;
+  try {
+    const res = await fetchJSON('/api/admin/restore-from-best-backup', { method: 'POST' });
+    alert(res.message || 'Restored from best on-disk backup.');
+    loadAdminOverview();
+  } catch (e) {
+    alert('Best backup restore failed: ' + (e.message || e) + '\n(You may need to use the full export JSON instead, or check logs.)');
   }
 }
 
@@ -1459,7 +1471,10 @@ function renderChallengeArena() {
   playerChallenges.forEach((ch, i) => {
     const d = document.createElement('div');
     d.className = 'p-2 bg-[#111] border border-[#333] rounded text-xs';
-    d.innerHTML = `${ch.proposer} vs ${ch.opponent}: "${ch.category}" - ₦${ch.stake} (10% house)<br>Status: ${ch.status}`;
+    const waText = `D League Beef: ${ch.proposer} vs ${ch.opponent} for "${ch.category}" ₦${ch.stake}. Check Clubhouse: ${location.origin}`;
+    const safeShare = encodeURIComponent(waText);
+    d.innerHTML = `${ch.proposer} vs ${ch.opponent}: "${ch.category}" - ₦${ch.stake} (10% house)<br>Status: ${ch.status}
+      <button onclick="showWhatsAppShare(decodeURIComponent('${safeShare}'), 'Share beef'); event.stopImmediatePropagation();" class="text-[10px] ml-1 px-1 border border-[#333] rounded">Share WA</button>`;
     if (ch.status === 'proposed') {
       const btn = document.createElement('button');
       btn.textContent = 'Accept & Pay Stake';
@@ -1515,13 +1530,35 @@ function showChallengeModal() {
 
 function acceptChallenge(i) {
   const ch = playerChallenges[i];
+  if (ch.status !== 'proposed') return;
   const paid = tryPayWithWallet(ch.stake, 'accepting beef/challenge');
-  ch.status = 'accepted';
-  savePlayerChallenges();
+  if (ch.serverId) {
+    fetchJSON('/api/beef/accept', {
+      method: 'POST',
+      body: JSON.stringify({ beefId: ch.serverId })
+    }).then(res => {
+      if (res && res.beef) ch.status = res.beef.status || 'accepted';
+      savePlayerChallenges();
+      renderChallengeArena();
+    }).catch(e => {
+      console.warn('Server beef accept failed', e);
+      ch.status = 'accepted';
+      savePlayerChallenges();
+      renderChallengeArena();
+    });
+  } else {
+    ch.status = 'accepted';
+    savePlayerChallenges();
+    renderChallengeArena();
+  }
   const payMsg = paid ? 'Your stake paid from wallet.' : 'Insufficient wallet balance - use Paystack.';
-  // In real: call initiate for stake for both (wallet or Paystack)
+  if (!paid && ch.serverId) {
+    // trigger Paystack funding for the beef stake
+    initiatePayment(null, null, { beefId: ch.serverId, amount: ch.stake });
+  } else if (!paid) {
+    alert('No wallet balance. Contact admin to fund the stake via Paystack.');
+  }
   alert(`Accepted! ${payMsg} Both stakes secured. 10% house on settlement.`);
-  renderChallengeArena();
 }
 
 function renderSponsoredAwards() {
@@ -1535,7 +1572,11 @@ function renderSponsoredAwards() {
   let total = 0;
   let html = spons.map(sp => {
     total += sp.amount || 0;
-    return `<div>🏆 ${sp.target} - Sponsored by ${sp.sponsor} +₦${sp.amount}</div>`;
+    const shareText = `D League: ${sp.sponsor} sponsored ${sp.target} for ₦${sp.amount}! Contribute at ${location.origin}`;
+    const safeShare = encodeURIComponent(shareText);
+    return `<div class="flex justify-between items-center">🏆 ${sp.target} - Sponsored by ${sp.sponsor} +₦${sp.amount} 
+      <button onclick="showWhatsAppShare(decodeURIComponent('${safeShare}'), 'Share this award'); event.stopImmediatePropagation();" class="text-[10px] px-1 border border-[#333] rounded">Share WA</button>
+    </div>`;
   }).join('');
   html += `<div class="text-xs">Total sponsored this season: ₦${total}</div>`;
   wrap.innerHTML = html;
@@ -1652,10 +1693,8 @@ async function initiateSponsorPayment(sponsorName, award, amount) {
       });
       renderSponsoredAwards();
       alert('Sponsor added from wallet balance.');
-      const waText = `D League Sponsorship: ${sponsorName} just sponsored ${award.name} for ₦${amount}! Boosting the pot. ${location.origin}`;
-      if (confirm('Share this sponsorship via WhatsApp?')) {
-        window.open(`https://wa.me/?text=${encodeURIComponent(waText)}`, '_blank');
-      }
+      const waText = `D League Award Sponsored! ${sponsorName} sponsored ${award.name} for ₦${amount}. Boost the pot too or check it out: ${location.origin}`;
+      showWhatsAppShare(waText, 'Share this sponsorship (invite others to contribute)');
       return;
     }
     // Paystack path - will trigger confirmation and add on success
@@ -2082,14 +2121,14 @@ function showUpdateBankModal() {
   showBankModal();
 }
 
-async function initiatePayment(comp, sponsorOpts) {
+async function initiatePayment(comp, sponsorOpts, beefOpts) {
   if (!currentManager) return alert('Log in first');
 
   const btnText = comp === 'fpl' ? 'FPL Season' : 'UCL Season';
-  const body = { managerId: currentManager.id, competition: comp };
-  if (sponsorOpts) {
-    body.sponsor = sponsorOpts;
-  }
+  const body = { managerId: currentManager.id };
+  if (comp) body.competition = comp;
+  if (sponsorOpts) body.sponsor = sponsorOpts;
+  if (beefOpts) body.beef = beefOpts;
   try {
     const res = await fetchJSON('/api/payments/initiate', {
       method: 'POST',
@@ -2130,10 +2169,11 @@ function loadPaystackScript() {
 async function handlePaystackInline(res, comp) {
   try {
     await loadPaystackScript();
+    const amountKobo = res.amount ? res.amount * 100 : (comp === 'fpl' ? 30000 : 15000) * 100;
     const handler = PaystackPop.setup({
       key: window.__PAYSTACK_KEY__ || 'pk_test_demo',
       email: currentManager.email || 'manager@example.com',
-      amount: (comp === 'fpl' ? 20000 : 10000) * 100,
+      amount: amountKobo,
       ref: res.reference,
       callback: function (response) {
         simulatePaymentSuccess(res.reference);
@@ -2158,7 +2198,7 @@ function showPaymentModal(reference, comp, isDemo) {
       </div>
       <div class="bg-[#111] border border-[#333] rounded-2xl p-4 text-sm">
         <div>Reference: <span class="font-mono">${reference}</span></div>
-        <div>Amount: <span class="font-bold">${comp === 'fpl' ? '₦35,000' : '₦20,000'}</span></div>
+        <div>Amount: <span class="font-bold">${comp === 'fpl' ? '₦30,000' : comp === 'ucl' ? '₦15,000' : 'As specified'}</span></div>
         <div class="text-xs mt-2 text-[#888]">This is the full season fee. No installments.</div>
       </div>
 
@@ -2217,6 +2257,27 @@ async function generateWhatsAppSummary() {
 
   const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
   window.open(url, '_blank');
+}
+
+function showWhatsAppShare(waText, label = 'Share on WhatsApp') {
+  // Remove any existing share bar
+  const old = document.getElementById('whatsapp-share-bar');
+  if (old) old.remove();
+
+  const encoded = encodeURIComponent(waText);
+  const bar = document.createElement('div');
+  bar.id = 'whatsapp-share-bar';
+  bar.className = 'fixed bottom-4 left-1/2 -translate-x-1/2 bg-[#111] border border-[#00ff85] p-3 rounded-2xl z-[200] text-xs max-w-md shadow-lg';
+  bar.innerHTML = `
+    <div class="font-semibold mb-1">${label}</div>
+    <div class="flex gap-2 flex-wrap">
+      <button onclick="navigator.clipboard.writeText(decodeURIComponent('${encoded}')).then(()=>alert('Copied to clipboard! Paste in WhatsApp.')).catch(()=>{}); " class="px-3 py-1 bg-[#00ff85] text-black rounded">Copy text</button>
+      <button onclick="window.open('https://wa.me/?text=${encoded}', '_blank'); document.getElementById('whatsapp-share-bar').remove();" class="px-3 py-1 bg-[#00ff85] text-black rounded">Open WhatsApp</button>
+      <button onclick="document.getElementById('whatsapp-share-bar').remove()" class="px-3 py-1 border border-[#333] rounded">Close</button>
+    </div>
+    <div class="text-[10px] text-[#666] mt-1">This bar stays until closed. Share the link so others can contribute to the award or join similar beefs!</div>
+  `;
+  document.body.appendChild(bar);
 }
 
 function showLedgerModal() {
@@ -2580,12 +2641,10 @@ function showBeefModal() {
     renderChallengeArena();
     alert(`Proposed to ${selectedIds.length} managers. ${paid ? 'Deducted total from wallet.' : 'Will pay via Paystack on accepts.'}`);
 
-    // WhatsApp share enabled - generate share text for the group or opponents
+    // WhatsApp share - persistent bar so it stays on screen, with link for others to participate
     const catName = BEEF_PRESETS.find(b => b.id === catId)?.name || catId;
-    const waText = `D League Beef: ${currentManager.displayName} challenges ${selectedIds.map(id => paidFpl.find(m=>m.id===id)?.displayName).join(', ')} to "${catName}" for ₦${stake} each. Check Clubhouse to accept! ${location.origin}`;
-    if (confirm('Share this beef challenge via WhatsApp?')) {
-      window.open(`https://wa.me/?text=${encodeURIComponent(waText)}`, '_blank');
-    }
+    const waText = `D League Beef: ${currentManager.displayName} challenges ${selectedIds.map(id => paidFpl.find(m=>m.id===id)?.displayName || 'someone').join(', ')} to "${catName}" for ₦${stake} each. Check Clubhouse to accept or propose your own beef! ${location.origin}`;
+    showWhatsAppShare(waText, 'Share this beef (invite more participants)');
   };
 }
 
@@ -2738,8 +2797,8 @@ async function submitJoinForm(ev) {
   const email = $('join-email').value.trim();
   const fplClub = $('join-club').value.trim();
   const fplId = $('join-fplid').value.trim();
-  if (!name || !email || !fplClub || !fplId) {
-    alert('All fields including FPL ID required.');
+  if (!name || !email || !fplClub) {
+    alert('Name, email and FPL Club Name are required.');
     return;
   }
   try {
@@ -2750,7 +2809,7 @@ async function submitJoinForm(ev) {
         name, 
         email, 
         fplClubName: fplClub, 
-        fplId: fplId,
+        fplId: fplId || '',
         fplLeagueJoined: true, 
         message: 'Requested via form' 
       })

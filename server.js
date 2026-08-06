@@ -866,6 +866,13 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
       existing.confirmedAt = nowISO();
       existing.paystackData = paystackData;
     }
+    if (existing.type === 'beef_stake' && existing.beefId) {
+      const beef = (s.beefs || []).find(b => b.id === existing.beefId);
+      if (beef) {
+        beef.stakePaid = true;
+        beef.stakePaymentRef = reference;
+      }
+    }
     await persistStore();
     return existing;
   }
@@ -881,6 +888,14 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
     paystackData
   };
   s.payments.push(payment);
+
+  if (payment.type === 'beef_stake' && payment.beefId) {
+    const beef = (s.beefs || []).find(b => b.id === payment.beefId);
+    if (beef) {
+      beef.stakePaid = true;
+      beef.stakePaymentRef = reference || payment.reference;
+    }
+  }
 
   if (payment.type === 'sponsor' && payment.sponsorTarget) {
     s.sponsorships = s.sponsorships || [];
@@ -2387,6 +2402,21 @@ app.post("/api/admin/restore-from-best-backup", async (req, res) => {
 
   const before = (getStore().managers || []).length;
   storeCache = best;
+
+  // Write full atomics + sidecar for strong post-restore durability
+  writeAtomicSidecar(best);
+  writeAtomicCollection('managers', best.managers || []);
+  writeAtomicCollection('payments', best.payments || []);
+  writeAtomicCollection('ledger', best.ledger || []);
+  writeAtomicCollection('beefs', best.beefs || []);
+  writeAtomicCollection('sponsorships', best.sponsorships || []);
+  writeAtomicCollection('challenges', best.challenges || []);
+  writeAtomicCollection('scores', best.scores || []);
+  writeAtomicCollection('h2h', best.h2h || []);
+  writeAtomicCollection('events', best.events || []);
+  if (best.cup) writeAtomicCollection('cup', best.cup);
+  if (best.settings) writeAtomicCollection('settings', best.settings);
+
   await persistStore();
   const after = (getStore().managers || []).length;
 
@@ -2397,7 +2427,7 @@ app.post("/api/admin/restore-from-best-backup", async (req, res) => {
     ok: true,
     before,
     after,
-    message: `Restored from best backup. Managers: ${before} -> ${after}. All real profiles (names, codes, FPL IDs) should now be present.`
+    message: `Restored from best backup on disk. Managers: ${before} -> ${after}. Full data (managers/ledger/beefs/awards/scores/etc) promoted.`
   });
 });
 
@@ -2430,7 +2460,7 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
 
   const before = (getStore().managers || []).length;
 
-  // Promote this as the new truth
+  // Promote this as the new truth - write rich atomics for best recovery on next boots
   writeAtomicSidecar(data);
   writeAtomicCollection('managers', data.managers || []);
   writeAtomicCollection('payments', data.payments || []);
@@ -2439,6 +2469,10 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
   writeAtomicCollection('sponsorships', data.sponsorships || []);
   writeAtomicCollection('challenges', data.challenges || []);
   writeAtomicCollection('complaints', data.complaints || []);
+  writeAtomicCollection('scores', data.scores || []);
+  writeAtomicCollection('h2h', data.h2h || []);
+  writeAtomicCollection('events', data.events || []);
+  if (data.cup) writeAtomicCollection('cup', data.cup);
   if (data.settings) writeAtomicCollection('settings', data.settings);
 
   storeCache = data;
@@ -2452,7 +2486,7 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
     ok: true,
     before,
     after,
-    message: `Restored from your export JSON. Managers: ${before} -> ${after}. Sidecars updated. Redeploy or restart to fully apply if needed.`
+    message: `Restored from your export JSON. Managers: ${before} -> ${after}. Full data (managers + ledger + beefs + sponsorships/awards + scores + challenges + events + settings) written to atomics/sidecar/DB. Use the new state immediately; future boots will prefer it.`
   });
 });
 
@@ -2856,6 +2890,11 @@ app.post("/api/sponsor", async (req, res) => {
   const text = `Thank you! Your sponsorship of ₦${amount} for "${target}" has been recorded.\n\nIt will boost the pot for the award winner. Check the app for updates.`;
   await sendEmail(mgr.email, 'Sponsorship Confirmed - D League', text);
 
+  // Notify admin
+  if (ADMIN_EMAIL && ADMIN_EMAIL !== mgr.email) {
+    await sendEmail(ADMIN_EMAIL, `New Sponsorship: ${target}`, `Sponsor: ${mgr.displayName} (${mgr.email})\nAmount: ₦${amount}\nTarget: ${target}`);
+  }
+
   res.json({ ok: true });
 });
 
@@ -2926,6 +2965,11 @@ app.post("/api/beef/propose", async (req, res) => {
   // Confirm to proposer
   const textProposer = `Your beef challenge to ${beef.opponentIds.length} manager(s) for "${beef.category}" (₦${beef.stake}) has been recorded. Opponents notified via email if configured.`;
   await sendEmail(mgr.email, 'Beef Proposed - D League', textProposer);
+
+  // Also notify admin for visibility
+  if (ADMIN_EMAIL) {
+    await sendEmail(ADMIN_EMAIL, `New Beef Proposed: ${beef.category}`, `Proposer: ${mgr.displayName} (${mgr.email})\nOpponents: ${beef.opponentIds.length}\nStake: ₦${beef.stake}\nCategory: ${beef.category}`);
+  }
 
   res.json({ ok: true, beef });
 });
@@ -3139,6 +3183,41 @@ app.post("/api/payments/initiate", async (req, res) => {
     return res.json({
       reference,
       amount: sAmount,
+      authorizationUrl: initRes.authorization_url,
+      accessCode: initRes.access_code
+    });
+  }
+
+  if (req.body.beef) {
+    const { beefId, amount: bAmount } = req.body.beef;
+    if (!beefId || !bAmount || bAmount <= 0) return res.status(400).json({ error: "Invalid beef stake data" });
+    const reference = `BEEF-${Date.now()}-${mgr.id.slice(-6)}`;
+    s.payments.push({
+      id: generateId("pay"),
+      managerId: mgr.id,
+      type: 'beef_stake',
+      beefId,
+      amount: bAmount,
+      reference,
+      status: "pending",
+      initiatedAt: nowISO()
+    });
+    await persistStore();
+
+    if (DEMO_MODE || !PAYSTACK_PUBLIC) {
+      return res.json({
+        demo: true,
+        reference,
+        amount: bAmount,
+        authorizationUrl: null,
+        message: "Demo beef stake payment. Use simulate after."
+      });
+    }
+
+    const initRes = await fetchPaystackInit(reference, bAmount, mgr, 'beef');
+    return res.json({
+      reference,
+      amount: bAmount,
       authorizationUrl: initRes.authorization_url,
       accessCode: initRes.access_code
     });
