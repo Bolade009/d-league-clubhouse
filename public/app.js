@@ -357,6 +357,7 @@ async function loadAllData() {
   renderProjectionsLive();
   renderChallengeArena();
   showPendingBeefsBanner();
+  renderTopPotsAndActions();
   renderSponsoredAwards();
   renderLineupViewer();
 
@@ -394,50 +395,77 @@ function renderTopPotsAndActions() {
 
   const proj = window.lastProjections || {};
   const fpl = proj.fpl || {};
-  const h2h = proj.h2hOverallPot || 0;
-  const overall = fpl.overallWinnerPot || 0;
-  const cup = fpl.cupWinnerPot || 0;
+  const h2h = fpl.h2hOverallPot || 0;           // extra 1000 per manager only
+  const overall = fpl.overallWinnerPot || 0;    // 75% of weekly 10% reserves
+  const cup = fpl.cupWinnerPot || 0;            // 25% of weekly 10% reserves
   const weekly = fpl.weeklyPot90 || 0;
-  const reserve = fpl.seasonReserve || 0;
+  const reserve = fpl.seasonReserveBoost || 0;  // from 10% beef/sponsor cuts for end awards
 
   container.innerHTML = `
     <div class="mt-4 p-4 bg-[#0a0a0a] border border-[#00ff85] rounded-3xl">
-      <div class="font-black text-lg mb-2 text-[#00ff85]">💰 GROW THE POTS & WIN BIG – 10% HOUSE KEEPS THE LEAGUE ALIVE</div>
+      <div class="font-black text-lg mb-2 text-[#00ff85]">💰 THE POTS – GROW THEM BY PLAYING BEEFS & SPONSORING</div>
+      <div class="text-[10px] mb-2 text-[#888]">₦1,000 extra each manager pays = H2H pot only. ₦500/week into pot: 90% this week's winner(s), 10% → 75% overall league / 25% cup at season end. 10% cuts on beefs + sponsored awards → season reserve boost (split equally across 3 group-chosen end awards).</div>
       <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
         <div class="bg-black p-3 rounded-2xl border border-[#333]">
-          <div class="text-xs text-[#888]">THIS WEEK'S POT</div>
+          <div class="text-xs text-[#888]">THIS WEEK'S POT (90% to winner)</div>
           <div class="text-2xl font-black text-[#00ff85]">₦${weekly.toLocaleString()}</div>
-          <div class="text-[10px]">90% paid to the winner(s)</div>
+          <div class="text-[10px]">Current week only</div>
         </div>
         <div class="bg-black p-3 rounded-2xl border border-[#333]">
-          <div class="text-xs text-[#888]">H2H SEASON POT (building)</div>
+          <div class="text-xs text-[#888]">H2H SEASON POT</div>
           <div class="text-2xl font-black">₦${h2h.toLocaleString()}</div>
-          <div class="text-[10px]">Ultimate head-to-head champ takes it all</div>
+          <div class="text-[10px]">The extra ₦1,000 per manager ONLY</div>
         </div>
         <div class="bg-black p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">OVERALL LEAGUE WINNER</div>
           <div class="text-2xl font-black">₦${overall.toLocaleString()}</div>
-          <div class="text-[10px]">Best total points all season</div>
+          <div class="text-[10px]">75% of weekly 10% reserves (all season)</div>
         </div>
         <div class="bg-black p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">CUP WINNER POT</div>
           <div class="text-2xl font-black">₦${cup.toLocaleString()}</div>
-          <div class="text-[10px]">Knockout style glory</div>
+          <div class="text-[10px]">25% of weekly 10% reserves (all season)</div>
         </div>
         <div class="bg-black p-3 rounded-2xl border border-[#333]">
-          <div class="text-xs text-[#888]">SEASON RESERVE BOOST</div>
+          <div class="text-xs text-[#888]">SEASON RESERVE BOOST (for 3 awards)</div>
           <div class="text-2xl font-black">₦${reserve.toLocaleString()}</div>
-          <div class="text-[10px]">Extra firepower for top dogs</div>
+          <div class="text-[10px]">10% cuts from beefs + sponsored awards</div>
         </div>
       </div>
-      <div class="mt-3 text-xs text-[#00ff85]">Beefs & sponsored awards add to these pots. 10% house cut. Start a beef or sponsor now – the more action, the bigger the money!</div>
+      <div class="mt-3 text-xs text-[#00ff85]">Beefs & sponsored awards feed the reserve boost. Managers can boost any pot below (100% added). When group picks the 3 awards, the boost revenue splits equally across them.</div>
 
       <div class="mt-2 text-[10px]">
-        <span class="font-semibold">Top Sponsored:</span> 
-        <span id="top-spon-inline">Check awards section or be first to sponsor!</span>
+        <span class="font-semibold">Active Sponsored:</span> 
+        <span id="top-spon-inline">See awards section or sponsor to boost a pot!</span>
       </div>
+
+      <div class="mt-3 grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+        <button onclick="boostPot('weekly')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost this week's</button>
+        <button onclick="boostPot('h2h')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost H2H</button>
+        <button onclick="boostPot('overall')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost Overall</button>
+        <button onclick="boostPot('cup')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost Cup</button>
+        <button onclick="boostPot('reserve')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost Reserve</button>
+      </div>
+
+      <div id="pot-boosts-list" class="mt-3 text-[11px] text-[#aaa] max-h-24 overflow-auto"></div>
     </div>
   `;
+
+  // Render recent boosts with names
+  const boostsWrap = document.getElementById('pot-boosts-list');
+  if (boostsWrap && standingsData && Array.isArray(standingsData.potBoosts)) {
+    const recent = [...standingsData.potBoosts].slice(-8).reverse();
+    if (recent.length) {
+      boostsWrap.innerHTML = '<div class="font-semibold text-[#00ff85] mb-0.5">Recent pot boosts:</div>' +
+        recent.map(b => {
+          const namePart = b.clubName ? `${b.managerName} of ${b.clubName}` : b.managerName;
+          const t = b.target === 'weekly' ? "this week's pot" : (b.target === 'h2h' ? 'H2H pot' : (b.target === 'overall' ? 'overall pot' : (b.target === 'cup' ? 'cup pot' : 'reserve boost')));
+          return `<div>${namePart} added ₦${(b.amount||b.boostAmount||0).toLocaleString()} to ${t}</div>`;
+        }).join('');
+    } else {
+      boostsWrap.innerHTML = '<div class="text-[10px]">No boosts yet — be the first to top one up!</div>';
+    }
+  }
 }
 
 function createPotsContainer() {
@@ -585,7 +613,7 @@ async function loadAdminOverview() {
 
     // Nice stats cards
     const statsHtml = `
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
         <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">TOTAL MANAGERS</div>
           <div class="text-2xl font-black">${data.totalManagers}</div>
@@ -599,8 +627,12 @@ async function loadAdminOverview() {
           <div class="text-2xl font-black">${data.totalPaymentsConfirmed}</div>
         </div>
         <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
-          <div class="text-xs text-[#888]">HOUSE COMMISSION</div>
+          <div class="text-xs text-[#888]">HOUSE COMMISSION (10% side)</div>
           <div class="text-2xl font-black">₦${data.totalHouseCommission || 0}</div>
+        </div>
+        <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
+          <div class="text-xs text-[#888]">SERVICE FEES (5k/2.5k, admin only)</div>
+          <div class="text-2xl font-black">FPL ₦${(data.serviceFees && data.serviceFees.fpl) || 0} / UCL ₦${(data.serviceFees && data.serviceFees.ucl) || 0}</div>
         </div>
       </div>
     `;
@@ -645,7 +677,7 @@ async function loadAdminOverview() {
       </div>
 
       <!-- Stats Dashboard -->
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
         <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
           <div class="text-xs uppercase tracking-widest text-[#888]">MANAGERS</div>
           <div class="text-5xl font-black mt-1">${data.totalManagers}</div>
@@ -657,9 +689,14 @@ async function loadAdminOverview() {
           <div class="text-sm mt-1">Confirmed</div>
         </div>
         <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
-          <div class="text-xs uppercase tracking-widest text-[#888]">HOUSE CUT</div>
+          <div class="text-xs uppercase tracking-widest text-[#888]">10% CUTS LOGGED</div>
           <div class="text-5xl font-black mt-1">₦${data.totalHouseCommission || 0}</div>
-          <div class="text-sm mt-1">Total commission collected</div>
+          <div class="text-sm mt-1">Beef/sponsor/challenges (boost vs house)</div>
+        </div>
+        <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
+          <div class="text-xs uppercase tracking-widest text-[#888]">SERVICE FEES (admin)</div>
+          <div class="text-3xl font-black mt-1">FPL: ₦${(data.serviceFees && data.serviceFees.fpl)||0}</div>
+          <div class="text-sm mt-1">₦5k per FPL paid • ₦2.5k UCL</div>
         </div>
         <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
           <div class="text-xs uppercase tracking-widest text-[#888]">SYNC</div>
@@ -1470,24 +1507,26 @@ async function loadProjections() {
   const proj = await fetchJSON('/api/payouts');
   window.lastProjections = proj;
   const wrap = $('payout-projections');
+  if (!wrap) return;
+  const f = proj.fpl || {};
   wrap.innerHTML = `
     <div>
       <div class="text-[#00ff85] text-xs">FPL WEEKLY 90%</div>
-      <div class="text-2xl font-black tabular-nums">₦${proj.fpl.weeklyPot90}</div>
+      <div class="text-2xl font-black tabular-nums">₦${f.weeklyPot90 || 0}</div>
       <div class="text-[10px] text-[#888]">Per round pot (paid managers)</div>
     </div>
     <div>
-      <div class="text-[#00ff85] text-xs">FPL SEASON RESERVE</div>
-      <div class="text-2xl font-black tabular-nums">₦${proj.fpl.seasonReserve}</div>
-      <div class="text-[10px] text-[#888]">League + Cup prizes</div>
+      <div class="text-[#00ff85] text-xs">OVERALL (75%)</div>
+      <div class="text-2xl font-black tabular-nums">₦${f.overallWinnerPot || 0}</div>
     </div>
     <div>
-      <div class="text-[#aaa] text-xs mt-2">UCL MD 90%</div>
-      <div class="text-2xl font-black tabular-nums">₦${proj.ucl.mdPot90}</div>
+      <div class="text-[#00ff85] text-xs">CUP (25%)</div>
+      <div class="text-2xl font-black tabular-nums">₦${f.cupWinnerPot || 0}</div>
     </div>
     <div>
-      <div class="text-[#aaa] text-xs mt-2">UCL PHASE RESERVE</div>
-      <div class="text-2xl font-black tabular-nums">₦${proj.ucl.phaseReserve}</div>
+      <div class="text-[#00ff85] text-xs">RESERVE BOOST</div>
+      <div class="text-xl font-black tabular-nums">₦${f.seasonReserveBoost || 0}</div>
+      <div class="text-[10px] text-[#888]">10% beef/sponsor (for 3 awards)</div>
     </div>
   `;
 }
@@ -1510,18 +1549,19 @@ function renderProjectionsLive() {
   const proj = window.lastProjections || {};
   if (fplWrap) {
     fplWrap.innerHTML = `
-      <div class="text-xs">Weekly Pot: <span class="font-bold text-[#00ff85]">₦${proj.fpl?.weeklyPot90 || 0}</span></div>
-      <div class="text-xs">Overall FPL winner pot: ₦${proj.seasonPots?.fplOverall || 0} (5% FPL revenue)</div>
-      <div class="text-xs">Cup winner pot: ₦${proj.seasonPots?.fplCup || 0} (2.5% FPL revenue)</div>
-      <div class="text-xs">Your proj vs avg: <span class="font-semibold">${Math.random() > 0.5 ? 'Above' : 'Below'} league avg</span></div>
-      <div class="text-[10px] text-[#00ff85] mt-1">Narrative: Your captain choice is projected +12 vs the average manager.</div>
+      <div class="text-xs">This week 90% pot: <span class="font-bold text-[#00ff85]">₦${proj.fpl?.weeklyPot90 || 0}</span></div>
+      <div class="text-xs">Overall winner: ₦${proj.fpl?.overallWinnerPot || 0} (75% of weekly 10% reserves)</div>
+      <div class="text-xs">Cup winner: ₦${proj.fpl?.cupWinnerPot || 0} (25% of weekly 10% reserves)</div>
+      <div class="text-xs">H2H season: ₦${proj.fpl?.h2hOverallPot || 0} (extra ₦1k per manager only)</div>
+      <div class="text-xs">Season reserve boost: ₦${proj.fpl?.seasonReserveBoost || 0} (10% beef/sponsor cuts → 3 awards)</div>
+      <div class="text-[10px] mt-1 text-[#888]">Beefs & sponsors grow the boost. 5k service fee is admin-only, hidden here.</div>
     `;
   }
   if (uclWrap) {
-    const uclNote = proj.ucl?.upcomingMatches ? ` • ${proj.ucl.upcomingMatches} real upcoming MDs` : '';
+    const uclNote = proj.ucl?.upcomingMatches ? ` • ${proj.ucl.upcomingMatches} upcoming` : '';
     uclWrap.innerHTML = `
-      <div class="text-xs">MD Pot: <span class="font-bold text-[#aaa]">₦${proj.ucl?.mdPot90 || 0}</span>${uclNote}</div>
-      <div class="text-xs text-[#aaa]">UCL overall pot: ₦${proj.seasonPots?.uclOverall || 0} (5% UCL revenue)</div>
+      <div class="text-xs">This MD 90% pot: <span class="font-bold text-[#aaa]">₦${proj.ucl?.mdPot90 || 0}</span>${uclNote}</div>
+      <div class="text-xs text-[#aaa]">UCL overall: ₦${proj.seasonPots?.uclOverall || 0}</div>
     `;
   }
 }
@@ -1548,7 +1588,7 @@ function renderChallengeArena() {
     const oppText = ch.opponent || (ch.participantNames || []).join(', ') || 'others';
     const statusText = ch.status === 'accepted' ? 'ongoing' : ch.status;
 
-    let html = `${proposerName} proposed a beef to ${oppText} for "${ch.category}" ₦${ch.stake} (10% house)<br>Status: ${statusText}`;
+    let html = `${proposerName} proposed a beef to ${oppText} for "${ch.category}" ₦${ch.stake} (10% to season awards boost)<br>Status: ${statusText}`;
 
     if (ch.status === 'accepted' || ch.status === 'proposed') {
       const gw = (standingsData && standingsData.currentRound && standingsData.currentRound.fpl) || '?';
@@ -1709,7 +1749,7 @@ function showChallengeModal() {
       </select>
       <input id="ch-stake" type="number" value="5000" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
       <button id="ch-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">PROPOSE (pay stake from wallet if balance, else Paystack)</button>
-      <div class="text-[10px] mt-1 text-[#888]">10% house commission on settlement for server & automated payout.</div>
+      <div class="text-[10px] mt-1 text-[#888]">10% of pot goes to season reserve boost for the 3 end awards (90% to winner).</div>
     </div>
   `;
   modal.classList.remove('hidden');
@@ -1724,7 +1764,7 @@ function showChallengeModal() {
     closeModal();
     renderChallengeArena();
     const payMsg = paidFromWallet ? 'Stake deducted from your wallet.' : 'No wallet balance - use Paystack to pay stake.';
-    alert(`Proposed! ${payMsg} Opponent accepts and pays stake (from wallet or Paystack). 10% house. Settlement after GW.`);
+    alert(`Proposed! ${payMsg} Opponent accepts and pays stake (from wallet or Paystack). 10% to season awards boost. Settlement after GW.`);
   };
 }
 
@@ -1758,7 +1798,7 @@ function acceptChallenge(i) {
   } else if (!paid) {
     alert('No wallet balance. Contact admin to fund the stake via Paystack.');
   }
-  alert(`Accepted! ${payMsg} Both stakes secured. 10% house on settlement.`);
+  alert(`Accepted! ${payMsg} Both stakes secured. 10% of pot to season reserve boost.`);
 }
 
 function renderSponsoredAwards() {
@@ -1813,7 +1853,7 @@ function showSquadModal() {
 }
 
 function showChallengeModal() {
-  alert('Challenge proposal: Select opponent, category, stake. Pay from wallet (winnings) if sufficient, else Paystack when accepted. 10% house.');
+  alert('Beef proposal: Select opponent(s), category, stake. Pay from wallet if sufficient, else Paystack on accept. 10% of total pot to season reserve boost for 3 awards.');
 }
 
 function showSponsorModal() {
@@ -1829,7 +1869,7 @@ function showSponsorModal() {
       </select>
       <input id="sp-amount" type="number" placeholder="Amount to sponsor (e.g. 10000)" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm" value="10000">
       <button id="sp-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">SPONSOR &amp; PAY (wallet if balance, else Paystack)</button>
-      <div class="text-[10px] mt-1">Pay immediately to activate the award pot. 10% house on payout. Uses winnings wallet if available.</div>
+      <div class="text-[10px] mt-1">Pay to activate. 10% of pot to season reserve boost (for the 3 end awards); 90% to winner(s).</div>
     </div>
   `;
   modal.classList.remove('hidden');
@@ -1902,6 +1942,42 @@ async function initiateSponsorPayment(sponsorName, award, amount) {
   } catch (e) {
     alert('Sponsor failed: ' + e.message);
   }
+}
+
+function boostPot(target) {
+  if (!currentManager) return alert('Log in first');
+  const labels = {
+    weekly: "this week's pot",
+    h2h: "H2H pot",
+    overall: "overall league pot",
+    cup: "cup pot",
+    reserve: "season reserve boost (for 3 awards)"
+  };
+  const label = labels[target] || target;
+  const amtStr = prompt(`Enter amount in ₦ to add to ${label} (e.g. 1000). 100% goes to the pot.`, '1000');
+  if (!amtStr) return;
+  const amount = parseInt(amtStr, 10);
+  if (!amount || amount <= 0) return alert('Invalid amount');
+
+  (async () => {
+    try {
+      // Support boosting from wallet winnings if sufficient (moves your winnings into the pot)
+      const paidWallet = tryPayWithWallet(amount, `boosting ${label}`);
+      if (paidWallet) {
+        // For wallet boosts, record directly via a lightweight call or payment flow with flag.
+        // Simple: use initiate with potBoost; backend will handle. For persistence of debit we rely on optimistic + refresh.
+        await initiatePayment(null, null, null, { target, amount });
+        alert(`${currentManager.displayName} added ₦${amount} to ${label} from wallet.`);
+        await loadAllData();
+        return;
+      }
+      // Otherwise Paystack new contribution (100% to pot)
+      await initiatePayment(null, null, null, { target, amount });
+      // On success (demo or webhook), simulate or load will show the boost in UI and pots
+    } catch (e) {
+      alert('Boost failed: ' + e.message);
+    }
+  })();
 }
 
 function renderSpotlight() {
@@ -2321,14 +2397,14 @@ function showUpdateBankModal() {
   showBankModal();
 }
 
-async function initiatePayment(comp, sponsorOpts, beefOpts) {
+async function initiatePayment(comp, sponsorOpts, beefOpts, potBoostOpts) {
   if (!currentManager) return alert('Log in first');
 
-  const btnText = comp === 'fpl' ? 'FPL Season' : 'UCL Season';
   const body = { managerId: currentManager.id };
   if (comp) body.competition = comp;
   if (sponsorOpts) body.sponsor = sponsorOpts;
   if (beefOpts) body.beef = beefOpts;
+  if (potBoostOpts) body.potBoost = potBoostOpts;
   try {
     const res = await fetchJSON('/api/payments/initiate', {
       method: 'POST',
@@ -2342,11 +2418,12 @@ async function initiatePayment(comp, sponsorOpts, beefOpts) {
     }
 
     if (res.demo) {
-      showPaymentModal(res.reference, comp, true);
+      // For pot boost demo we still use the modal (or direct success)
+      showPaymentModal(res.reference, comp || 'boost', true);
     } else if (res.authorizationUrl) {
       window.location.href = res.authorizationUrl;
     } else {
-      handlePaystackInline(res, comp);
+      handlePaystackInline(res, comp || 'boost');
     }
   } catch (e) {
     alert('Payment init failed: ' + e.message);
@@ -2806,7 +2883,7 @@ function showBeefModal() {
       </select>
       <input id="beef-stake" type="number" value="5000" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
       <button id="beef-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">PROPOSE (deduct from wallet if balance; Paystack on accept)</button>
-      <div class="text-[10px] mt-1">Select one or more paid FPL managers. Choose measurable category. Stake per. Paid from winnings wallet preferred.</div>
+      <div class="text-[10px] mt-1">Select one or more paid FPL managers. Stake per person. 10% of total pot (n×stake) goes to season reserve boost for the 3 group awards at end.</div>
     </div>
   `;
   modal.classList.remove('hidden');

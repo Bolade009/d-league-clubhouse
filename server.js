@@ -169,16 +169,17 @@ function createEmptyStore() {
         ucl: ""          // If UCL has equivalent identifier (or use internal)
       },
       leagueLocked: { fpl: false, ucl: false },  // Separate locks for FPL and UCL joins (admin controls independently)
-      // Revenue tracking for season pots (excluding pure house admin fees)
+      // Revenue tracking (house*Admin = the 5k/2.5k service fees — admin only)
       totalFplRevenue: 0,
       totalUclRevenue: 0,
       houseFplAdmin: 0,
       houseUclAdmin: 0,
-      // Season end pots (5% FPL rev to overall FPL, 2.5% to cup, 5% UCL rev to UCL overall)
+      // Season pots populated from: weekly ₦500 contrib (10% reserve → 75% overall / 25% cup) + h2h from extra 1k only + seasonReserveBoost from beef/sponsor 10% cuts
       fplOverallPot: 0,
       fplCupPot: 0,
       uclOverallPot: 0,
       h2hOverallPot: 0,
+      seasonReserveBoost: 0,
       // History for season review
       history: {
         weekly: [],      // {round, comp, winners: [{id, points}], pot, split, at}
@@ -451,7 +452,7 @@ async function loadStore() {
       needsPersist = true;
     }
     // Initialize collection keys to arrays only if completely absent (first run); do not overwrite or persist empty if key missing after partial load
-    ['managers','payments','scores','ledger','h2h','challenges','sponsorships','events','complaints','beefs'].forEach(k => {
+    ['managers','payments','scores','ledger','h2h','challenges','sponsorships','events','complaints','beefs','potBoosts'].forEach(k => {
       if (!Array.isArray(storeCache[k])) storeCache[k] = [];
     });
     if (!storeCache.cup) storeCache.cup = { ...defaults.cup };
@@ -459,7 +460,7 @@ async function loadStore() {
     function mergeSources(primary, ...others) {
       const result = { ...primary };
       // Start from primary (usually the freshest SQLite or sidecar)
-      ['managers', 'payments', 'ledger', 'scores', 'events', 'sponsorships', 'challenges', 'h2h', 'complaints', 'beefs'].forEach(key => {
+      ['managers', 'payments', 'ledger', 'scores', 'events', 'sponsorships', 'challenges', 'h2h', 'complaints', 'beefs', 'potBoosts'].forEach(key => {
         if (!Array.isArray(result[key])) result[key] = [];
       });
       if (!result.settings) result.settings = { ...defaults.settings };
@@ -479,7 +480,7 @@ async function loadStore() {
       result.managers = Array.from(mgrById.values());
 
       // Ledger, payments, scores, complaints etc: union by id (preserve *all* historical + recent winnings/settlements)
-      ['ledger', 'payments', 'scores', 'events', 'sponsorships', 'challenges', 'complaints', 'beefs'].forEach(key => {
+      ['ledger', 'payments', 'scores', 'events', 'sponsorships', 'challenges', 'complaints', 'beefs', 'potBoosts'].forEach(key => {
         const byId = new Map((result[key] || []).map(item => [item.id || JSON.stringify(item), item]));
         allSources.forEach(src => {
           (src[key] || []).forEach(item => {
@@ -494,7 +495,7 @@ async function loadStore() {
 
       // For revenue/pot numbers, take the maximum seen (never lose money tracking)
       const moneyKeys = ['totalFplRevenue', 'totalUclRevenue', 'houseFplAdmin', 'houseUclAdmin',
-                         'fplOverallPot', 'fplCupPot', 'uclOverallPot', 'h2hOverallPot'];
+                         'fplOverallPot', 'fplCupPot', 'uclOverallPot', 'h2hOverallPot', 'seasonReserveBoost'];
       moneyKeys.forEach(k => {
         let maxVal = (result.settings[k] || 0);
         allSources.forEach(src => {
@@ -591,6 +592,8 @@ async function loadStore() {
       if (l) storeCache.ledger = l;
       const b = loadAtomicCollection('beefs');
       if (b) storeCache.beefs = b;
+      const pb = loadAtomicCollection('potBoosts');
+      if (pb) storeCache.potBoosts = pb;
     }
 
     // After any load, immediately promote the current state to per-collection atomics.
@@ -601,6 +604,7 @@ async function loadStore() {
     writeAtomicCollection('beefs', storeCache.beefs || []);
     writeAtomicCollection('sponsorships', storeCache.sponsorships || []);
     writeAtomicCollection('challenges', storeCache.challenges || []);
+    writeAtomicCollection('potBoosts', storeCache.potBoosts || []);
     writeAtomicCollection('complaints', storeCache.complaints || []);
     if (storeCache.settings) writeAtomicCollection('settings', storeCache.settings);
 
@@ -648,6 +652,10 @@ async function persistStore() {
       if (bestBeefs) storeCache.beefs = bestBeefs;
       const bestSpon = loadAtomicCollection('sponsorships');
       if (bestSpon) storeCache.sponsorships = bestSpon;
+      const bestChallenges = loadAtomicCollection('challenges');
+      if (bestChallenges) storeCache.challenges = bestChallenges;
+      const bestPotBoosts = loadAtomicCollection('potBoosts');
+      if (bestPotBoosts) storeCache.potBoosts = bestPotBoosts;
       const bestSet = loadAtomicCollection('settings');
       if (bestSet) storeCache.settings = { ...(storeCache.settings || {}), ...bestSet };
     }
@@ -667,6 +675,8 @@ async function persistStore() {
     writeAtomicCollection('ledger', storeCache.ledger);
     writeAtomicCollection('beefs', storeCache.beefs || []);
     writeAtomicCollection('sponsorships', storeCache.sponsorships || []);
+    writeAtomicCollection('challenges', storeCache.challenges || []);
+    writeAtomicCollection('potBoosts', storeCache.potBoosts || []);
     writeAtomicCollection('settings', storeCache.settings || {});
 
     tx(storeCache);
@@ -877,6 +887,7 @@ function getEligibleManagers(comp) {
 
 async function confirmPayment(managerId, competition, reference, amount, paystackData = null) {
   const s = await loadStore();
+  const mgr = getManagerById(managerId);
   const existing = s.payments.find(p => p.reference === reference);
   if (existing) {
     if (existing.status !== "confirmed") {
@@ -927,8 +938,55 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
     // Notify after confirmed payment
     const text = `Thank you! Your sponsorship of ₦${payment.amount} for "${payment.sponsorTarget}" via Paystack is confirmed and active.`;
     await sendEmail(mgr.email, 'Sponsorship Confirmed - D League', text);
-  } else {
-    // Track revenue for season pots (exclude pure house admin fees)
+  }
+
+  if (payment.type === 'pot_boost' && payment.potTarget) {
+    const target = payment.potTarget;
+    const amt = Number(payment.amount) || 0;
+    if (amt > 0 && mgr) {
+      // 100% of voluntary boost goes to the chosen pot (no house cut on manager boosts)
+      if (target === 'h2h') {
+        s.settings.h2hOverallPot = (s.settings.h2hOverallPot || 0) + amt;
+      } else if (target === 'overall') {
+        s.settings.fplOverallPot = (s.settings.fplOverallPot || 0) + amt;
+      } else if (target === 'cup') {
+        s.settings.fplCupPot = (s.settings.fplCupPot || 0) + amt;
+      } else if (target === 'reserve') {
+        s.settings.seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + amt;
+      } else if (target === 'weekly') {
+        // Track for current round; will be added to this week's payout + projections
+        const cur = (s.settings.currentRound && s.settings.currentRound.fpl) || 1;
+        s.settings.weeklyBoosts = s.settings.weeklyBoosts || {};
+        s.settings.weeklyBoosts[cur] = (s.settings.weeklyBoosts[cur] || 0) + amt;
+      }
+
+      s.potBoosts = s.potBoosts || [];
+      s.potBoosts.push({
+        id: generateId("bost"),
+        managerId: mgr.id,
+        target,
+        amount: amt,
+        round: (s.settings.currentRound && s.settings.currentRound.fpl) || null,
+        at: nowISO()
+      });
+
+      s.ledger.push({
+        id: generateId("ldg"),
+        type: "pot_boost",
+        managerId: mgr.id,
+        amount: 0,  // history only; does not credit personal wallet (boost is contribution to collective pot)
+        boostAmount: amt,
+        note: `${mgr.displayName}${mgr.fplClubName ? ' of ' + mgr.fplClubName : ''} added ₦${amt} to ${target} pot`,
+        at: nowISO()
+      });
+
+      writeAtomicCollection('potBoosts', s.potBoosts);
+      writeAtomicCollection('ledger', s.ledger);
+    }
+  }
+
+  if (payment.type !== 'sponsor' && payment.type !== 'pot_boost' && payment.type !== 'beef_stake') {
+    // Track revenue (service/admin fees separated; 5k FPL / 2.5k UCL are admin-only service fees, never shown in public pots)
     const compDef = COMPETITIONS[competition];
     const houseFee = compDef ? (compDef.adminFee || 0) : 0;
     if (competition === 'fpl' || competition === 'ucl') {
@@ -936,6 +994,11 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
       const houseKey = `house${competition.charAt(0).toUpperCase() + competition.slice(1)}Admin`;
       s.settings[revKey] = (s.settings[revKey] || 0) + Math.max(0, Number(amount) - houseFee);
       s.settings[houseKey] = (s.settings[houseKey] || 0) + Math.min(Number(amount), houseFee);
+    }
+
+    // Per spec: the extra ₦1,000 each FPL manager pays goes ONLY to H2H pot. Nothing else.
+    if (competition === 'fpl') {
+      s.settings.h2hOverallPot = (s.settings.h2hOverallPot || 0) + 1000;
     }
   }
 
@@ -952,9 +1015,10 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
 function updateSeasonPots(s) {
   const fplRev = s.settings.totalFplRevenue || 0;
   const uclRev = s.settings.totalUclRevenue || 0;
-  s.settings.fplOverallPot = Math.floor(0.05 * fplRev);
-  s.settings.fplCupPot = Math.floor(0.025 * fplRev);
-  s.settings.uclOverallPot = Math.floor(0.2 * uclRev);  // 20% of UCL revenue (after 2.5k house) ≈ 2,500 per paid manager for final standings
+  // fplOverallPot / fplCupPot are populated EXCLUSIVELY via settleWeeklyPot's 10% weekly reserve (75%/25%).
+  // Do not overwrite from total revenue % — the 5k service fee is admin-only and excluded from public prize math.
+  // UCL kept for now as-is (can be aligned later).
+  s.settings.uclOverallPot = Math.floor(0.2 * uclRev);
 }
 
 function calculateRoundPot(compKey, round, paidCount) {
@@ -985,7 +1049,10 @@ async function settleWeeklyPot(comp, round) {
   // Credit winner(s) - split pot equally if tie
   const maxPoints = Math.max(...scores.map(sc => sc.points));
   const tiedWinners = scores.filter(sc => sc.points === maxPoints);
-  const sharePerWinner = Math.floor(pot.winnerShare / tiedWinners.length);
+  // Include any voluntary boosts made to this week's pot
+  const curWeeklyBoost = (s.settings.weeklyBoosts && s.settings.weeklyBoosts[round]) || 0;
+  const totalForWinners = pot.winnerShare + curWeeklyBoost;
+  const sharePerWinner = Math.floor(totalForWinners / tiedWinners.length);
   tiedWinners.forEach(w => {
     s.ledger.push({
       id: generateId("ldg"),
@@ -994,36 +1061,42 @@ async function settleWeeklyPot(comp, round) {
       competition: comp,
       round,
       amount: sharePerWinner,
-      note: `${comp.toUpperCase()} GW/MD ${round} winner (90% split for tie)`,
+      note: `${comp.toUpperCase()} GW/MD ${round} winner (90%${curWeeklyBoost ? ' + boosts' : ''} split for tie)`,
       at: nowISO()
     });
   });
 
-  // House commission 10%
-  s.ledger.push({
-    id: generateId("ldg"),
-    type: "house_commission",
-    managerId: "house",
-    competition: comp,
-    round,
-    amount: -pot.reserve,
-    note: `House 10% commission from ${comp} ${round}`,
-    at: nowISO()
-  });
-
-  // For FPL, deduct 10% of winner share to season H2H pot (accumulates for END OF SEASON H2H winner only - NOT paid weekly)
+  // Per spec: of the ₦500 per manager per week that goes into the pot,
+  // 90% to this week's winner(s); the 10% reserve funds end-of-season overall (75%) + cup (25%).
+  // No public house cut from this 10%; 5k upfront service fee is admin-only.
   if (comp === 'fpl') {
-    const h2hDeduction = Math.floor(sharePerWinner * 0.1);
-    s.settings.h2hOverallPot = (s.settings.h2hOverallPot || 0) + h2hDeduction;
-    // Note the deduction in ledger for transparency
+    const weeklyReserve = pot.reserve;
+    const toOverall = Math.floor(weeklyReserve * 0.75);
+    const toCup = weeklyReserve - toOverall;
+    s.settings.fplOverallPot = (s.settings.fplOverallPot || 0) + toOverall;
+    s.settings.fplCupPot = (s.settings.fplCupPot || 0) + toCup;
+
+    // Log transparently but these go to season pots
     s.ledger.push({
       id: generateId("ldg"),
-      type: "h2h_deduction",
+      type: "season_pot_contribution",
       managerId: "system",
       competition: comp,
       round,
-      amount: -h2hDeduction,
-      note: `10% deduction from weekly winner share to season H2H pot (end of season)`,
+      amount: -weeklyReserve,
+      note: `Weekly reserve split 75% overall / 25% cup from ${comp} ${round}`,
+      at: nowISO()
+    });
+  } else {
+    // For UCL: currently 10% treated as admin reserve (align to weekly 500 model later if needed)
+    s.ledger.push({
+      id: generateId("ldg"),
+      type: "house_commission",
+      managerId: "house",
+      competition: comp,
+      round,
+      amount: -pot.reserve,
+      note: `Reserve (10% of weekly pot) from ${comp} ${round}`,
       at: nowISO()
     });
   }
@@ -1138,14 +1211,15 @@ async function settleSponsoredAwards(round) {
       });
       s.ledger.push({
         id: generateId("ldg"),
-        type: "house_commission",
-        managerId: "house",
+        type: "season_reserve_boost",
+        managerId: "system",
         competition: "fpl",
         round,
         amount: -commission,
-        note: `House 10% from ${target}`,
+        note: `10% cut from sponsored "${target}" to season reserve boost (for end-of-season awards)`,
         at: nowISO()
       });
+      s.settings.seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + commission;
       // mark sponsorships settled
       s.sponsorships.forEach(sp => {
         if (sp.target === target) sp.status = 'settled';
@@ -1153,6 +1227,57 @@ async function settleSponsoredAwards(round) {
     }
   });
   await persistStore();
+}
+
+// Settle a beef: total pot = #participants * stake. 90% to winner, 10% to season reserve boost for the 3 end awards.
+async function settleBeef(beefId, winnerManagerId) {
+  const s = await loadStore();
+  const beef = (s.beefs || []).find(b => b.id === beefId);
+  if (!beef || ['settled', 'declined'].includes(beef.status)) return false;
+  const parts = (beef.participants && beef.participants.length)
+    ? beef.participants
+    : [beef.proposerId, ...(beef.opponentIds || [])];
+  const num = parts.length || 2;
+  const stake = Number(beef.stake || 0);
+  const totalPot = num * stake;
+  if (totalPot <= 0) return false;
+
+  const commission = Math.floor(totalPot * 0.1);
+  const winnerShare = totalPot - commission;
+
+  const winner = s.managers.find(m => m.id === winnerManagerId);
+  if (!winner) return false;
+
+  s.ledger.push({
+    id: generateId("ldg"),
+    type: "beef_win",
+    managerId: winner.id,
+    competition: "fpl",
+    round: (s.settings.currentRound && s.settings.currentRound.fpl) || 0,
+    amount: winnerShare,
+    note: `Won beef "${beef.category}" (₦${stake} × ${num} participants — 90% to winner)`,
+    at: nowISO()
+  });
+  s.ledger.push({
+    id: generateId("ldg"),
+    type: "season_reserve_boost",
+    managerId: "system",
+    competition: "fpl",
+    round: (s.settings.currentRound && s.settings.currentRound.fpl) || 0,
+    amount: -commission,
+    note: `10% cut from beef "${beef.category}" (₦${stake} × ${num}) → season reserve boost for end awards`,
+    at: nowISO()
+  });
+  s.settings.seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + commission;
+
+  beef.status = "settled";
+  beef.winner = winner.displayName;
+  beef.winnerId = winner.id;
+  beef.settledAt = nowISO();
+
+  await persistStore();
+  await logEvent("beef_settled", { beefId, winner: winner.id, totalPot, boostAdded: commission });
+  return true;
 }
 
 async function autoSettleIfNeeded() {
@@ -1645,51 +1770,73 @@ async function getUCLStats() {
 }
 
 async function getProjectedPayouts() {
-  // Enhanced: admin fees (5k/manager), sponsorships added to pots. Base pot = paid * 500 * 0.9. Sponsored funds boost specific awards.
-  // Now augmented with real third-party UCL stats for better projections.
+  // Exact flow:
+  // 1. 5k (FPL) / 2.5k (UCL) service fee: admin-only, never shown in public pots or manager views.
+  // 2. Extra ₦1,000 per FPL manager = H2H season pot ONLY.
+  // 3. ₦500 per manager per week into pot: 90% paid weekly to winner(s); 10% reserve → 75% overall league winner + 25% cup winner (end of season).
+  // 4. 10% cuts on beef stakes + sponsored award pots → seasonReserveBoost (split equally across the 3 group-chosen end-of-season awards later).
   const s = getStore();
   const fplPaid = getEligibleManagers("fpl").length;
   const uclPaid = getEligibleManagers("ucl").length;
 
-  const fplPotPerWeek = fplPaid * COMPETITIONS.fpl.contributionPerRound * 0.9;
+  const fplPotPerWeekBase = fplPaid * COMPETITIONS.fpl.contributionPerRound * 0.9;
   const uclPotPerMD = uclPaid * COMPETITIONS.ucl.contributionPerRound * 0.9;
 
-  // Rough season totals + admin
-  const fplReserve = fplPaid * (COMPETITIONS.fpl.contributionPerRound * 0.1 * 38 + COMPETITIONS.fpl.extraReserve);
-  const uclReserve = uclPaid * (COMPETITIONS.ucl.contributionPerRound * 0.1 * 17 + COMPETITIONS.ucl.extraReserve);
+  // Voluntary manager boosts (add 100% to chosen pot)
+  const potBoosts = s.potBoosts || [];
+  const curRound = (s.settings.currentRound && s.settings.currentRound.fpl) || 1;
+  const weeklyBoosts = (s.settings.weeklyBoosts && s.settings.weeklyBoosts[curRound]) || 0;
+  const weeklyPot90 = Math.floor(fplPotPerWeekBase + weeklyBoosts);
+
+  const voluntaryH2H = potBoosts.filter(b => b.target === 'h2h').reduce((sum, b) => sum + (b.amount || 0), 0);
+  const voluntaryOverall = potBoosts.filter(b => b.target === 'overall').reduce((sum, b) => sum + (b.amount || 0), 0);
+  const voluntaryCup = potBoosts.filter(b => b.target === 'cup').reduce((sum, b) => sum + (b.amount || 0), 0);
+  const voluntaryReserve = potBoosts.filter(b => b.target === 'reserve').reduce((sum, b) => sum + (b.amount || 0), 0);
+
+  // Projections use paid counts * per-spec contributions (not the hidden 5k service fees).
+  const weeklyReserveFullSeason = fplPaid * COMPETITIONS.fpl.contributionPerRound * 0.1 * 38;
+  const h2hFromExtra = fplPaid * COMPETITIONS.fpl.extraReserve;  // 1000 extra ONLY for H2H
 
   const sponsored = (s.sponsorships || []).reduce((sum, sp) => sum + (sp.amount || 0), 0);
+  const uclReserve = 0;
 
-  // Pull real UCL data for projections (upcoming matches affect expected pots/activity)
+  // Pull real UCL data for projections
   const uclStats = await getUCLStats();
   const upcomingMatches = (uclStats.matches || []).filter(m => m.status === 'SCHEDULED' || m.status === 'TIMED');
   const upcomingUCLMatches = upcomingMatches.length;
-  const uclFormBoost = Math.min(upcomingUCLMatches * 0.5, 5); // simple boost based on real schedule
+  const uclFormBoost = Math.min(upcomingUCLMatches * 0.5, 5);
 
-  const seasonPots = {
-    fplOverall: s.settings.fplOverallPot || Math.floor(0.05 * (s.settings.totalFplRevenue || 0)),
-    fplCup: s.settings.fplCupPot || Math.floor(0.025 * (s.settings.totalFplRevenue || 0)),
-    uclOverall: s.settings.uclOverallPot || Math.floor(0.05 * (s.settings.totalUclRevenue || 0))
-  };
+  // Season pots built only from weekly 10% reserves split 75/25 + voluntary boosts on top
+  const overallFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.75) + voluntaryOverall;
+  const cupFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.25) + voluntaryCup;
+
+  // seasonReserveBoost accumulates actual 10% from settled beefs + sponsored + voluntary reserve boosts
+  const seasonReserveBoost = (s.settings.seasonReserveBoost || Math.floor(sponsored * 0.1)) + voluntaryReserve;
+
+  const h2hTotal = h2hFromExtra + voluntaryH2H;
 
   return {
     fpl: {
-      weeklyPot90: Math.floor(fplPotPerWeek),
-      seasonReserve: Math.floor(fplReserve + sponsored * 0.4),
-      overallWinnerPot: seasonPots.fplOverall,
-      cupWinnerPot: seasonPots.fplCup
+      weeklyPot90: weeklyPot90,
+      h2hOverallPot: h2hTotal,  // the extra 1000 per manager ONLY for H2H + voluntary
+      overallWinnerPot: overallFromWeeklyReserves,  // 75% of weekly 10% reserves + voluntary
+      cupWinnerPot: cupFromWeeklyReserves,          // 25% of weekly 10% reserves + voluntary
+      seasonReserveBoost: seasonReserveBoost        // 10% from beefs + sponsors + voluntary reserve boosts → for 3 end-of-season awards
     },
     ucl: {
       mdPot90: Math.floor(uclPotPerMD + uclFormBoost * 100),
-      phaseReserve: Math.floor(uclReserve + sponsored * 0.4),
+      phaseReserve: 0,
       upcomingMatches: upcomingUCLMatches,
       lastStatsUpdate: uclStats.lastUpdated || null,
-      overallWinnerPot: seasonPots.uclOverall
+      overallWinnerPot: 0
     },
-    adminTotal: (fplPaid + uclPaid) * 5000,
-    seasonPots,
-    h2hOverallPot: s.settings.h2hOverallPot || 0,
-    note: "Weekly pots 90% to winner(s). H2H is SEASON pot only (10% from FPL weekly pots accumulates; paid to overall H2H winner at end, not weekly). Season pots: 5% FPL rev to overall FPL winner, 2.5% to cup, 5% UCL rev to UCL overall. House cuts (10% weekly) + initial admin fees (FPL 5k, UCL 2.5k pure house) fund/maintain. See ledger for details."
+    // adminTotal hidden from regular managers
+    seasonPots: {
+      fplOverall: overallFromWeeklyReserves,
+      fplCup: cupFromWeeklyReserves
+    },
+    h2hOverallPot: h2hTotal,
+    note: "FPL: extra 1k/manager = H2H only. Weekly 500/manager pot: 90% weekly winners, 10% → 75% overall / 25% cup (end season). 10% cuts on beefs+sponsored → season reserve boost (split equally to the 3 group awards when decided). Managers can voluntarily boost any pot (100% goes in)."
   };
 }
 
@@ -2486,6 +2633,7 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
   writeAtomicCollection('beefs', data.beefs || []);
   writeAtomicCollection('sponsorships', data.sponsorships || []);
   writeAtomicCollection('challenges', data.challenges || []);
+  writeAtomicCollection('potBoosts', data.potBoosts || []);
   writeAtomicCollection('complaints', data.complaints || []);
   writeAtomicCollection('scores', data.scores || []);
   writeAtomicCollection('h2h', data.h2h || []);
@@ -3230,6 +3378,36 @@ app.post("/api/admin/settle-challenge", async (req, res) => {
   res.json({ ok: true, message: `Challenge settled. Winner: ${winnerDisplay}` });
 });
 
+// Admin settle for a beef (after determining winner by category/GW results).
+// Applies: 90% of (n * stake) to winner, 10% of total pot to season reserve boost for the 3 group awards.
+app.post("/api/admin/settle-beef", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(403).json({ error: "Unauthorized" });
+  }
+
+  const { beefId, winnerManagerId } = req.body || {};
+  if (!beefId || !winnerManagerId) return res.status(400).json({ error: "beefId and winnerManagerId required" });
+
+  const ok = await settleBeef(beefId, winnerManagerId);
+  if (!ok) return res.status(400).json({ error: "Unable to settle beef (already settled, invalid winner, or zero pot)" });
+
+  res.json({ ok: true, message: "Beef settled. 90% to winner, 10% added to season reserve boost." });
+});
+
 app.get("/api/me", async (req, res) => {
   const token = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
   const decoded = verifyToken(token);
@@ -3268,7 +3446,15 @@ app.get("/api/standings", async (req, res) => {
     projections,
     realLeagues,  // Admin can use this for real standings/H2H
     leagueIds: ids,
-    sponsorships: s.sponsorships || []
+    sponsorships: s.sponsorships || [],
+    potBoosts: (s.potBoosts || []).map(b => {
+      const m = s.managers.find(mm => mm.id === b.managerId);
+      return {
+        ...b,
+        managerName: m ? m.displayName : 'Manager',
+        clubName: (m && m.fplClubName) || ''
+      };
+    })
   });
 });
 
@@ -3367,6 +3553,43 @@ app.post("/api/payments/initiate", async (req, res) => {
     return res.json({
       reference,
       amount: bAmount,
+      authorizationUrl: initRes.authorization_url,
+      accessCode: initRes.access_code
+    });
+  }
+
+  if (req.body.potBoost) {
+    const { target, amount: pAmount } = req.body.potBoost;
+    if (!target || !pAmount || pAmount <= 0) return res.status(400).json({ error: "Invalid pot boost target or amount" });
+    const validTargets = ['weekly', 'h2h', 'overall', 'cup', 'reserve'];
+    if (!validTargets.includes(target)) return res.status(400).json({ error: "Invalid pot target" });
+    const reference = `BOOST-${Date.now()}-${mgr.id.slice(-6)}`;
+    s.payments.push({
+      id: generateId("pay"),
+      managerId: mgr.id,
+      type: 'pot_boost',
+      potTarget: target,
+      amount: pAmount,
+      reference,
+      status: "pending",
+      initiatedAt: nowISO()
+    });
+    await persistStore();
+
+    if (DEMO_MODE || !PAYSTACK_PUBLIC) {
+      return res.json({
+        demo: true,
+        reference,
+        amount: pAmount,
+        authorizationUrl: null,
+        message: `Demo pot boost to ${target}. Use simulate after.`
+      });
+    }
+
+    const initRes = await fetchPaystackInit(reference, pAmount, mgr, 'pot_boost');
+    return res.json({
+      reference,
+      amount: pAmount,
       authorizationUrl: initRes.authorization_url,
       accessCode: initRes.access_code
     });
@@ -3651,7 +3874,11 @@ app.get("/api/admin/overview", async (req, res) => {
     challenges: allChallenges,
     sponsorships,
     managers: managersSummary,
-    totalHouseCommission,
+    totalHouseCommission,  // 10% side cuts (beefs, sponsors, challenges)
+    serviceFees: {
+      fpl: s.settings.houseFplAdmin || 0,   // ₦5,000 per FPL paid manager (admin/service only)
+      ucl: s.settings.houseUclAdmin || 0    // ₦2,500 per UCL
+    },
     leagueLocked: s.settings.leagueLocked || { fpl: false, ucl: false },
     complaints: (s.complaints || []).slice(0, 30)
   });
