@@ -326,7 +326,6 @@ async function loadAllData() {
     loadStandings().catch(e => console.warn('standings load failed', e)),
     loadTicker().catch(e => console.warn('ticker failed', e)),
     loadH2H().catch(e => console.warn('h2h failed', e)),
-    loadChallenges().catch(e => console.warn('challenges failed', e)),
     loadProjections().catch(e => console.warn('projections failed', e)),
     // Fetch server beefs so user-generated beefs survive restarts (localStorage is UI cache only now)
     // Also set for prominent top display
@@ -345,7 +344,9 @@ async function loadAllData() {
               status: sb.status,
               participantNames: sb.participantNames || [],
               joinRequests: sb.joinRequests || [],
-              joinApprovals: sb.joinApprovals || {}
+              joinApprovals: sb.joinApprovals || {},
+              locked: sb.locked || false,
+              joinDeadline: sb.joinDeadline || null
             });
           }
         });
@@ -357,13 +358,12 @@ async function loadAllData() {
   renderSpotlight();
   renderSquadChips();
   renderProjectionsLive();
-  renderChallengeArena();
   showPendingBeefsBanner();
   renderActiveBeefs();
   renderSponsoredAwards();
   renderLineupViewer();
 
-  // Auto settle awards/challenges for current round (wired)
+  // Auto settle awards for current round (wired)
   autoSettleAwards();
 
   // Default FPL view on fresh data
@@ -526,11 +526,13 @@ function renderActiveBeefs() {
   `;
 
   active.forEach(b => {
-    const potSize = b.currentPot || b.prizePot || Math.floor(((b.participants || b.opponentIds || []).length + 1) * (b.stake || 0) * 0.9);
     const paidDetails = b.paidDetails || [];
+    let paidTotal = 0;
+    paidDetails.forEach(p => { paidTotal += p.amount || 0; });
+    const potSize = b.currentPot || b.prizePot || Math.floor(paidTotal * 0.9);
     const paidNames = paidDetails.map(p => p.displayName).join(', ') || 'Waiting for payments';
     const paidCount = paidDetails.length;
-    const total = (b.participants || []).length;
+    const totalProposed = (b.participants || []).length;
     const statusClass = b.status === 'accepted' ? 'text-[#00ff85]' : 'text-yellow-400';
     const deep = b.id ? `${location.origin}/?beef=${b.id}` : location.origin;
     const safeShare = encodeURIComponent(`D League Beef: ${b.proposerName || ''} vs ${(b.opponentNames||[]).join(' & ')} for "${b.category}" Pot ₦${potSize} — ${deep}`);
@@ -542,15 +544,17 @@ function renderActiveBeefs() {
         <div class="font-bold text-[#ffaa00]">⚔️ ${b.proposerName || 'Proposer'} vs ${(b.opponentNames || b.participantNames || []).join(' & ') || 'Opponents'}</div>
         <div class="mt-1 text-xs">For: <span class="font-semibold">${beefDesc}</span> @ ₦${b.stake} each</div>
         <div class="mt-1">
-          <span class="text-xs text-[#888]">POT SIZE (90% winner):</span>
+          <span class="text-xs text-[#888]">POT SIZE (90% winner, only paid):</span>
           <span class="text-xl font-black">₦${(potSize || 0).toLocaleString()}</span>
         </div>
-        <div class="text-xs mt-0.5">Paid: ${paidCount}/${total} — ${paidNames}</div>
-        <div class="text-xs">Status: <span class="${statusClass} font-semibold">${b.status || 'proposed'}</span></div>
+        <div class="text-xs mt-0.5">Paid: ${paidCount} — ${paidNames}</div>
+        <div class="text-xs">Status: <span class="${statusClass} font-semibold">${b.status || 'proposed'}</span>${b.locked ? ' <span class="text-red-400">(LOCKED)</span>' : ''}${b.joinDeadline ? ` • Join by GW${b.joinDeadline}` : ''}</div>
         <div class="mt-2 flex flex-wrap gap-1 text-[10px]">
           <button onclick="showWhatsAppShare(decodeURIComponent('${safeShare}'), 'Share beef'); event.stopImmediatePropagation();" class="px-2 py-0.5 bg-[#ffaa00] text-black rounded">📲 Share WA + Link</button>
-          ${b.status === 'proposed' ? `<button onclick="respondToBeefLink('${b.id}', 'accept')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Accept</button>` : ''}
-          ${b.status === 'accepted' ? `<button onclick="requestToJoinBeef('${b.id}')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Request to Join</button>` : ''}
+          ${!b.locked && b.status === 'proposed' ? `<button onclick="respondToBeefLink('${b.id}', 'accept')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Accept</button>` : ''}
+          ${!b.locked && b.status === 'accepted' ? `<button onclick="requestToJoinBeef('${b.id}')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Request to Join</button>` : ''}
+          ${currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com' ? `<button onclick="adminCancelBeef('${b.id}')" class="px-2 py-0.5 bg-red-700 text-white rounded">CANCEL (admin)</button>` : ''}
+          ${currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com' && !b.locked ? `<button onclick="adminLockBeef('${b.id}')" class="px-2 py-0.5 bg-orange-600 text-white rounded">LOCK (admin)</button>` : ''}
         </div>
       </div>
     `;
@@ -630,30 +634,6 @@ async function loadAdminOverview() {
       }
       return `<div class="text-[#aaa] py-0.5 text-[10px]">${e.type} — ${detail} <span class="text-[#666]">(${when})</span></div>`;
     }).join('') || '<div class="text-[#666]">No other recent activity</div>';
-
-    // Challenges as cards
-    let challengesHtml = (data.challenges || []).map(ch => {
-      const status = ch.status;
-      let color = '#888';
-      if (status === 'open') color = '#00ff85';
-      if (status === 'cancelled') color = '#ff6b6b';
-      let actions = '';
-      if (status === 'open') {
-        const safeTitle = ch.title.replace(/'/g, "\\'");
-        actions = `<div class="mt-2 flex gap-2"><button onclick="cancelChallenge('${ch.id}', '${safeTitle}')" class="text-xs px-2 py-1 bg-red-900 hover:bg-red-800 rounded">Cancel</button><button onclick="forceSettleChallenge('${ch.id}')" class="text-xs px-2 py-1 bg-[#00ff85] text-black rounded">Force Settle</button></div>`;
-      }
-      return `
-        <div class="bg-[#1c1c1c] border border-[#333] p-3 rounded-2xl mb-2">
-          <div class="flex justify-between">
-            <div>
-              <div class="font-medium">${ch.title}</div>
-              <div class="text-xs" style="color:${color}">${status.toUpperCase()} • ₦${ch.prize}</div>
-              ${ch.winner ? `<div class="text-xs text-[#888]">Winner: ${ch.winner}</div>` : ''}
-            </div>
-          </div>
-          ${actions}
-        </div>`;
-    }).join('') || '<div class="text-[#666] p-4">No challenges</div>';
 
     // Sponsored as cards
     let sponsorsHtml = (data.sponsorships || []).map(sp => {
@@ -778,7 +758,7 @@ async function loadAdminOverview() {
         <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
           <div class="text-xs uppercase tracking-widest text-[#888]">10% CUTS LOGGED</div>
           <div class="text-5xl font-black mt-1">₦${data.totalHouseCommission || 0}</div>
-          <div class="text-sm mt-1">Beef/sponsor/challenges (boost vs house)</div>
+          <div class="text-sm mt-1">Beef/sponsor (boost vs house)</div>
         </div>
         <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
           <div class="text-xs uppercase tracking-widest text-[#888]">SERVICE FEES (admin)</div>
@@ -814,14 +794,6 @@ async function loadAdminOverview() {
             </table>
           </div>
           <div class="text-xs text-[#666] mt-2">FPL/UCL show per-comp paid status. Admin has no team. Click code to copy.</div>
-        </div>
-
-        <!-- Challenges -->
-        <div class="bg-[#161616] border border-[#222] rounded-3xl p-5">
-          <div class="font-semibold text-xl mb-3">CHALLENGES</div>
-          <div class="max-h-[240px] overflow-auto space-y-2">
-            ${challengesHtml}
-          </div>
         </div>
 
         <!-- Sponsored -->
@@ -871,10 +843,11 @@ async function loadAdminOverview() {
             const canC = bf.status !== 'settled' && bf.status !== 'cancelled';
             const presetB = (BEEF_PRESETS || []).find(p => p.id === bf.category);
             const bDesc = presetB ? presetB.desc : bf.category;
+            const lockBtn = bf.locked ? '' : `<button onclick="adminLockBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-orange-600 text-white text-[10px] rounded">LOCK</button>`;
             bh += `<div class="mb-2 p-2 bg-black/60 rounded text-xs border border-[#ffaa00]">
-              <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | ${bDesc} | Pot ₦${pz}</div>
+              <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | ${bDesc} | Pot ₦${pz} ${bf.locked ? '(LOCKED)' : ''}${bf.joinDeadline ? ' • deadline GW'+bf.joinDeadline : ''}</div>
               <div>Status: ${bf.status} | Paid: ${pstr}</div>
-              ${canC ? `<button onclick="adminCancelBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-red-700 text-white text-[10px] rounded">CANCEL + REFUND</button>` : ''}
+              ${canC ? `<button onclick="adminCancelBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-red-700 text-white text-[10px] rounded">CANCEL + REFUND</button> ${lockBtn}` : ''}
             </div>`;
           });
         }
@@ -1168,21 +1141,6 @@ async function confirmManualPayout(managerId, amount) {
   }
 }
 
-async function cancelChallenge(id, title) {
-  if (!confirm(`Cancel challenge "${title}"?`)) return;
-  const reason = prompt('Reason (optional):', 'Admin cancelled') || 'Admin cancelled';
-  try {
-    await fetchJSON('/api/admin/cancel-challenge', {
-      method: 'POST',
-      body: JSON.stringify({ id, reason })
-    });
-    alert('Challenge cancelled.');
-    loadAdminOverview();
-  } catch (e) {
-    alert('Cancel failed: ' + e.message);
-  }
-}
-
 async function cancelSponsorship(id) {
   if (!confirm('Cancel this sponsorship?')) return;
   try {
@@ -1325,21 +1283,6 @@ async function editManager(email, currentName, currentClub, currentFplId, curren
     loadAdminOverview();
   } catch (e) {
     alert('Update failed: ' + (e.message || e));
-  }
-}
-
-async function forceSettleChallenge(id) {
-  const winner = prompt('Winner display name or manager ID (leave blank to cancel):');
-  if (winner === null) return;
-  try {
-    await fetchJSON('/api/admin/settle-challenge', {
-      method: 'POST',
-      body: JSON.stringify({ id, winnerName: winner || undefined })
-    });
-    alert('Challenge settled.');
-    loadAdminOverview();
-  } catch (e) {
-    alert('Settle failed: ' + e.message);
   }
 }
 
@@ -1620,25 +1563,6 @@ async function loadH2H() {
   });
 }
 
-async function loadChallenges() {
-  const { challenges } = await fetchJSON('/api/challenges');
-  const wrap = $('challenges-list');
-  wrap.innerHTML = '';
-
-  challenges.forEach(ch => {
-    const d = document.createElement('div');
-    d.className = 'p-3 bg-[#111] border border-[#333] rounded-2xl';
-    d.innerHTML = `
-      <div class="font-semibold">${ch.title}</div>
-      <div class="text-xs flex justify-between mt-1">
-        <span class="${ch.status === 'settled' ? 'text-[#00ff85]' : 'text-[#aaa]'}">${ch.status}</span>
-        <span>₦${ch.prize} • ${ch.entrants} entered</span>
-      </div>
-      ${ch.winner ? `<div class="text-xs mt-0.5">Winner: ${ch.winner}</div>` : ''}
-    `;
-    wrap.appendChild(d);
-  });
-}
 
 async function loadProjections() {
   const proj = await fetchJSON('/api/payouts');
@@ -1711,100 +1635,7 @@ function savePlayerChallenges() {
   localStorage.setItem('dl_playerChallenges', JSON.stringify(playerChallenges));
 }
 
-function renderChallengeArena() {
-  const wrap = $('challenge-arena');
-  if (!wrap) return;
-  wrap.innerHTML = '';
-  if (playerChallenges.length === 0) {
-    wrap.innerHTML = `<div class="text-xs">No active challenges. Propose one!</div>`;
-    return;
-  }
-  playerChallenges.forEach((ch, i) => {
-    const d = document.createElement('div');
-    d.className = 'p-2 bg-[#111] border border-[#333] rounded text-xs mb-2';
-
-    const proposerName = ch.proposer || 'Someone';
-    const oppText = ch.opponent || (ch.participantNames || []).join(', ') || 'others';
-    const statusText = ch.status === 'accepted' ? 'ongoing' : ch.status;
-
-    let html = `${proposerName} proposed a beef to ${oppText} for "${ch.category}" ₦${ch.stake} (10% to season awards boost)<br>Status: ${statusText}`;
-
-    if (ch.status === 'accepted' || ch.status === 'proposed') {
-      const gw = (standingsData && standingsData.currentRound && standingsData.currentRound.fpl) || '?';
-      html += `<br><span class="text-[10px]">Game Week ${gw} • Stake: ₦${ch.stake}</span>`;
-    }
-
-    const deep = ch.serverId ? `${location.origin}/?beef=${ch.serverId}` : location.origin;
-    const waText = `D League Beef: ${proposerName} vs ${oppText} for "${ch.category}" ₦${ch.stake}. Tap to respond: ${deep}`;
-    const safeShare = encodeURIComponent(waText);
-
-    html += `<br><button onclick="showWhatsAppShare(decodeURIComponent('${safeShare}'), 'Share beef'); event.stopImmediatePropagation();" class="text-[10px] ml-1 px-1 border border-[#333] rounded">Share WA</button>`;
-
-    d.innerHTML = html;
-
-    const isOriginalParticipant = currentManager && (
-      ch.proposer === currentManager.displayName ||
-      (ch.opponent || '').includes(currentManager.displayName)
-    );
-    const isCurrentParticipant = currentManager && (
-      (ch.participantNames || []).some(n => n === currentManager.displayName) ||
-      isOriginalParticipant
-    );
-
-    if (ch.status === 'proposed') {
-      // Proposed beefs are visible to all
-      if (isOriginalParticipant) {
-        const acceptBtn = document.createElement('button');
-        acceptBtn.textContent = 'Accept';
-        acceptBtn.className = 'text-xs ml-2 underline text-[#00ff85]';
-        acceptBtn.onclick = () => acceptChallenge(i);
-
-        const declineBtn = document.createElement('button');
-        declineBtn.textContent = 'Decline';
-        declineBtn.className = 'text-xs ml-2 underline text-red-400';
-        declineBtn.onclick = () => declineChallenge(i);
-        d.appendChild(acceptBtn);
-        d.appendChild(declineBtn);
-      } else {
-        const wait = document.createElement('div');
-        wait.className = 'text-[10px] text-amber-400 mt-1';
-        wait.textContent = 'Waiting for original challengers to accept before join requests open.';
-        d.appendChild(wait);
-      }
-    }
-
-    if (ch.status === 'accepted') {
-      if (!isCurrentParticipant) {
-        const joinBtn = document.createElement('button');
-        joinBtn.textContent = 'Request to join';
-        joinBtn.className = 'text-xs ml-2 underline text-[#00ff85]';
-        joinBtn.onclick = () => requestToJoinBeef(ch.serverId);
-        d.appendChild(joinBtn);
-      }
-      // Pending join requests visible to current participants
-      if (isCurrentParticipant && ch.joinRequests && ch.joinRequests.length > 0) {
-        ch.joinRequests.forEach(requesterId => {
-          const reqName = requesterId; // could resolve better with full list
-          const jdiv = document.createElement('div');
-          jdiv.className = 'text-[10px] mt-1 text-amber-300';
-          jdiv.innerHTML = `${reqName} wants to join. `;
-          const appBtn = document.createElement('button');
-          appBtn.textContent = 'Approve join';
-          appBtn.className = 'underline text-xs';
-          appBtn.onclick = () => respondToJoin(ch.serverId, requesterId, true);
-          const decBtn = document.createElement('button');
-          decBtn.textContent = 'Decline join';
-          decBtn.className = 'underline text-xs ml-1';
-          decBtn.onclick = () => respondToJoin(ch.serverId, requesterId, false);
-          jdiv.appendChild(appBtn);
-          jdiv.appendChild(decBtn);
-          d.appendChild(jdiv);
-        });
-      }
-    }
-    wrap.appendChild(d);
-  });
-}
+// (challenge code removed)
 
 async function respondToJoin(beefId, requesterId, approve) {
   try {
@@ -1847,98 +1678,8 @@ async function requestToJoinBeef(beefId) {
   }
 }
 
-function declineChallenge(i) {
-  const ch = playerChallenges[i];
-  if (!ch.serverId) {
-    ch.status = 'declined';
-    savePlayerChallenges();
-    renderChallengeArena();
-    return;
-  }
-  fetchJSON('/api/beef/decline', {
-    method: 'POST',
-    body: JSON.stringify({ beefId: ch.serverId })
-  }).then(() => {
-    ch.status = 'declined';
-    savePlayerChallenges();
-    renderChallengeArena();
-  }).catch(e => alert(e.message || 'Failed to decline'));
-}
+// old challenge accept/decline/show removed (challenges no longer used; beefs use dedicated flows)
 
-function showChallengeModal() {
-  const categories = [
-    "Captain scores more points than opponent",
-    "Used chip this week",
-    "Highest points from midfielders",
-    "Most clean sheets in defense",
-    "Total points > opponent (with captain boost)"
-  ];
-  const modal = $('modal');
-  const c = $('modal-content');
-  c.innerHTML = `
-    <div>
-      <div class="font-semibold mb-2">Propose Challenge</div>
-      <select id="ch-opponent" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
-        <option>Chinedu Eze</option>
-        <option>Amara Okoro</option>
-        <option>Emeka Obi</option>
-      </select>
-      <select id="ch-cat" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
-        ${categories.map(c => `<option>${c}</option>`).join('')}
-      </select>
-      <input id="ch-stake" type="number" value="5000" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
-      <button id="ch-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">PROPOSE (pay stake from wallet if balance, else Paystack)</button>
-      <div class="text-[10px] mt-1 text-[#888]">10% of pot goes to season reserve boost for the 3 end awards (90% to winner).</div>
-    </div>
-  `;
-  modal.classList.remove('hidden');
-  modal.classList.add('flex');
-  document.getElementById('ch-submit').onclick = () => {
-    const opp = document.getElementById('ch-opponent').value;
-    const cat = document.getElementById('ch-cat').value;
-    const stake = parseInt(document.getElementById('ch-stake').value) || 5000;
-    const paidFromWallet = tryPayWithWallet(stake, 'challenge stake');
-    playerChallenges.push({proposer: currentManager.displayName, opponent: opp, category: cat, stake, status: 'proposed', paidFromWallet});
-    savePlayerChallenges();
-    closeModal();
-    renderChallengeArena();
-    const payMsg = paidFromWallet ? 'Stake deducted from your wallet.' : 'No wallet balance - use Paystack to pay stake.';
-    alert(`Proposed! ${payMsg} Opponent accepts and pays stake (from wallet or Paystack). 10% to season awards boost. Settlement after GW.`);
-  };
-}
-
-function acceptChallenge(i) {
-  const ch = playerChallenges[i];
-  if (ch.status !== 'proposed') return;
-  const paid = tryPayWithWallet(ch.stake, 'accepting beef/challenge');
-  if (ch.serverId) {
-    fetchJSON('/api/beef/accept', {
-      method: 'POST',
-      body: JSON.stringify({ beefId: ch.serverId })
-    }).then(res => {
-      if (res && res.beef) ch.status = res.beef.status || 'accepted';
-      savePlayerChallenges();
-      renderChallengeArena();
-    }).catch(e => {
-      console.warn('Server beef accept failed', e);
-      ch.status = 'accepted';
-      savePlayerChallenges();
-      renderChallengeArena();
-    });
-  } else {
-    ch.status = 'accepted';
-    savePlayerChallenges();
-    renderChallengeArena();
-  }
-  const payMsg = paid ? 'Your stake paid from wallet.' : 'Insufficient wallet balance - use Paystack.';
-  if (!paid && ch.serverId) {
-    // trigger Paystack funding for the beef stake
-    initiatePayment(null, null, { beefId: ch.serverId, amount: ch.stake });
-  } else if (!paid) {
-    alert('No wallet balance. Contact admin to fund the stake via Paystack.');
-  }
-  alert(`Accepted! ${payMsg} Both stakes secured. 10% of pot to season reserve boost.`);
-}
 
 function renderSponsoredAwards() {
   const wrap = $('sponsored-awards');
@@ -1991,9 +1732,8 @@ function showSquadModal() {
   });
 }
 
-function showChallengeModal() {
-  alert('Beef proposal: Select opponent(s), category, stake. Pay from wallet if sufficient, else Paystack on accept. 10% of total pot to season reserve boost for 3 awards.');
-}
+// showChallengeModal removed (challenges deprecated)
+
 
 function showSponsorModal() {
   const modal = $('modal');
@@ -3022,7 +2762,7 @@ function showBeefModal() {
       </select>
       <input id="beef-stake" type="number" value="5000" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
       <button id="beef-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">PROPOSE (deduct from wallet if balance; Paystack on accept)</button>
-      <div class="text-[10px] mt-1">Select one or more paid FPL managers. Stake per person. 10% of total pot (n×stake) goes to season reserve boost for the 3 group awards at end.</div>
+      <div class="text-[10px] mt-1">Select one or more paid FPL managers. Stake per person. 10% of total pot (n×stake) goes to season reserve boost for the 3 group awards at end. <strong>Joins close before FPL GW deadline (admin can lock early).</strong></div>
     </div>
   `;
   modal.classList.remove('hidden');
@@ -3041,7 +2781,7 @@ function showBeefModal() {
       // Send as one group beef so all are equal
       const resp = await fetchJSON('/api/beef/propose', {
         method: 'POST',
-        body: JSON.stringify({ opponentIds: selectedIds, category: catId, stake, paidFromWallet: paid })
+        body: JSON.stringify({ opponentIds: selectedIds, category: catId, stake, paidFromWallet: paid, joinDeadline: (standingsData && standingsData.currentRound && standingsData.currentRound.fpl) || null })
       });
       if (resp && resp.beef && resp.beef.id) mainBeefId = resp.beef.id;
     } catch (e) {
@@ -3058,7 +2798,7 @@ function showBeefModal() {
       status: 'proposed'
     });
     savePlayerChallenges();
-    renderChallengeArena();
+    // renderChallengeArena removed (no challenges)
     alert(`Proposed to ${selectedIds.length} managers. ${paid ? 'Deducted total from wallet.' : 'Will pay via Paystack on accepts.'}`);
 
     // WhatsApp share - persistent bar so it stays on screen, with direct link to accept/decline
@@ -3149,6 +2889,24 @@ async function adminCancelBeef(beefId) {
     if (typeof loadAdminOverview === 'function') loadAdminOverview();
   } catch (e) {
     alert('Cancel failed: ' + (e.message || e));
+  }
+}
+
+async function adminLockBeef(beefId) {
+  if (!confirm('Lock this beef? No further joins will be allowed (use before FPL GW deadline to prevent tricks).')) return;
+  const deadline = prompt('Optional: Set join deadline as GW number (e.g. 5), or leave blank:', '');
+  try {
+    const body = { beefId };
+    if (deadline) body.deadline = parseInt(deadline);
+    await fetchJSON('/api/admin/lock-beef', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    });
+    alert('Beef locked.');
+    await loadAllData();
+    if (typeof loadAdminOverview === 'function') loadAdminOverview();
+  } catch (e) {
+    alert('Lock failed: ' + (e.message || e));
   }
 }
 

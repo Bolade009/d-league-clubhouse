@@ -1154,49 +1154,6 @@ async function settleWeeklyPot(comp, round) {
   return pot.winnerShare;
 }
 
-async function settleOpenChallenges() {
-  const s = await loadStore();
-  let settled = 0;
-  for (const ch of s.challenges) {
-    if (ch.status !== "open") continue;
-    // Programmable: use logic if available, else top
-    const winnerMgr = computeWinnerFromLogic(ch.logic || 'default', s);
-    if (winnerMgr) {
-      const pot = ch.prize || 0; // for challenges
-      const commission = Math.floor(pot * 0.1);
-      const winnerShare = pot - commission;
-      s.ledger.push({
-        id: generateId("ldg"),
-        type: "challenge_win",
-        managerId: winnerMgr.id,
-        competition: "fpl",
-        round: s.settings.currentRound.fpl,
-        amount: winnerShare,
-        note: `Won challenge: ${ch.title} (90%, 10% house)`,
-        at: nowISO()
-      });
-      s.ledger.push({
-        id: generateId("ldg"),
-        type: "house_commission",
-        managerId: "house",
-        competition: "fpl",
-        round: s.settings.currentRound.fpl,
-        amount: -commission,
-        note: `House 10% from ${ch.title}`,
-        at: nowISO()
-      });
-      ch.status = "settled";
-      ch.winner = winnerMgr.displayName;
-      settled++;
-    }
-  }
-  if (settled) {
-    writeAtomicSidecar(s);
-    await persistStore();
-  }
-  return settled;
-}
-
 function computeWinnerFromLogic(logic, s) {
   // Server side simple version of compute
   const scores = s.scores || [];
@@ -1347,7 +1304,6 @@ async function autoSettleIfNeeded() {
 
   // Auto award for presets using programmable logic (after GW ends via API)
   await autoAwardPresets("fpl", curF - 1);
-  await settleOpenChallenges();
   await settleSponsoredAwards(curF - 1);
   // Beefs are settled manually via admin (settleBeef) which credits to wallet.
   // TODO: for h2h settled, credit winner 90% house 10%
@@ -1504,7 +1460,17 @@ async function syncFPL(roundsToSync = null) {
   // Auto-update current round from FPL for the season
   const currentEvent = bootstrap.events.find(e => e.is_current) || bootstrap.events.find(e => !e.finished);
   if (currentEvent && currentEvent.id) {
+    const prevGW = s.settings.currentRound.fpl;
     s.settings.currentRound.fpl = currentEvent.id;
+    // Auto-lock any active beefs for the previous GW (to prevent post-deadline joins/tricks)
+    if (prevGW && prevGW < currentEvent.id) {
+      (s.beefs || []).forEach(b => {
+        if (['proposed', 'accepted'].includes(b.status) && !b.locked && b.joinDeadline === prevGW) {
+          b.locked = true;
+          b.lockedAt = nowISO();
+        }
+      });
+    }
   }
 
   const eventMap = {};
@@ -2889,7 +2855,7 @@ app.post("/api/admin/cancel-challenge", async (req, res) => {
   await persistStore();
   await logEvent("challenge_cancelled", { id, title: ch.title, reason: ch.cancelReason, by: "admin" });
 
-  res.json({ ok: true, message: `Challenge "${ch.title}" cancelled.` });
+  // challenge cancel removed as per request - no longer using challenges
 });
 
 // Admin cancel sponsorship / award
@@ -3229,11 +3195,12 @@ app.post("/api/beef/propose", async (req, res) => {
   const mgr = getAuthenticatedManager(req);
   if (!mgr) return res.status(401).json({ error: "Login required" });
 
-  const { opponentIds, category, stake, paidFromWallet } = req.body || {};
+  const { opponentIds, category, stake, paidFromWallet, joinDeadline } = req.body || {};
   if (!opponentIds || !category || !stake) return res.status(400).json({ error: "opponentIds, category, stake required" });
 
   const s = await loadStore();
   const opponentList = Array.isArray(opponentIds) ? opponentIds : [opponentIds];
+  const currentGW = (s.settings.currentRound && s.settings.currentRound.fpl) || null;
   const beef = {
     id: generateId("beef"),
     proposerId: mgr.id,
@@ -3245,12 +3212,26 @@ app.post("/api/beef/propose", async (req, res) => {
     status: "proposed",
     paidFromWallet: !!paidFromWallet,
     at: nowISO(),
-    paidBy: {}
+    paidBy: {},
+    locked: false,
+    joinDeadline: joinDeadline || currentGW,  // can be passed from client or default
+    lockedAt: null
   };
   if (paidFromWallet) {
-    beef.paidBy[mgr.id] = { amount: Number(stake), ref: 'wallet', paidAt: nowISO() };
-    beef.totalStaked = Number(stake);
-    beef.prizePot = Math.floor(Number(stake) * 0.9);
+    const paidAmt = Number(stake);
+    beef.paidBy[mgr.id] = { amount: paidAmt, ref: 'wallet', paidAt: nowISO() };
+    beef.totalStaked = paidAmt;
+    const cut = Math.floor(paidAmt * 0.1);
+    s.settings.seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + cut;
+    s.ledger.push({
+      id: generateId("ldg"),
+      type: "season_reserve_boost",
+      managerId: "system",
+      amount: -cut,
+      note: `10% immediate house cut from beef stake (wallet propose) for "${category}"`,
+      at: nowISO()
+    });
+    beef.prizePot = paidAmt - cut;
   }
   s.beefs = s.beefs || [];
   s.beefs.push(beef);
@@ -3290,6 +3271,9 @@ app.post("/api/beef/accept", async (req, res) => {
   const beef = (s.beefs || []).find(b => b.id === beefId);
   if (!beef) return res.status(404).json({ error: "Beef not found" });
   if (beef.status !== "proposed") return res.status(400).json({ error: "Beef not in proposed state" });
+  if (beef.locked) {
+    return res.status(400).json({ error: "This beef is locked. Accepts not allowed." });
+  }
 
   beef.status = "accepted";
   beef.acceptedBy = mgr.id;
@@ -3350,6 +3334,13 @@ app.post("/api/beef/request-join", async (req, res) => {
   const beef = (s.beefs || []).find(b => b.id === beefId);
   if (!beef || beef.status !== 'accepted') {
     return res.status(400).json({ error: "Beef must be accepted by original parties before join requests open" });
+  }
+  if (beef.locked) {
+    return res.status(400).json({ error: "This beef is locked by admin. No new joins allowed." });
+  }
+  const currentGW = (s.settings.currentRound && s.settings.currentRound.fpl) || 0;
+  if (beef.joinDeadline && currentGW > beef.joinDeadline) {
+    return res.status(400).json({ error: "Join deadline has passed for this beef (before FPL GW lock)." });
   }
 
   const currentParts = beef.participants || [beef.proposerId, ...(beef.opponentIds || [])];
@@ -3440,6 +3431,7 @@ app.get("/api/beefs", async (req, res) => {
       return m ? m.displayName : pid;
     });
     const paidDetails = [];
+    let paidTotal = 0;
     if (b.paidBy) {
       Object.entries(b.paidBy).forEach(([id, p]) => {
         const m = s.managers.find(mm => mm.id === id);
@@ -3449,16 +3441,19 @@ app.get("/api/beefs", async (req, res) => {
           amount: p.amount,
           ref: p.ref || ''
         });
+        paidTotal += p.amount || 0;
       });
     }
-    const potSize = b.prizePot || Math.floor(((b.participants || b.opponentIds || []).length + 1) * (b.stake || 0) * 0.9);
+    const potSize = b.prizePot || Math.floor(paidTotal * 0.9);
     return {
       ...b,
       proposerName: proposer ? proposer.displayName : (b.proposerName || 'Unknown'),
       opponentNames: oppNames,
       participantNames: partNames,
       paidDetails,
-      currentPot: potSize
+      currentPot: potSize,
+      locked: !!b.locked,
+      joinDeadline: b.joinDeadline || null
     };
   });
 
@@ -3497,6 +3492,7 @@ app.get("/api/admin/beefs", async (req, res) => {
       return m ? m.displayName : pid;
     });
     const paidDetails = [];
+    let paidTotal = 0;
     if (b.paidBy) {
       Object.entries(b.paidBy).forEach(([id, p]) => {
         const m = s.managers.find(mm => mm.id === id);
@@ -3506,16 +3502,19 @@ app.get("/api/admin/beefs", async (req, res) => {
           amount: p.amount,
           ref: p.ref || ''
         });
+        paidTotal += p.amount || 0;
       });
     }
-    const potSize = b.prizePot || Math.floor(((b.participants || b.opponentIds || []).length + 1) * (b.stake || 0) * 0.9);
+    const potSize = b.prizePot || Math.floor(paidTotal * 0.9);
     return {
       ...b,
       proposerName: proposer ? proposer.displayName : (b.proposerName || 'Unknown'),
       opponentNames: oppNames,
       participantNames: partNames,
       paidDetails,
-      currentPot: potSize
+      currentPot: potSize,
+      locked: !!b.locked,
+      joinDeadline: b.joinDeadline || null
     };
   });
   res.json({ beefs: allBeefs });
@@ -3550,8 +3549,8 @@ app.post("/api/admin/cancel-beef", async (req, res) => {
   res.json({ ok: true, message: "Beef cancelled. Paid stakes refunded to wallets (full amount), cuts reversed from house reserve." });
 });
 
-// Admin force settle a specific challenge (pick winner or cancel)
-app.post("/api/admin/settle-challenge", async (req, res) => {
+// Admin lock beef (prevent new joins after deadline or manually). Prevents tricking after FPL GW deadline.
+app.post("/api/admin/lock-beef", async (req, res) => {
   if (!DEMO_MODE) {
     const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
     let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
@@ -3570,52 +3569,29 @@ app.post("/api/admin/settle-challenge", async (req, res) => {
     if (!allowed) return res.status(403).json({ error: "Unauthorized" });
   }
 
-  const { id, winnerManagerId, winnerName } = req.body || {};
-  if (!id) return res.status(400).json({ error: "challenge id required" });
+  const { beefId, deadline } = req.body || {};
+  if (!beefId) return res.status(400).json({ error: "beefId required" });
 
   const s = await loadStore();
-  const ch = s.challenges.find(c => c.id === id);
-  if (!ch || ch.status !== "open") return res.status(404).json({ error: "Open challenge not found" });
-
-  let winnerDisplay = winnerName;
-  if (winnerManagerId) {
-    const w = s.managers.find(m => m.id === winnerManagerId);
-    if (w) winnerDisplay = w.displayName;
+  const beef = (s.beefs || []).find(b => b.id === beefId);
+  if (!beef) return res.status(404).json({ error: "Beef not found" });
+  if (['settled', 'declined', 'cancelled'].includes(beef.status)) {
+    return res.status(400).json({ error: "Cannot lock a finished beef" });
   }
 
-  const commission = Math.floor(ch.prize * 0.1);
-  const winnerShare = ch.prize - commission;
-
-  s.ledger.push({
-    id: generateId("ldg"),
-    type: "challenge_win",
-    managerId: winnerManagerId || "manual",
-    competition: "fpl",
-    round: s.settings.currentRound.fpl,
-    amount: winnerShare,
-    note: `Forced settle: ${ch.title} - Winner: ${winnerDisplay} (90%)`,
-    at: nowISO()
-  });
-  s.ledger.push({
-    id: generateId("ldg"),
-    type: "house_commission",
-    managerId: "house",
-    competition: "fpl",
-    round: s.settings.currentRound.fpl,
-    amount: -commission,
-    note: `House 10% from forced ${ch.title}`,
-    at: nowISO()
-  });
-
-  ch.status = "settled";
-  ch.winner = winnerDisplay;
-  ch.forced = true;
+  beef.locked = true;
+  beef.lockedAt = nowISO();
+  if (deadline !== undefined) beef.joinDeadline = deadline;  // prefer GW number to align with FPL
 
   await persistStore();
-  await logEvent("challenge_settled", { id, title: ch.title, winner: winnerDisplay, by: "admin" });
+  await logEvent("beef_locked", { beefId, byAdmin: true, deadline: beef.joinDeadline });
 
-  res.json({ ok: true, message: `Challenge settled. Winner: ${winnerDisplay}` });
+  res.json({ ok: true, message: "Beef locked. No new joins allowed.", beef });
 });
+
+// Admin force settle a specific challenge (pick winner or cancel)
+// challenge settle removed (no longer using challenges)
+
 
 // Admin settle for a beef (after determining winner by category/GW results).
 // Applies: 90% of (n * stake) to winner, 10% of total pot to season reserve boost for the 3 group awards.
