@@ -50,7 +50,25 @@ if (process.env.SMTP_HOST) {
       } : undefined
     });
     console.log("[mailer] Email transport configured");
+
+    // Verify connection on startup (very helpful for debugging Gmail/Render)
+    mailer.verify(function (error, success) {
+      if (error) {
+        console.error("[mailer] Connection failed:", error.message);
+      } else {
+        console.log("[mailer] Server is ready to take messages");
+      }
+    });
   } catch (e) { console.warn("Mailer setup failed", e.message); }
+}
+
+// Diagnostic logs so you can see in Render if the SMTP env vars are actually visible
+console.log("[env] SMTP_HOST present:", !!process.env.SMTP_HOST, "value starts with:", process.env.SMTP_HOST ? process.env.SMTP_HOST.substring(0,8) : "N/A");
+if (process.env.SMTP_HOST) {
+  console.log("[env] SMTP_PORT:", process.env.SMTP_PORT || "(default 587)");
+  console.log("[env] SMTP_SECURE:", process.env.SMTP_SECURE || "(default false for 587)");
+  console.log("[env] SMTP_USER present:", !!process.env.SMTP_USER);
+  console.log("[env] FROM_EMAIL present:", !!process.env.FROM_EMAIL);
 }
 
 async function sendEmail(to, subject, text) {
@@ -2934,11 +2952,13 @@ app.post("/api/beef/propose", async (req, res) => {
   if (!opponentIds || !category || !stake) return res.status(400).json({ error: "opponentIds, category, stake required" });
 
   const s = await loadStore();
+  const opponentList = Array.isArray(opponentIds) ? opponentIds : [opponentIds];
   const beef = {
     id: generateId("beef"),
     proposerId: mgr.id,
     proposerName: mgr.displayName,
-    opponentIds: Array.isArray(opponentIds) ? opponentIds : [opponentIds],
+    opponentIds: opponentList,
+    participants: [mgr.id, ...opponentList],
     category,
     stake: Number(stake),
     status: "proposed",
@@ -3002,15 +3022,144 @@ app.post("/api/beef/accept", async (req, res) => {
   res.json({ ok: true, beef });
 });
 
+app.post("/api/beef/decline", async (req, res) => {
+  const mgr = getAuthenticatedManager(req);
+  if (!mgr) return res.status(401).json({ error: "Login required" });
+
+  const { beefId } = req.body || {};
+  const s = await loadStore();
+  const beef = (s.beefs || []).find(b => b.id === beefId);
+  if (!beef) return res.status(404).json({ error: "Beef not found" });
+  if (beef.status !== "proposed") return res.status(400).json({ error: "Beef not in proposed state" });
+
+  if (!beef.opponentIds.includes(mgr.id)) {
+    return res.status(403).json({ error: "Only an opponent can decline this beef" });
+  }
+
+  beef.status = "declined";
+  beef.declinedBy = mgr.id;
+  beef.declinedAt = nowISO();
+  await logEvent("beef_declined", { beefId, decliner: mgr.email });
+  writeAtomicSidecar(s);
+  await persistStore();
+
+  // Notify proposer
+  const s2 = await loadStore();
+  const proposer = s2.managers.find(m => m.id === beef.proposerId);
+  if (proposer && proposer.email) {
+    const text = `Hi ${proposer.displayName},\n\n${mgr.displayName} has declined your beef challenge "${beef.category}" for ₦${beef.stake}.`;
+    await sendEmail(proposer.email, 'Beef Declined - D League', text);
+  }
+
+  res.json({ ok: true, beef });
+});
+
+app.post("/api/beef/request-join", async (req, res) => {
+  const mgr = getAuthenticatedManager(req);
+  if (!mgr) return res.status(401).json({ error: "Login required" });
+
+  const { beefId } = req.body || {};
+  const s = await loadStore();
+  const beef = (s.beefs || []).find(b => b.id === beefId);
+  if (!beef || beef.status !== 'accepted') {
+    return res.status(400).json({ error: "Beef must be accepted by original parties before join requests open" });
+  }
+
+  const currentParts = beef.participants || [beef.proposerId, ...(beef.opponentIds || [])];
+  if (currentParts.includes(mgr.id)) {
+    return res.status(400).json({ error: "Already participating" });
+  }
+
+  beef.joinRequests = beef.joinRequests || [];
+  if (!beef.joinRequests.includes(mgr.id)) {
+    beef.joinRequests.push(mgr.id);
+  }
+  beef.joinApprovals = beef.joinApprovals || {};
+  if (!beef.joinApprovals[mgr.id]) beef.joinApprovals[mgr.id] = [];
+
+  await logEvent("beef_join_requested", { beefId, requester: mgr.email });
+  writeAtomicSidecar(s);
+  await persistStore();
+
+  // Notify current participants
+  const s2 = await loadStore();
+  currentParts.forEach(pid => {
+    const p = s2.managers.find(m => m.id === pid);
+    if (p && p.email && p.id !== mgr.id) {
+      sendEmail(p.email, `Join Request for Beef`, `${mgr.displayName} wants to join the beef "${beef.category}" for ₦${beef.stake}. Check the Clubhouse to approve or decline.`);
+    }
+  });
+
+  res.json({ ok: true });
+});
+
+app.post("/api/beef/respond-join", async (req, res) => {
+  const mgr = getAuthenticatedManager(req);
+  if (!mgr) return res.status(401).json({ error: "Login required" });
+
+  const { beefId, requesterId, approve } = req.body || {};
+  const s = await loadStore();
+  const beef = (s.beefs || []).find(b => b.id === beefId);
+  if (!beef) return res.status(404).json({ error: "Beef not found" });
+
+  const currentParts = beef.participants || [beef.proposerId, ...(beef.opponentIds || [])];
+  if (!currentParts.includes(mgr.id)) {
+    return res.status(403).json({ error: "Not a current participant" });
+  }
+
+  beef.joinApprovals = beef.joinApprovals || {};
+  if (!beef.joinApprovals[requesterId]) beef.joinApprovals[requesterId] = [];
+
+  if (approve) {
+    if (!beef.joinApprovals[requesterId].includes(mgr.id)) {
+      beef.joinApprovals[requesterId].push(mgr.id);
+    }
+    // If all current participants have approved
+    if (beef.joinApprovals[requesterId].length >= currentParts.length) {
+      if (!beef.participants) beef.participants = currentParts;
+      if (!beef.participants.includes(requesterId)) beef.participants.push(requesterId);
+      beef.joinRequests = (beef.joinRequests || []).filter(id => id !== requesterId);
+      // keep approvals for history or clear
+      await logEvent("beef_join_approved", { beefId, requester: requesterId, approver: mgr.email });
+    }
+  } else {
+    // Decline rejects the join
+    beef.joinRequests = (beef.joinRequests || []).filter(id => id !== requesterId);
+    delete beef.joinApprovals[requesterId];
+    await logEvent("beef_join_declined", { beefId, requester: requesterId, decliner: mgr.email });
+  }
+
+  writeAtomicSidecar(s);
+  await persistStore();
+  res.json({ ok: true, beef });
+});
+
 // Return active beefs for the logged in user or all (admin sees all)
 app.get("/api/beefs", async (req, res) => {
   const mgr = getAuthenticatedManager(req);
   const s = await loadStore();
-  let beefs = s.beefs || [];
-  if (mgr) {
-    // show only relevant to this manager
-    beefs = beefs.filter(b => b.proposerId === mgr.id || (b.opponentIds || []).includes(mgr.id));
-  }
+  // Return all active (proposed or accepted) beefs so everyone can see and join
+  let beefs = (s.beefs || []).filter(b => ['proposed', 'accepted'].includes(b.status));
+
+  // Enrich with actual names for display
+  beefs = beefs.map(b => {
+    const proposer = s.managers.find(m => m.id === b.proposerId);
+    const oppNames = (b.opponentIds || []).map(oid => {
+      const m = s.managers.find(mm => mm.id === oid);
+      return m ? m.displayName : oid;
+    });
+    const partNames = (b.participants || []).map(pid => {
+      const m = s.managers.find(mm => mm.id === pid);
+      return m ? m.displayName : pid;
+    });
+    return {
+      ...b,
+      proposerName: proposer ? proposer.displayName : (b.proposerName || 'Unknown'),
+      opponentNames: oppNames,
+      participantNames: partNames
+    };
+  });
+
   res.json({ beefs });
 });
 
