@@ -404,7 +404,7 @@ function renderTopPotsAndActions() {
   container.innerHTML = `
     <div class="mt-4 p-4 bg-[#0a0a0a] border border-[#00ff85] rounded-3xl">
       <div class="font-black text-lg mb-2 text-[#00ff85]">💰 THE POTS – GROW THEM BY PLAYING BEEFS & SPONSORING</div>
-      <div class="text-[10px] mb-2 text-[#888]">₦1,000 extra each manager pays = H2H pot only. ₦500/week into pot: 90% this week's winner(s), 10% → 75% overall league / 25% cup at season end. 10% cuts on beefs + sponsored awards → season reserve boost (split equally across 3 group-chosen end awards).</div>
+      <div class="text-[10px] mb-2 text-[#888]">Each paid manager contributes ₦25k prize money (after ₦5k service fee admin-only): ₦1,500 to H2H (₦1,000 base extra + ₦500 additional) + ₦600/wk (₦22,800 total) to weekly pots (90% this week + 10% reserve → 75% overall/25% cup) + ₦700 direct split 75/25 to overall/cup. 10% from beefs/sponsors → reserve boost for 3 awards.</div>
       <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
         <div class="bg-black p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">THIS WEEK'S POT (90% to winner)</div>
@@ -414,17 +414,17 @@ function renderTopPotsAndActions() {
         <div class="bg-black p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">H2H SEASON POT</div>
           <div class="text-2xl font-black">₦${h2h.toLocaleString()}</div>
-          <div class="text-[10px]">The extra ₦1,000 per manager ONLY</div>
+          <div class="text-[10px]">₦1,500 per manager (₦1,000 base extra + ₦500 additional) ONLY</div>
         </div>
         <div class="bg-black p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">OVERALL LEAGUE WINNER</div>
           <div class="text-2xl font-black">₦${overall.toLocaleString()}</div>
-          <div class="text-[10px]">75% of weekly 10% reserves (all season)</div>
+          <div class="text-[10px]">75% weekly reserves + ₦525 direct per manager</div>
         </div>
         <div class="bg-black p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">CUP WINNER POT</div>
           <div class="text-2xl font-black">₦${cup.toLocaleString()}</div>
-          <div class="text-[10px]">25% of weekly 10% reserves (all season)</div>
+          <div class="text-[10px]">25% weekly reserves + ₦175 direct per manager</div>
         </div>
         <div class="bg-black p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">SEASON RESERVE BOOST (for 3 awards)</div>
@@ -432,7 +432,7 @@ function renderTopPotsAndActions() {
           <div class="text-[10px]">10% cuts from beefs + sponsored awards</div>
         </div>
       </div>
-      <div class="mt-3 text-xs text-[#00ff85]">Beefs & sponsored awards feed the reserve boost. Managers can boost any pot below (100% added). When group picks the 3 awards, the boost revenue splits equally across them.</div>
+      <div class="mt-3 text-xs text-[#00ff85]">Beefs & sponsored awards feed the reserve boost. Managers can boost any pot below (100% added). ₦700 direct per manager + weekly 10% fund the big end pots (75/25). When group picks the 3 awards, the boost revenue splits equally across them.</div>
 
       <div class="mt-2 text-[10px]">
         <span class="font-semibold">Active Sponsored:</span> 
@@ -1513,14 +1513,14 @@ async function loadProjections() {
     <div>
       <div class="text-[#00ff85] text-xs">FPL WEEKLY 90%</div>
       <div class="text-2xl font-black tabular-nums">₦${f.weeklyPot90 || 0}</div>
-      <div class="text-[10px] text-[#888]">Per round pot (paid managers)</div>
+      <div class="text-[10px] text-[#888]">Per round pot (paid managers, now ₦600/wk base)</div>
     </div>
     <div>
-      <div class="text-[#00ff85] text-xs">OVERALL (75%)</div>
+      <div class="text-[#00ff85] text-xs">OVERALL (75% + ₦525 direct)</div>
       <div class="text-2xl font-black tabular-nums">₦${f.overallWinnerPot || 0}</div>
     </div>
     <div>
-      <div class="text-[#00ff85] text-xs">CUP (25%)</div>
+      <div class="text-[#00ff85] text-xs">CUP (25% + ₦175 direct)</div>
       <div class="text-2xl font-black tabular-nums">₦${f.cupWinnerPot || 0}</div>
     </div>
     <div>
@@ -1550,11 +1550,11 @@ function renderProjectionsLive() {
   if (fplWrap) {
     fplWrap.innerHTML = `
       <div class="text-xs">This week 90% pot: <span class="font-bold text-[#00ff85]">₦${proj.fpl?.weeklyPot90 || 0}</span></div>
-      <div class="text-xs">Overall winner: ₦${proj.fpl?.overallWinnerPot || 0} (75% of weekly 10% reserves)</div>
-      <div class="text-xs">Cup winner: ₦${proj.fpl?.cupWinnerPot || 0} (25% of weekly 10% reserves)</div>
-      <div class="text-xs">H2H season: ₦${proj.fpl?.h2hOverallPot || 0} (extra ₦1k per manager only)</div>
+      <div class="text-xs">Overall winner: ₦${proj.fpl?.overallWinnerPot || 0} (75% weekly 10% + ₦525 direct)</div>
+      <div class="text-xs">Cup winner: ₦${proj.fpl?.cupWinnerPot || 0} (25% weekly 10% + ₦175 direct)</div>
+      <div class="text-xs">H2H season: ₦${proj.fpl?.h2hOverallPot || 0} (₦1,500 per manager: 1k base + 500 additional)</div>
       <div class="text-xs">Season reserve boost: ₦${proj.fpl?.seasonReserveBoost || 0} (10% beef/sponsor cuts → 3 awards)</div>
-      <div class="text-[10px] mt-1 text-[#888]">Beefs & sponsors grow the boost. 5k service fee is admin-only, hidden here.</div>
+      <div class="text-[10px] mt-1 text-[#888]">₦5k service fee hidden (admin only). Beefs & sponsors grow the boost.</div>
     `;
   }
   if (uclWrap) {

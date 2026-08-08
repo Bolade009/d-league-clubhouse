@@ -129,9 +129,13 @@ const COMPETITIONS = {
     roundLabel: "GW",
     rounds: 38,
     seasonFee: 30000,
-    contributionPerRound: 500,
-    extraReserve: 1000,
+    contributionPerRound: 600,
+    extraReserve: 1500,
     adminFee: 5000,
+    // Prize revenue per manager = ₦25,000 (after ₦5k service fee, admin only)
+    // ₦1,500 H2H (1k base extra + 500 additional from allocation)
+    // ₦22,800 weekly (₦600/wk × 38) → 90% weekly winners, 10% reserve 75/25 overall/cup
+    // ₦700 direct split 75% overall / 25% cup
     reserveSplit: [
       { label: "League Winner", pct: 70 },
       { label: "Cup Winner", pct: 30 }
@@ -996,9 +1000,13 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
       s.settings[houseKey] = (s.settings[houseKey] || 0) + Math.min(Number(amount), houseFee);
     }
 
-    // Per spec: the extra ₦1,000 each FPL manager pays goes ONLY to H2H pot. Nothing else.
+    // Per spec: H2H gets ₦1,500 total (₦1,000 base extra + ₦500 additional)
+    // Weekly contribution is now ₦600 per week (500 base + 100 additional)
+    // Remaining ₦700 direct per manager split 75% overall / 25% cup.
     if (competition === 'fpl') {
-      s.settings.h2hOverallPot = (s.settings.h2hOverallPot || 0) + 1000;
+      s.settings.h2hOverallPot = (s.settings.h2hOverallPot || 0) + 1500;
+      s.settings.fplOverallPot = (s.settings.fplOverallPot || 0) + 525;
+      s.settings.fplCupPot = (s.settings.fplCupPot || 0) + 175;
     }
   }
 
@@ -1140,6 +1148,7 @@ async function settleOpenChallenges() {
         note: `Won challenge: ${ch.title} (90%, 10% house)`,
         at: nowISO()
       });
+      initiateTransfer(winnerMgr.id, winnerShare, `Challenge win: ${ch.title}`);
       s.ledger.push({
         id: generateId("ldg"),
         type: "house_commission",
@@ -1208,6 +1217,8 @@ async function settleSponsoredAwards(round) {
           note: `Won ${target} sponsored by ${data.sponsors.join(', ')} (split if tie, 10% house)`,
           at: nowISO()
         });
+        // Auto attempt payout to wallet/bank (like weekly)
+        initiateTransfer(w.id, share, `Award win: ${target}`);
       });
       s.ledger.push({
         id: generateId("ldg"),
@@ -1258,6 +1269,8 @@ async function settleBeef(beefId, winnerManagerId) {
     note: `Won beef "${beef.category}" (₦${stake} × ${num} participants — 90% to winner)`,
     at: nowISO()
   });
+  // Auto attempt payout to winner's wallet/bank (consistent with weekly and awards)
+  initiateTransfer(winner.id, winnerShare, `Beef win: ${beef.category}`);
   s.ledger.push({
     id: generateId("ldg"),
     type: "season_reserve_boost",
@@ -1428,7 +1441,9 @@ async function initiateTransfer(managerId, amount, reason) {
 // Call this after settling pots/challenges
 async function payWinnersForRound(comp, round) {
   const s = await loadStore();
-  const wins = s.ledger.filter(l => l.competition === comp && l.round === round && l.type === "weekly_win" && l.amount > 0);
+  // Auto payout attempt for all win types (weekly, awards, challenges) into wallet/bank
+  const winTypes = ["weekly_win", "award_win", "challenge_win"];
+  const wins = s.ledger.filter(l => l.competition === comp && l.round === round && winTypes.includes(l.type) && l.amount > 0);
   for (const win of wins) {
     await initiateTransfer(win.managerId, win.amount, win.note);
   }
@@ -1770,11 +1785,11 @@ async function getUCLStats() {
 }
 
 async function getProjectedPayouts() {
-  // Exact flow:
-  // 1. 5k (FPL) / 2.5k (UCL) service fee: admin-only, never shown in public pots or manager views.
-  // 2. Extra ₦1,000 per FPL manager = H2H season pot ONLY.
-  // 3. ₦500 per manager per week into pot: 90% paid weekly to winner(s); 10% reserve → 75% overall league winner + 25% cup winner (end of season).
-  // 4. 10% cuts on beef stakes + sponsored award pots → seasonReserveBoost (split equally across the 3 group-chosen end-of-season awards later).
+  // Exact flow (per manager prize revenue ₦25,000 after ₦5k service fee - admin only):
+  // 1. ₦1,500 to H2H (₦1,000 base extra + ₦500 additional).
+  // 2. ₦600 per week (₦22,800 total) into pot: 90% paid weekly to winner(s); 10% reserve → 75% overall / 25% cup at end.
+  // 3. Remaining ₦700 direct split 75% overall / 25% cup.
+  // 4. 10% cuts on beefs + sponsored awards → seasonReserveBoost (for the 3 group-chosen end awards, split equally later).
   const s = getStore();
   const fplPaid = getEligibleManagers("fpl").length;
   const uclPaid = getEligibleManagers("ucl").length;
@@ -1794,8 +1809,16 @@ async function getProjectedPayouts() {
   const voluntaryReserve = potBoosts.filter(b => b.target === 'reserve').reduce((sum, b) => sum + (b.amount || 0), 0);
 
   // Projections use paid counts * per-spec contributions (not the hidden 5k service fees).
+  // Full prize per manager = ₦25,000 (after ₦5k service fee):
+  //   ₦1,500 → H2H (1k base + 500 additional)
+  //   ₦22,800 (₦600/wk × 38) → weekly pots (90% paid weekly, 10% reserve)
+  //   ₦700 → direct to season pots (overall 75% / cup 25%)
   const weeklyReserveFullSeason = fplPaid * COMPETITIONS.fpl.contributionPerRound * 0.1 * 38;
-  const h2hFromExtra = fplPaid * COMPETITIONS.fpl.extraReserve;  // 1000 extra ONLY for H2H
+  const h2hFromExtra = fplPaid * COMPETITIONS.fpl.extraReserve;  // 1,500 total for H2H
+
+  const extraDirectPerManager = 700;
+  const extraToOverall = Math.floor(extraDirectPerManager * 0.75); // 525
+  const extraToCup = extraDirectPerManager - extraToOverall; // 175
 
   const sponsored = (s.sponsorships || []).reduce((sum, sp) => sum + (sp.amount || 0), 0);
   const uclReserve = 0;
@@ -1806,9 +1829,9 @@ async function getProjectedPayouts() {
   const upcomingUCLMatches = upcomingMatches.length;
   const uclFormBoost = Math.min(upcomingUCLMatches * 0.5, 5);
 
-  // Season pots built only from weekly 10% reserves split 75/25 + voluntary boosts on top
-  const overallFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.75) + voluntaryOverall;
-  const cupFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.25) + voluntaryCup;
+  // Season pots built only from weekly 10% reserves split 75/25 + voluntary boosts + the ₦5k direct per manager (75/25)
+  const overallFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.75) + voluntaryOverall + (fplPaid * extraToOverall);
+  const cupFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.25) + voluntaryCup + (fplPaid * extraToCup);
 
   // seasonReserveBoost accumulates actual 10% from settled beefs + sponsored + voluntary reserve boosts
   const seasonReserveBoost = (s.settings.seasonReserveBoost || Math.floor(sponsored * 0.1)) + voluntaryReserve;
@@ -1818,9 +1841,9 @@ async function getProjectedPayouts() {
   return {
     fpl: {
       weeklyPot90: weeklyPot90,
-      h2hOverallPot: h2hTotal,  // the extra 1000 per manager ONLY for H2H + voluntary
-      overallWinnerPot: overallFromWeeklyReserves,  // 75% of weekly 10% reserves + voluntary
-      cupWinnerPot: cupFromWeeklyReserves,          // 25% of weekly 10% reserves + voluntary
+      h2hOverallPot: h2hTotal,  // ₦1,500 total for H2H (base + additional) + voluntary
+      overallWinnerPot: overallFromWeeklyReserves,  // 75% of weekly 10% reserves + ₦525 direct per manager + voluntary
+      cupWinnerPot: cupFromWeeklyReserves,          // 25% of weekly 10% reserves + ₦175 direct per manager + voluntary
       seasonReserveBoost: seasonReserveBoost        // 10% from beefs + sponsors + voluntary reserve boosts → for 3 end-of-season awards
     },
     ucl: {
@@ -1836,7 +1859,7 @@ async function getProjectedPayouts() {
       fplCup: cupFromWeeklyReserves
     },
     h2hOverallPot: h2hTotal,
-    note: "FPL: extra 1k/manager = H2H only. Weekly 500/manager pot: 90% weekly winners, 10% → 75% overall / 25% cup (end season). 10% cuts on beefs+sponsored → season reserve boost (split equally to the 3 group awards when decided). Managers can voluntarily boost any pot (100% goes in)."
+    note: "FPL: ₦25k prize per manager (after ₦5k service). ₦1,500 H2H (1k base + 500 addl). ₦600/wk (22.8k) → weekly (90% paid out, 10%→75% overall/25% cup). +₦700 direct (75/25 to overall/cup). Beef/sponsor 10% → reserve boost. Managers can voluntarily boost any pot (100% added)."
   };
 }
 
@@ -3357,6 +3380,7 @@ app.post("/api/admin/settle-challenge", async (req, res) => {
     note: `Forced settle: ${ch.title} - Winner: ${winnerDisplay} (90%)`,
     at: nowISO()
   });
+  initiateTransfer(winnerManagerId || "manual", winnerShare, `Forced challenge win: ${ch.title}`);
   s.ledger.push({
     id: generateId("ldg"),
     type: "house_commission",
