@@ -357,7 +357,6 @@ async function loadAllData() {
   renderProjectionsLive();
   renderChallengeArena();
   showPendingBeefsBanner();
-  renderTopPotsAndActions();
   renderSponsoredAwards();
   renderLineupViewer();
 
@@ -391,61 +390,75 @@ async function loadAllData() {
 
 function renderTopPotsAndActions() {
   const container = document.getElementById('pots-top') || createPotsContainer();
-  if (!container || !standingsData) return;
+  if (!container) return;
 
   const proj = window.lastProjections || {};
   const fpl = proj.fpl || {};
-  const h2h = fpl.h2hOverallPot || 0;           // extra 1000 per manager only
-  const overall = fpl.overallWinnerPot || 0;    // 75% of weekly 10% reserves
-  const cup = fpl.cupWinnerPot || 0;            // 25% of weekly 10% reserves
+  const h2h = fpl.h2hOverallPot || 0;
+  const overall = fpl.overallWinnerPot || 0;
+  const cup = fpl.cupWinnerPot || 0;
   const weekly = fpl.weeklyPot90 || 0;
-  const reserve = fpl.seasonReserveBoost || 0;  // from 10% beef/sponsor cuts for end awards
+  const reserve = fpl.seasonReserveBoost || 0;
 
-  container.innerHTML = `
-    <div class="mt-4 p-4 bg-[#0a0a0a] border border-[#00ff85] rounded-3xl">
-      <div class="font-black text-lg mb-2 text-[#00ff85]">💰 THE POTS – GROW THEM BY PLAYING BEEFS & SPONSORING</div>
-      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
-        <div class="bg-black p-3 rounded-2xl border border-[#333]">
-          <div class="text-xs text-[#888]">This GW pot</div>
-          <div class="text-2xl font-black text-[#00ff85]">₦${weekly.toLocaleString()}</div>
+  // Build once, then update values for speed (avoids full re-parse on every data refresh)
+  if (!container.hasChildNodes() || container.querySelector('#pot-grid') === null) {
+    container.innerHTML = `
+      <div class="mt-4 p-4 bg-[#0a0a0a] border border-[#00ff85] rounded-3xl">
+        <div class="font-black text-lg mb-2 text-[#00ff85]">💰 THE POTS – GROW THEM BY PLAYING BEEFS & SPONSORING</div>
+        <div id="pot-grid" class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+          <div class="bg-black p-3 rounded-2xl border border-[#333]">
+            <div class="text-xs text-[#888]">This GW pot</div>
+            <div id="pot-weekly" class="text-2xl font-black text-[#00ff85]">₦0</div>
+          </div>
+          <div class="bg-black p-3 rounded-2xl border border-[#333]">
+            <div class="text-xs text-[#888]">H2H Season Pot</div>
+            <div id="pot-h2h" class="text-2xl font-black">₦0</div>
+          </div>
+          <div class="bg-black p-3 rounded-2xl border border-[#333]">
+            <div class="text-xs text-[#888]">Overall League Winner</div>
+            <div id="pot-overall" class="text-2xl font-black">₦0</div>
+          </div>
+          <div class="bg-black p-3 rounded-2xl border border-[#333]">
+            <div class="text-xs text-[#888]">End of Season Cup Winner</div>
+            <div id="pot-cup" class="text-2xl font-black">₦0</div>
+          </div>
+          <div class="bg-black p-3 rounded-2xl border border-[#333]">
+            <div class="text-xs text-[#888]">Season Reserve Boost for Group decided awards by mid-season</div>
+            <div id="pot-reserve" class="text-2xl font-black">₦0</div>
+          </div>
         </div>
-        <div class="bg-black p-3 rounded-2xl border border-[#333]">
-          <div class="text-xs text-[#888]">H2H Season Pot</div>
-          <div class="text-2xl font-black">₦${h2h.toLocaleString()}</div>
+        <div class="mt-3 text-xs text-[#00ff85]">Beef and sponsored awards fund the season reserve through 10% house cuts</div>
+
+        <div class="mt-2 text-[10px]">
+          <span class="font-semibold">Active Sponsored:</span> 
+          <span id="top-spon-inline">See awards section or sponsor to boost a pot!</span>
         </div>
-        <div class="bg-black p-3 rounded-2xl border border-[#333]">
-          <div class="text-xs text-[#888]">Overall League Winner</div>
-          <div class="text-2xl font-black">₦${overall.toLocaleString()}</div>
+
+        <div class="mt-3 grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+          <button onclick="boostPot('weekly')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost this week's</button>
+          <button onclick="boostPot('h2h')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost H2H</button>
+          <button onclick="boostPot('overall')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost Overall</button>
+          <button onclick="boostPot('cup')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost Cup</button>
+          <button onclick="boostPot('reserve')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost Reserve</button>
         </div>
-        <div class="bg-black p-3 rounded-2xl border border-[#333]">
-          <div class="text-xs text-[#888]">End of Season Cup Winner</div>
-          <div class="text-2xl font-black">₦${cup.toLocaleString()}</div>
-        </div>
-        <div class="bg-black p-3 rounded-2xl border border-[#333]">
-          <div class="text-xs text-[#888]">Season Reserve Boost for Group decided awards by mid-season</div>
-          <div class="text-2xl font-black">₦${reserve.toLocaleString()}</div>
-        </div>
+
+        <div id="pot-boosts-list" class="mt-3 text-[11px] text-[#aaa] max-h-24 overflow-auto"></div>
       </div>
-      <div class="mt-3 text-xs text-[#00ff85]">Beef and sponsored awards fund the season reserve through 10% house cuts</div>
+    `;
+  }
 
-      <div class="mt-2 text-[10px]">
-        <span class="font-semibold">Active Sponsored:</span> 
-        <span id="top-spon-inline">See awards section or sponsor to boost a pot!</span>
-      </div>
+  // Fast update only the values (no full DOM rebuild)
+  const setVal = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '₦' + (val || 0).toLocaleString();
+  };
+  setVal('pot-weekly', weekly);
+  setVal('pot-h2h', h2h);
+  setVal('pot-overall', overall);
+  setVal('pot-cup', cup);
+  setVal('pot-reserve', reserve);
 
-      <div class="mt-3 grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
-        <button onclick="boostPot('weekly')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost this week's</button>
-        <button onclick="boostPot('h2h')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost H2H</button>
-        <button onclick="boostPot('overall')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost Overall</button>
-        <button onclick="boostPot('cup')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost Cup</button>
-        <button onclick="boostPot('reserve')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost Reserve</button>
-      </div>
-
-      <div id="pot-boosts-list" class="mt-3 text-[11px] text-[#aaa] max-h-24 overflow-auto"></div>
-    </div>
-  `;
-
-  // Render recent boosts with names
+  // Render recent boosts with names (only if data present)
   const boostsWrap = document.getElementById('pot-boosts-list');
   if (boostsWrap && standingsData && Array.isArray(standingsData.potBoosts)) {
     const recent = [...standingsData.potBoosts].slice(-8).reverse();

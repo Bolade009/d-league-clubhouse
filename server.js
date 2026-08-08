@@ -3439,7 +3439,7 @@ app.get("/api/standings", async (req, res) => {
     realLeagues,  // Admin can use this for real standings/H2H
     leagueIds: ids,
     sponsorships: s.sponsorships || [],
-    potBoosts: (s.potBoosts || []).map(b => {
+    potBoosts: (s.potBoosts || []).slice(-20).map(b => {  // limit recent to keep responses small/fast
       const m = s.managers.find(mm => mm.id === b.managerId);
       return {
         ...b,
