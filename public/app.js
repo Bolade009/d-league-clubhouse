@@ -329,8 +329,10 @@ async function loadAllData() {
     loadChallenges().catch(e => console.warn('challenges failed', e)),
     loadProjections().catch(e => console.warn('projections failed', e)),
     // Fetch server beefs so user-generated beefs survive restarts (localStorage is UI cache only now)
+    // Also set for prominent top display
     fetchJSON('/api/beefs').then(d => {
       if (d && Array.isArray(d.beefs)) {
+        window.activeBeefs = d.beefs;
         d.beefs.forEach(sb => {
           const exists = playerChallenges.findIndex(pc => pc.serverId === sb.id);
           if (exists === -1) {
@@ -357,6 +359,7 @@ async function loadAllData() {
   renderProjectionsLive();
   renderChallengeArena();
   showPendingBeefsBanner();
+  renderActiveBeefs();
   renderSponsoredAwards();
   renderLineupViewer();
 
@@ -482,6 +485,79 @@ function createPotsContainer() {
   c.id = 'pots-top';
   nameEl.parentNode.insertBefore(c, nameEl.nextSibling);
   return c;
+}
+
+function createActiveBeefsContainer() {
+  const pots = document.getElementById('pots-top');
+  if (pots && pots.parentNode) {
+    const c = document.createElement('div');
+    c.id = 'active-beefs-top';
+    pots.parentNode.insertBefore(c, pots.nextSibling);
+    return c;
+  }
+  const nameEl = document.getElementById('manager-name');
+  if (!nameEl || !nameEl.parentNode) return null;
+  const c = document.createElement('div');
+  c.id = 'active-beefs-top';
+  nameEl.parentNode.insertBefore(c, nameEl.nextSibling);
+  return c;
+}
+
+function renderActiveBeefs() {
+  const container = document.getElementById('active-beefs-top') || createActiveBeefsContainer();
+  if (!container) return;
+
+  const beefs = window.activeBeefs || [];
+  const active = beefs.filter(b => !['settled', 'declined', 'cancelled'].includes((b.status || '').toLowerCase()));
+
+  if (active.length === 0) {
+    container.innerHTML = `
+      <div class="mt-2 p-3 bg-[#111] border border-[#ffaa00] rounded-3xl text-xs">
+        <span class="text-[#ffaa00] font-semibold">⚔️ NO ACTIVE BEEFS — </span>
+        Propose one above to get the action going at the top!
+      </div>
+    `;
+    return;
+  }
+
+  let html = `
+    <div class="mt-3 p-4 bg-[#0a0a0a] border border-[#ffaa00] rounded-3xl">
+      <div class="font-black text-lg mb-1 text-[#ffaa00]">⚔️ LIVE BEEFS — PROMINENT AT THE TOP</div>
+      <div class="text-[10px] mb-2 text-[#888]">What’s being beefed, pot size (after 10% house cut to reserve), who paid. Cuts hit house reserve immediately on payment. Very attractive — propose or join!</div>
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 text-sm">
+  `;
+
+  active.forEach(b => {
+    const potSize = b.currentPot || b.prizePot || Math.floor(((b.participants || b.opponentIds || []).length + 1) * (b.stake || 0) * 0.9);
+    const paidDetails = b.paidDetails || [];
+    const paidNames = paidDetails.map(p => p.displayName).join(', ') || 'Waiting for payments';
+    const paidCount = paidDetails.length;
+    const total = (b.participants || []).length;
+    const statusClass = b.status === 'accepted' ? 'text-[#00ff85]' : 'text-yellow-400';
+    const deep = b.id ? `${location.origin}/?beef=${b.id}` : location.origin;
+    const safeShare = encodeURIComponent(`D League Beef: ${b.proposerName || ''} vs ${(b.opponentNames||[]).join(' & ')} for "${b.category}" Pot ₦${potSize} — ${deep}`);
+
+    html += `
+      <div class="bg-black p-3 rounded-2xl border border-[#ffaa00]">
+        <div class="font-bold text-[#ffaa00]">⚔️ ${b.proposerName || 'Proposer'} vs ${(b.opponentNames || b.participantNames || []).join(' & ') || 'Opponents'}</div>
+        <div class="mt-1 text-xs">For: <span class="font-semibold">"${b.category}"</span> @ ₦${b.stake} each</div>
+        <div class="mt-1">
+          <span class="text-xs text-[#888]">POT SIZE (90% winner):</span>
+          <span class="text-xl font-black">₦${(potSize || 0).toLocaleString()}</span>
+        </div>
+        <div class="text-xs mt-0.5">Paid: ${paidCount}/${total} — ${paidNames}</div>
+        <div class="text-xs">Status: <span class="${statusClass} font-semibold">${b.status || 'proposed'}</span></div>
+        <div class="mt-2 flex flex-wrap gap-1 text-[10px]">
+          <button onclick="showWhatsAppShare(decodeURIComponent('${safeShare}'), 'Share beef'); event.stopImmediatePropagation();" class="px-2 py-0.5 bg-[#ffaa00] text-black rounded">📲 Share WA + Link</button>
+          ${b.status === 'proposed' ? `<button onclick="respondToBeefLink('${b.id}', 'accept')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Accept</button>` : ''}
+          ${b.status === 'accepted' ? `<button onclick="requestToJoinBeef('${b.id}')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Request to Join</button>` : ''}
+        </div>
+      </div>
+    `;
+  });
+
+  html += `</div></div>`;
+  container.innerHTML = html;
 }
 
 async function loadAdminOverview() {
@@ -772,6 +848,35 @@ async function loadAdminOverview() {
     } else if (dash) {
       dash.appendChild(panel);
     }
+
+    // Beefs admin management - prominent for cancel, see payers, immediate cuts
+    (async () => {
+      try {
+        const bdata = await fetchJSON('/api/admin/beefs');
+        const bdiv = document.createElement('div');
+        bdiv.className = 'mt-4 p-5 bg-[#111] border-2 border-[#ffaa00] rounded-3xl';
+        let bh = `<div class="font-black text-lg mb-2 text-[#ffaa00]">⚔️ BEEFS — ADMIN: CANCEL / SEE PAYERS / REFUNDS</div>
+          <div class="text-[10px] text-[#888] mb-2">Pot size shown after 10% cut (cuts go to house reserve immediately on any stake payment). Cancel aborts + full refund to paid wallets + reverse cuts.</div>`;
+        const bl = (bdata.beefs || []);
+        if (bl.length === 0) {
+          bh += `<div class="text-xs text-[#666]">No beefs found.</div>`;
+        } else {
+          bl.forEach(bf => {
+            const pstr = (bf.paidDetails || []).map(p=> `${p.displayName} ₦${p.amount}`).join(' • ') || 'no payments';
+            const pz = bf.currentPot || bf.prizePot || 0;
+            const canC = bf.status !== 'settled' && bf.status !== 'cancelled';
+            bh += `<div class="mb-2 p-2 bg-black/60 rounded text-xs border border-[#ffaa00]">
+              <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | "${bf.category}" | Pot ₦${pz}</div>
+              <div>Status: ${bf.status} | Paid: ${pstr}</div>
+              ${canC ? `<button onclick="adminCancelBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-red-700 text-white text-[10px] rounded">CANCEL + REFUND</button>` : ''}
+            </div>`;
+          });
+        }
+        bdiv.innerHTML = bh;
+        const dash = document.getElementById('dashboard');
+        if (dash) dash.appendChild(bdiv);
+      } catch(e){ console.warn('beef admin load', e); }
+    })();
 
     // === Persistence health box (solid way to check if data is correct after restarts) ===
     (async () => {
@@ -1575,6 +1680,7 @@ function renderProjectionsLive() {
 }
 
 let playerChallenges = JSON.parse(localStorage.getItem('dl_playerChallenges') || '[]');
+window.activeBeefs = window.activeBeefs || [];
 
 function savePlayerChallenges() {
   localStorage.setItem('dl_playerChallenges', JSON.stringify(playerChallenges));
@@ -3002,6 +3108,22 @@ async function respondToBeefLink(beefId, action) {
     await loadAllData();
   } catch (e) {
     alert((e && e.message) || 'Action failed');
+  }
+}
+
+async function adminCancelBeef(beefId) {
+  if (!confirm('Cancel this beef? This will set status cancelled, fully refund all paid stakes to the payers\' wallets, and reverse the 10% cuts from the house reserve pot.')) return;
+  try {
+    await fetchJSON('/api/admin/cancel-beef', {
+      method: 'POST',
+      body: JSON.stringify({ beefId })
+    });
+    alert('Beef cancelled + refunds processed. House reserve updated.');
+    await loadAllData();
+    // refresh admin if open
+    if (typeof loadAdminOverview === 'function') loadAdminOverview();
+  } catch (e) {
+    alert('Cancel failed: ' + (e.message || e));
   }
 }
 

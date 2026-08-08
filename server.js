@@ -900,6 +900,24 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
       if (beef) {
         beef.stakePaid = true;
         beef.stakePaymentRef = reference;
+        const payerId = existing.managerId;
+        const paidAmt = existing.amount || beef.stake || 0;
+        beef.paidBy = beef.paidBy || {};
+        if (!beef.paidBy[payerId]) {
+          beef.paidBy[payerId] = { amount: paidAmt, ref: reference, paidAt: nowISO() };
+          beef.totalStaked = (beef.totalStaked || 0) + paidAmt;
+          const cut = Math.floor(paidAmt * 0.1);
+          s.settings.seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + cut;
+          s.ledger.push({
+            id: generateId("ldg"),
+            type: "season_reserve_boost",
+            managerId: "system",
+            amount: -cut,
+            note: `10% immediate house cut from beef stake payment for "${beef.category}"`,
+            at: nowISO()
+          });
+          beef.prizePot = (beef.prizePot || 0) + (paidAmt - cut);
+        }
       }
     }
     await persistStore();
@@ -923,6 +941,26 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
     if (beef) {
       beef.stakePaid = true;
       beef.stakePaymentRef = reference || payment.reference;
+      const payerId = payment.managerId;
+      const paidAmt = payment.amount || beef.stake || 0;
+      beef.paidBy = beef.paidBy || {};
+      beef.paidBy[payerId] = {
+        amount: paidAmt,
+        ref: reference || payment.reference,
+        paidAt: nowISO()
+      };
+      beef.totalStaked = (beef.totalStaked || 0) + paidAmt;
+      const cut = Math.floor(paidAmt * 0.1);
+      s.settings.seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + cut;
+      s.ledger.push({
+        id: generateId("ldg"),
+        type: "season_reserve_boost",
+        managerId: "system",
+        amount: -cut,
+        note: `10% immediate house cut from beef stake payment for "${beef.category}"`,
+        at: nowISO()
+      });
+      beef.prizePot = (beef.prizePot || 0) + (paidAmt - cut);
     }
   }
 
@@ -1231,19 +1269,11 @@ async function settleBeef(beefId, winnerManagerId) {
   const s = await loadStore();
   const beef = (s.beefs || []).find(b => b.id === beefId);
   if (!beef || ['settled', 'declined'].includes(beef.status)) return false;
-  const parts = (beef.participants && beef.participants.length)
-    ? beef.participants
-    : [beef.proposerId, ...(beef.opponentIds || [])];
-  const num = parts.length || 2;
-  const stake = Number(beef.stake || 0);
-  const totalPot = num * stake;
-  if (totalPot <= 0) return false;
-
-  const commission = Math.floor(totalPot * 0.1);
-  const winnerShare = totalPot - commission;
-
   const winner = s.managers.find(m => m.id === winnerManagerId);
   if (!winner) return false;
+
+  // Use pre-reserved prize pot (90% after immediate cuts on payments). Cuts already reflected in seasonReserveBoost.
+  const winnerShare = beef.prizePot || 0;
 
   s.ledger.push({
     id: generateId("ldg"),
@@ -1252,20 +1282,9 @@ async function settleBeef(beefId, winnerManagerId) {
     competition: "fpl",
     round: (s.settings.currentRound && s.settings.currentRound.fpl) || 0,
     amount: winnerShare,
-    note: `Won beef "${beef.category}" (₦${stake} × ${num} participants — 90% to winner)`,
+    note: `Won beef "${beef.category}" — 90% pot (cuts already taken immediately on stakes)`,
     at: nowISO()
   });
-  s.ledger.push({
-    id: generateId("ldg"),
-    type: "season_reserve_boost",
-    managerId: "system",
-    competition: "fpl",
-    round: (s.settings.currentRound && s.settings.currentRound.fpl) || 0,
-    amount: -commission,
-    note: `10% cut from beef "${beef.category}" (₦${stake} × ${num}) → season reserve boost for end awards`,
-    at: nowISO()
-  });
-  s.settings.seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + commission;
 
   beef.status = "settled";
   beef.winner = winner.displayName;
@@ -1273,7 +1292,46 @@ async function settleBeef(beefId, winnerManagerId) {
   beef.settledAt = nowISO();
 
   await persistStore();
-  await logEvent("beef_settled", { beefId, winner: winner.id, totalPot, boostAdded: commission });
+  await logEvent("beef_settled", { beefId, winner: winner.id, winnerShare });
+  return true;
+}
+
+async function cancelBeef(beefId) {
+  const s = await loadStore();
+  const beef = (s.beefs || []).find(b => b.id === beefId);
+  if (!beef || ['settled', 'cancelled'].includes(beef.status)) return false;
+
+  if (beef.paidBy) {
+    Object.entries(beef.paidBy).forEach(([pid, p]) => {
+      if (p.amount > 0) {
+        s.ledger.push({
+          id: generateId("ldg"),
+          type: "beef_refund",
+          managerId: pid,
+          amount: p.amount,
+          note: `Full refund for cancelled beef "${beef.category}" (stake returned to wallet)`,
+          at: nowISO()
+        });
+        // Reverse the 10% cut since cancelled (improper setup or abort)
+        const cut = Math.floor(p.amount * 0.1);
+        s.settings.seasonReserveBoost = Math.max(0, (s.settings.seasonReserveBoost || 0) - cut);
+        s.ledger.push({
+          id: generateId("ldg"),
+          type: "season_reserve_boost",
+          managerId: "system",
+          amount: cut,
+          note: `Reversed 10% cut on refund for cancelled beef "${beef.category}"`,
+          at: nowISO()
+        });
+      }
+    });
+  }
+
+  beef.status = "cancelled";
+  beef.cancelledAt = nowISO();
+
+  await persistStore();
+  await logEvent("beef_cancelled", { beefId });
   return true;
 }
 
@@ -3103,8 +3161,14 @@ app.post("/api/beef/propose", async (req, res) => {
     stake: Number(stake),
     status: "proposed",
     paidFromWallet: !!paidFromWallet,
-    at: nowISO()
+    at: nowISO(),
+    paidBy: {}
   };
+  if (paidFromWallet) {
+    beef.paidBy[mgr.id] = { amount: Number(stake), ref: 'wallet', paidAt: nowISO() };
+    beef.totalStaked = Number(stake);
+    beef.prizePot = Math.floor(Number(stake) * 0.9);
+  }
   s.beefs = s.beefs || [];
   s.beefs.push(beef);
   await logEvent("beef_proposed", { beefId: beef.id, proposer: mgr.email, stake: beef.stake, category });
@@ -3281,7 +3345,7 @@ app.get("/api/beefs", async (req, res) => {
   // Return all active (proposed or accepted) beefs so everyone can see and join
   let beefs = (s.beefs || []).filter(b => ['proposed', 'accepted'].includes(b.status));
 
-  // Enrich with actual names for display
+  // Enrich with actual names for display + paid details + pot size (cuts taken immediately on payments)
   beefs = beefs.map(b => {
     const proposer = s.managers.find(m => m.id === b.proposerId);
     const oppNames = (b.opponentIds || []).map(oid => {
@@ -3292,15 +3356,115 @@ app.get("/api/beefs", async (req, res) => {
       const m = s.managers.find(mm => mm.id === pid);
       return m ? m.displayName : pid;
     });
+    const paidDetails = [];
+    if (b.paidBy) {
+      Object.entries(b.paidBy).forEach(([id, p]) => {
+        const m = s.managers.find(mm => mm.id === id);
+        paidDetails.push({
+          managerId: id,
+          displayName: m ? m.displayName : id,
+          amount: p.amount,
+          ref: p.ref || ''
+        });
+      });
+    }
+    const potSize = b.prizePot || Math.floor(((b.participants || b.opponentIds || []).length + 1) * (b.stake || 0) * 0.9);
     return {
       ...b,
       proposerName: proposer ? proposer.displayName : (b.proposerName || 'Unknown'),
       opponentNames: oppNames,
-      participantNames: partNames
+      participantNames: partNames,
+      paidDetails,
+      currentPot: potSize
     };
   });
 
   res.json({ beefs });
+});
+
+// Admin view all beefs (including settled/cancelled) with full payment details
+app.get("/api/admin/beefs", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(403).json({ error: "Unauthorized" });
+  }
+
+  const s = await loadStore();
+  const allBeefs = (s.beefs || []).map(b => {
+    const proposer = s.managers.find(m => m.id === b.proposerId);
+    const oppNames = (b.opponentIds || []).map(oid => {
+      const m = s.managers.find(mm => mm.id === oid);
+      return m ? m.displayName : oid;
+    });
+    const partNames = (b.participants || []).map(pid => {
+      const m = s.managers.find(mm => mm.id === pid);
+      return m ? m.displayName : pid;
+    });
+    const paidDetails = [];
+    if (b.paidBy) {
+      Object.entries(b.paidBy).forEach(([id, p]) => {
+        const m = s.managers.find(mm => mm.id === id);
+        paidDetails.push({
+          managerId: id,
+          displayName: m ? m.displayName : id,
+          amount: p.amount,
+          ref: p.ref || ''
+        });
+      });
+    }
+    const potSize = b.prizePot || Math.floor(((b.participants || b.opponentIds || []).length + 1) * (b.stake || 0) * 0.9);
+    return {
+      ...b,
+      proposerName: proposer ? proposer.displayName : (b.proposerName || 'Unknown'),
+      opponentNames: oppNames,
+      participantNames: partNames,
+      paidDetails,
+      currentPot: potSize
+    };
+  });
+  res.json({ beefs: allBeefs });
+});
+
+// Admin cancel a beef + auto refund to wallets + reverse cuts
+app.post("/api/admin/cancel-beef", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(403).json({ error: "Unauthorized" });
+  }
+
+  const { beefId } = req.body || {};
+  if (!beefId) return res.status(400).json({ error: "beefId required" });
+
+  const ok = await cancelBeef(beefId);
+  if (!ok) return res.status(400).json({ error: "Unable to cancel beef (already settled/cancelled or not found)" });
+
+  res.json({ ok: true, message: "Beef cancelled. Paid stakes refunded to wallets (full amount), cuts reversed from house reserve." });
 });
 
 // Admin force settle a specific challenge (pick winner or cancel)
