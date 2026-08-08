@@ -1148,7 +1148,6 @@ async function settleOpenChallenges() {
         note: `Won challenge: ${ch.title} (90%, 10% house)`,
         at: nowISO()
       });
-      initiateTransfer(winnerMgr.id, winnerShare, `Challenge win: ${ch.title}`);
       s.ledger.push({
         id: generateId("ldg"),
         type: "house_commission",
@@ -1217,8 +1216,6 @@ async function settleSponsoredAwards(round) {
           note: `Won ${target} sponsored by ${data.sponsors.join(', ')} (split if tie, 10% house)`,
           at: nowISO()
         });
-        // Auto attempt payout to wallet/bank (like weekly)
-        initiateTransfer(w.id, share, `Award win: ${target}`);
       });
       s.ledger.push({
         id: generateId("ldg"),
@@ -1269,8 +1266,6 @@ async function settleBeef(beefId, winnerManagerId) {
     note: `Won beef "${beef.category}" (₦${stake} × ${num} participants — 90% to winner)`,
     at: nowISO()
   });
-  // Auto attempt payout to winner's wallet/bank (consistent with weekly and awards)
-  initiateTransfer(winner.id, winnerShare, `Beef win: ${beef.category}`);
   s.ledger.push({
     id: generateId("ldg"),
     type: "season_reserve_boost",
@@ -1298,17 +1293,16 @@ async function autoSettleIfNeeded() {
   const curF = s.settings.currentRound.fpl;
   const curU = s.settings.currentRound.ucl;
 
-  // Detect if previous round concluded (using bootstrap data or previous sync)
-  // In practice, call after sync when new GW/MD starts
+  // Autosettle = credit winners to wallet (via ledger entries).
+  // No auto bank transfer here. Winner must explicitly request payout to bank.
   await settleWeeklyPot("fpl", curF - 1);
-  await payWinnersForRound("fpl", curF - 1);
   await settleWeeklyPot("ucl", curU - 1);
-  await payWinnersForRound("ucl", curU - 1);
 
   // Auto award for presets using programmable logic (after GW ends via API)
   await autoAwardPresets("fpl", curF - 1);
   await settleOpenChallenges();
   await settleSponsoredAwards(curF - 1);
+  // Beefs are settled manually via admin (settleBeef) which credits to wallet.
   // TODO: for h2h settled, credit winner 90% house 10%
 }
 
@@ -1441,9 +1435,7 @@ async function initiateTransfer(managerId, amount, reason) {
 // Call this after settling pots/challenges
 async function payWinnersForRound(comp, round) {
   const s = await loadStore();
-  // Auto payout attempt for all win types (weekly, awards, challenges) into wallet/bank
-  const winTypes = ["weekly_win", "award_win", "challenge_win"];
-  const wins = s.ledger.filter(l => l.competition === comp && l.round === round && winTypes.includes(l.type) && l.amount > 0);
+  const wins = s.ledger.filter(l => l.competition === comp && l.round === round && l.type === "weekly_win" && l.amount > 0);
   for (const win of wins) {
     await initiateTransfer(win.managerId, win.amount, win.note);
   }
@@ -3380,7 +3372,6 @@ app.post("/api/admin/settle-challenge", async (req, res) => {
     note: `Forced settle: ${ch.title} - Winner: ${winnerDisplay} (90%)`,
     at: nowISO()
   });
-  initiateTransfer(winnerManagerId || "manual", winnerShare, `Forced challenge win: ${ch.title}`);
   s.ledger.push({
     id: generateId("ldg"),
     type: "house_commission",
