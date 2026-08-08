@@ -513,8 +513,7 @@ function renderActiveBeefs() {
   if (active.length === 0) {
     container.innerHTML = `
       <div class="mt-2 p-3 bg-[#111] border border-[#ffaa00] rounded-3xl text-xs">
-        <span class="text-[#ffaa00] font-semibold">⚔️ NO ACTIVE BEEFS — </span>
-        Propose one above to get the action going at the top!
+        <span class="text-[#ffaa00] font-semibold">⚔️ NO ACTIVE BEEFS</span> — propose one to start.
       </div>
     `;
     return;
@@ -522,8 +521,7 @@ function renderActiveBeefs() {
 
   let html = `
     <div class="mt-3 p-4 bg-[#0a0a0a] border border-[#ffaa00] rounded-3xl">
-      <div class="font-black text-lg mb-1 text-[#ffaa00]">⚔️ LIVE BEEFS — PROMINENT AT THE TOP</div>
-      <div class="text-[10px] mb-2 text-[#888]">What’s being beefed, pot size (after 10% house cut to reserve), who paid. Cuts hit house reserve immediately on payment. Very attractive — propose or join!</div>
+      <div class="font-black text-lg mb-1 text-[#ffaa00]">⚔️ ACTIVE BEEFS</div>
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 text-sm">
   `;
 
@@ -536,11 +534,13 @@ function renderActiveBeefs() {
     const statusClass = b.status === 'accepted' ? 'text-[#00ff85]' : 'text-yellow-400';
     const deep = b.id ? `${location.origin}/?beef=${b.id}` : location.origin;
     const safeShare = encodeURIComponent(`D League Beef: ${b.proposerName || ''} vs ${(b.opponentNames||[]).join(' & ')} for "${b.category}" Pot ₦${potSize} — ${deep}`);
+    const preset = BEEF_PRESETS.find(p => p.id === b.category);
+    const beefDesc = preset ? preset.desc : (b.category || '');
 
     html += `
       <div class="bg-black p-3 rounded-2xl border border-[#ffaa00]">
         <div class="font-bold text-[#ffaa00]">⚔️ ${b.proposerName || 'Proposer'} vs ${(b.opponentNames || b.participantNames || []).join(' & ') || 'Opponents'}</div>
-        <div class="mt-1 text-xs">For: <span class="font-semibold">"${b.category}"</span> @ ₦${b.stake} each</div>
+        <div class="mt-1 text-xs">For: <span class="font-semibold">${beefDesc}</span> @ ₦${b.stake} each</div>
         <div class="mt-1">
           <span class="text-xs text-[#888]">POT SIZE (90% winner):</span>
           <span class="text-xl font-black">₦${(potSize || 0).toLocaleString()}</span>
@@ -702,8 +702,10 @@ async function loadAdminOverview() {
           <div class="text-2xl font-black">${data.totalManagers}</div>
         </div>
         <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
-          <div class="text-xs text-[#888]">PAID</div>
+          <div class="text-xs text-[#888]">PAID (incl. admin restored)</div>
           <div class="text-2xl font-black">FPL: ${data.paidFpl} | UCL: ${data.paidUcl}</div>
+          <div class="text-[10px] mt-1">FPL: ${(data.paidFplList || []).map(m => m.displayName + (m.restoredByAdmin ? ' (admin)' : '')).join(', ') || '—'}</div>
+          <div class="text-[10px]">UCL: ${(data.paidUclList || []).map(m => m.displayName + (m.restoredByAdmin ? ' (admin)' : '')).join(', ') || '—'}</div>
         </div>
         <div class="bg-[#1a1a1a] p-3 rounded-2xl border border-[#333]">
           <div class="text-xs text-[#888]">CONFIRMED PAYMENTS</div>
@@ -765,6 +767,8 @@ async function loadAdminOverview() {
           <div class="text-xs uppercase tracking-widest text-[#888]">MANAGERS</div>
           <div class="text-5xl font-black mt-1">${data.totalManagers}</div>
           <div class="text-sm mt-1">FPL: ${data.paidFpl} | UCL: ${data.paidUcl}</div>
+          <div class="text-[9px] mt-1">Paid FPL: ${(data.paidFplList || []).map(m => m.displayName + (m.restoredByAdmin ? '*' : '')).join(', ') || '—'}</div>
+          <div class="text-[9px]">Paid UCL: ${(data.paidUclList || []).map(m => m.displayName + (m.restoredByAdmin ? '*' : '')).join(', ') || '—'} (*=admin restored)</div>
         </div>
         <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
           <div class="text-xs uppercase tracking-widest text-[#888]">PAYMENTS</div>
@@ -865,8 +869,10 @@ async function loadAdminOverview() {
             const pstr = (bf.paidDetails || []).map(p=> `${p.displayName} ₦${p.amount}`).join(' • ') || 'no payments';
             const pz = bf.currentPot || bf.prizePot || 0;
             const canC = bf.status !== 'settled' && bf.status !== 'cancelled';
+            const presetB = (BEEF_PRESETS || []).find(p => p.id === bf.category);
+            const bDesc = presetB ? presetB.desc : bf.category;
             bh += `<div class="mb-2 p-2 bg-black/60 rounded text-xs border border-[#ffaa00]">
-              <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | "${bf.category}" | Pot ₦${pz}</div>
+              <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | ${bDesc} | Pot ₦${pz}</div>
               <div>Status: ${bf.status} | Paid: ${pstr}</div>
               ${canC ? `<button onclick="adminCancelBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-red-700 text-white text-[10px] rounded">CANCEL + REFUND</button>` : ''}
             </div>`;
@@ -950,6 +956,25 @@ async function loadAdminOverview() {
       <div class="text-[10px] mt-1 text-[#888]">Adds ledger entry. Use positive for credit (missing win). Negative to correct. Wallet recalcs automatically on refresh.</div>
     `;
     panel.appendChild(creditWrap);
+
+    // MANUAL MARK PAID (for cases where payment happened during updates/site downtime)
+    const markPaidWrap = document.createElement('div');
+    markPaidWrap.className = 'mt-4 p-4 bg-[#161616] border border-[#00ff85] rounded-2xl';
+    const mgrOpts2 = (data.managers || []).map(m => `<option value="${m.id}">${m.displayName} (${m.email})</option>`).join('');
+    markPaidWrap.innerHTML = `
+      <div class="font-semibold mb-2 text-[#00ff85]">MARK MANAGER AS PAID (FPL or UCL) — reflects in pots, eligibility, beefs etc immediately</div>
+      <div class="flex flex-wrap gap-2 items-end">
+        <select id="mark-paid-mgr" class="bg-[#111] border border-[#444] text-sm p-1 rounded">${mgrOpts2}</select>
+        <select id="mark-paid-comp" class="bg-[#111] border border-[#444] text-sm p-1 rounded">
+          <option value="fpl">FPL</option>
+          <option value="ucl">UCL</option>
+        </select>
+        <input id="mark-paid-amt" type="number" placeholder="Amount (optional)" class="bg-[#111] border border-[#444] text-sm p-1 rounded w-28" value="30000">
+        <button onclick="markManagerPaid()" class="px-4 py-1 bg-[#00ff85] text-black font-bold rounded text-sm">MARK PAID</button>
+      </div>
+      <div class="text-[10px] mt-1 text-[#888]">Creates confirmed payment record. Use this to fix cases where payment arrived during an update. List of paid will show the manager (even if restored by admin).</div>
+    `;
+    panel.appendChild(markPaidWrap);
 
     // RECENT PAYOUT ACTIVITY — shows auto successes + any manual so admin sees full history/updates + ledger state
     const payoutWrap = document.createElement('div');
@@ -3124,6 +3149,29 @@ async function adminCancelBeef(beefId) {
     if (typeof loadAdminOverview === 'function') loadAdminOverview();
   } catch (e) {
     alert('Cancel failed: ' + (e.message || e));
+  }
+}
+
+async function markManagerPaid() {
+  const mgrSel = document.getElementById('mark-paid-mgr');
+  const compSel = document.getElementById('mark-paid-comp');
+  const amtEl = document.getElementById('mark-paid-amt');
+  if (!mgrSel || !compSel) return alert('Mark paid controls not found');
+  const managerId = mgrSel.value;
+  const competition = compSel.value;
+  const amount = amtEl ? Number(amtEl.value) : 0;
+  if (!managerId || !competition) return alert('Select manager and competition');
+  if (!confirm(`Mark this manager paid for ${competition.toUpperCase()}?`)) return;
+  try {
+    const res = await fetchJSON('/api/admin/mark-paid', {
+      method: 'POST',
+      body: JSON.stringify({ managerId, competition, amount: amount || undefined })
+    });
+    alert(res.message || 'Marked paid.');
+    await loadAdminOverview();
+    await loadAllData();  // refresh pots, eligibility etc
+  } catch (e) {
+    alert('Mark paid failed: ' + (e.message || e));
   }
 }
 

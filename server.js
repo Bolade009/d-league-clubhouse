@@ -2589,6 +2589,76 @@ app.post("/api/admin/restore-paid-manager", async (req, res) => {
   });
 });
 
+// Admin manual mark as paid for a league (FPL or UCL). Use when a payment happened during updates.
+// Creates a confirmed payment record so paid status, pots, eligibility etc all reflect it.
+app.post("/api/admin/mark-paid", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { managerId, email, competition, amount } = req.body || {};
+  if (!managerId && !email) return res.status(400).json({ error: "managerId or email required" });
+  if (!['fpl', 'ucl'].includes(competition)) return res.status(400).json({ error: "competition must be 'fpl' or 'ucl'" });
+
+  const s = await loadStore();
+  let mgr = null;
+  if (managerId) mgr = s.managers.find(m => m.id === managerId);
+  if (!mgr && email) mgr = s.managers.find(m => m.email && m.email.toLowerCase() === email.toLowerCase());
+  if (!mgr) return res.status(404).json({ error: "Manager not found" });
+
+  // avoid duplicate
+  const already = s.payments.find(p => p.managerId === mgr.id && p.competition === competition && p.status === "confirmed");
+  if (already) {
+    return res.json({ ok: true, message: "Already marked paid for " + competition, manager: buildManagerView(mgr) });
+  }
+
+  const ref = `MANUAL-${competition.toUpperCase()}-${Date.now()}-${mgr.id.slice(-6)}`;
+  const amt = Number(amount) || (competition === 'fpl' ? 30000 : 15000);
+
+  s.payments.push({
+    id: generateId("pay"),
+    managerId: mgr.id,
+    competition,
+    amount: amt,
+    reference: ref,
+    status: "confirmed",
+    confirmedAt: nowISO(),
+    paystackData: { manual: true, restoredByAdmin: true }
+  });
+
+  // update revenue tracking and pots (same as confirmPayment side effects)
+  const compDef = COMPETITIONS[competition];
+  const houseFee = compDef ? (compDef.adminFee || 0) : 0;
+  const revKey = `total${competition.charAt(0).toUpperCase() + competition.slice(1)}Revenue`;
+  const houseKey = `house${competition.charAt(0).toUpperCase() + competition.slice(1)}Admin`;
+  s.settings[revKey] = (s.settings[revKey] || 0) + Math.max(0, amt - houseFee);
+  s.settings[houseKey] = (s.settings[houseKey] || 0) + Math.min(amt, houseFee);
+
+  if (competition === 'fpl') {
+    s.settings.h2hOverallPot = (s.settings.h2hOverallPot || 0) + 1500; // current allocation model
+  }
+
+  await persistStore();
+  await logEvent("manual_mark_paid", { managerId: mgr.id, competition, amount: amt, byAdmin: true });
+
+  const view = buildManagerView(mgr);
+  res.json({ ok: true, manager: view, message: `Marked ${mgr.displayName} paid for ${competition.toUpperCase()}. Pots and eligibility will reflect it.` });
+});
+
 // PERMANENT RECOVERY endpoint: force the server to load from the best backup (highest manager count) and persist it.
 // Call with admin auth (x-admin-token = SYNC_TOKEN or logged-in admin bearer). Safe to call on seeing 0 managers.
 app.post("/api/admin/restore-from-best-backup", async (req, res) => {
@@ -2692,6 +2762,19 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
   if (data.settings) writeAtomicCollection('settings', data.settings);
 
   storeCache = data;
+  // Ensure beef paidBy is restored from any beef_stake payments in the export (for cases where beef data lagged)
+  if (Array.isArray(storeCache.beefs) && Array.isArray(storeCache.payments)) {
+    storeCache.beefs.forEach(b => {
+      if (!b.paidBy) b.paidBy = {};
+      storeCache.payments.filter(p => p.type === 'beef_stake' && p.beefId === b.id && p.status === 'confirmed').forEach(p => {
+        if (!b.paidBy[p.managerId]) {
+          b.paidBy[p.managerId] = { amount: p.amount || b.stake || 0, ref: p.reference, paidAt: p.confirmedAt || p.at };
+          b.totalStaked = (b.totalStaked || 0) + (p.amount || b.stake || 0);
+          // note: cuts would have been applied on original, but restore preserves the reserve if in settings
+        }
+      });
+    });
+  }
   await persistStore();
 
   const after = (getStore().managers || []).length;
@@ -3998,6 +4081,17 @@ app.get("/api/admin/overview", async (req, res) => {
   const paidFpl = getEligibleManagers("fpl").length;
   const paidUcl = getEligibleManagers("ucl").length;
 
+  const paidFplList = getEligibleManagers("fpl").map(m => ({
+    id: m.id,
+    displayName: m.displayName,
+    restoredByAdmin: !!(m._restored || m._recoveredFromPayments)
+  }));
+  const paidUclList = getEligibleManagers("ucl").map(m => ({
+    id: m.id,
+    displayName: m.displayName,
+    restoredByAdmin: !!(m._restored || m._recoveredFromPayments)
+  }));
+
   const recentLedger = (s.ledger || []).slice(-30);
   const recentEvents = (s.events || []).slice(-50); // more for admin cockpit history
   const allChallenges = (s.challenges || []);
@@ -4021,6 +4115,8 @@ app.get("/api/admin/overview", async (req, res) => {
     totalManagers: s.managers.length,
     paidFpl,
     paidUcl,
+    paidFplList,
+    paidUclList,
     totalPaymentsConfirmed: s.payments.filter(p => p.status === "confirmed").length,
     totalFines: 0,
     lastSync: s.settings.lastSyncAt,
