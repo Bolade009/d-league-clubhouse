@@ -226,11 +226,11 @@ function showDashboard() {
 
   $('welcome-line').textContent = `WELCOME BACK, MANAGER • ${new Date().getFullYear()}`;
   $('manager-name').textContent = currentManager.displayName;
-  // Persona beside name with simple hyphen + green (clean)
+  // Persona as big as the name, separated by hyphen, green
   if (currentManager.persona) {
     const nameEl = $('manager-name');
     if (nameEl) {
-      nameEl.innerHTML = `${currentManager.displayName} - <span class="text-[#00ff85] font-semibold">${currentManager.persona}</span>`;
+      nameEl.innerHTML = `${currentManager.displayName} - <span class="text-6xl text-[#00ff85] font-black tracking-[-3.2px] leading-none">${currentManager.persona}</span>`;
     }
   }
 
@@ -3510,20 +3510,22 @@ async function submitJoinForm(ev) {
 
   // Show success UI immediately (no waiting, no alert)
   const modal = $('join-modal');
-  const content = modal ? modal.querySelector('.bg-\\[\\#1c1c1c\\]') : null;
-  if (content) {
-    content.innerHTML = `
-      <div class="text-center">
-        <div class="font-bold text-xl mb-4 text-[#00ff85]">✅ Here's your access code</div>
-        <div class="font-mono text-3xl font-black text-[#00ff85] tracking-widest mb-2">${accessCode}</div>
-        <div class="text-sm mb-4">Use this with your email to login.</div>
-        <button onclick="navigator.clipboard.writeText('${accessCode}'); this.textContent='Copied!'" class="px-4 py-2 bg-[#00ff85] text-black font-bold rounded-xl mb-3">Copy code</button>
-        <div class="text-xs text-[#888]">Full payment required after login to join pots & beefs.<br>Joins lock from GW1.</div>
-        <div class="mt-4">
-          <button onclick="closeJoinModal()" class="px-4 py-2 border border-[#333] rounded-xl text-sm">Close</button>
+  if (modal) {
+    const newContent = `
+      <div onclick="event.stopImmediatePropagation()" class="bg-[#1c1c1c] w-full max-w-md rounded-3xl border border-[#00ff85] p-6">
+        <div class="text-center">
+          <div class="font-bold text-xl mb-4 text-[#00ff85]">✅ Here's your access code</div>
+          <div class="font-mono text-3xl font-black text-[#00ff85] tracking-widest mb-2">${accessCode}</div>
+          <div class="text-sm mb-4">Use this with your email to login.</div>
+          <button onclick="navigator.clipboard.writeText('${accessCode}'); this.textContent='Copied!'" class="px-4 py-2 bg-[#00ff85] text-black font-bold rounded-xl mb-3">Copy code</button>
+          <div class="text-xs text-[#888]">Full payment required after login to join pots & beefs.<br>Joins lock from GW1.</div>
+          <div class="mt-4">
+            <button onclick="closeJoinModal()" class="px-4 py-2 border border-[#333] rounded-xl text-sm">Close</button>
+          </div>
         </div>
       </div>
     `;
+    modal.innerHTML = newContent;
   } else {
     closeJoinModal();
     alert(`✅ Your access code: ${accessCode}\n\nCopy it now!`);
