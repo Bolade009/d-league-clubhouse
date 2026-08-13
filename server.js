@@ -2568,6 +2568,14 @@ app.post("/api/join-request", async (req, res) => {
 
   const s = await loadStore();
 
+  if (!DEMO_MODE) {
+    const locked = s.settings.leagueLocked || { fpl: false, ucl: false };
+    const isFplRequest = !!fplId;
+    if (isFplRequest && locked.fpl) {
+      return res.status(403).json({ error: "FPL is locked from GW1. No new managers can join." });
+    }
+  }
+
   const existing = s.managers.find(m => m.email && m.email.toLowerCase() === lowerEmail);
   if (existing) {
     // Guard: do not allow request or leak code for existing emails

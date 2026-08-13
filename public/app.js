@@ -3550,7 +3550,11 @@ async function submitJoinForm(ev) {
       submitBtn.textContent = originalText;
     }
     closeJoinModal();
-    alert('Error submitting: ' + (e.message || 'Please try again or message the commissioner.'));
+    let errMsg = e.message || 'Please try again or message the commissioner.';
+    if (errMsg.toLowerCase().includes('lock') || errMsg.includes('GW1')) {
+      errMsg = 'Joins locked from GW1 — no late joiners. Contact the admin if you need special access.';
+    }
+    alert('Join request failed: ' + errMsg);
     console.error('Join submit error', e);
   }
 }
