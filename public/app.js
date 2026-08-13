@@ -386,6 +386,7 @@ async function loadAllData() {
 
   renderPayAccess();
   renderTopPotsAndActions();
+  renderProminentFeatures();
 
   // Handle direct WhatsApp deep link ?beef=ID for accept/decline
   handleBeefDeepLink();
@@ -487,6 +488,50 @@ function createPotsContainer() {
   return c;
 }
 
+function renderProminentFeatures() {
+  // Make Start a Beef, Persona, and Share/Sim cards VERY prominent (top level quick actions)
+  const anchor = document.getElementById('pots-top');
+  if (!anchor || !currentManager) return;
+
+  let bar = document.getElementById('quick-features-bar');
+  if (bar) bar.remove();
+
+  bar = document.createElement('div');
+  bar.id = 'quick-features-bar';
+  bar.className = 'mt-3 p-4 bg-gradient-to-r from-[#0a0a0a] to-black border-2 border-[#00ff85] rounded-3xl';
+
+  const personaBtn = currentManager.persona 
+    ? `<button onclick="showPersonaQuiz(); showWhatsAppShare('My D-League Persona: ' + currentManager.persona, 'Share my persona')" class="flex-1 py-3 text-sm bg-[#003322] text-[#00ff85] font-bold rounded-2xl">🧠 My Persona: ${currentManager.persona} (Retake / Share)</button>`
+    : `<button onclick="showPersonaQuiz()" class="flex-1 py-3 text-sm bg-[#003322] text-[#00ff85] font-bold rounded-2xl">🧠 Take Persona Quiz (6 questions)</button>`;
+
+  bar.innerHTML = `
+    <div class="font-black text-lg mb-2 text-[#00ff85]">⚡ QUICK ACTIONS — Start Beef • Persona • Simulate & Brag</div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+      <button onclick="showBeefModal()" class="py-3 bg-purple-600 hover:bg-purple-700 text-white font-black rounded-2xl text-base active:scale-[0.98]">⚔️ START A BEEF</button>
+      ${personaBtn}
+      <button onclick="showLineupAndSim()" class="py-3 bg-[#ffaa00] hover:bg-yellow-600 text-black font-black rounded-2xl text-base active:scale-[0.98]">🔮 SIMULATE NEXT GW + SHARE CARD</button>
+    </div>
+    <div class="mt-2 text-[10px] text-[#888] text-center">Projections & pots above • Bragging cards auto-generate • Persona persists</div>
+  `;
+  anchor.parentNode.insertBefore(bar, anchor.nextSibling);
+}
+
+function showLineupAndSim() {
+  // Make simulation & share card prominent and easy
+  const select = $('lineup-manager-select');
+  if (select && currentManager) {
+    select.value = currentManager.id;
+    if (typeof loadAndRenderLineup === 'function') {
+      loadAndRenderLineup(currentManager.id, $('lineup-viewer'));
+    }
+  }
+  // Trigger the sim button if present
+  setTimeout(() => {
+    const sim = document.querySelector('button[onclick*="simulateNextGW"]');
+    if (sim) sim.click();
+  }, 300);
+}
+
 function createActiveBeefsContainer() {
   const pots = document.getElementById('pots-top');
   if (pots && pots.parentNode) {
@@ -559,7 +604,7 @@ function renderActiveBeefs() {
         <div class="mt-2 flex flex-wrap gap-1 text-[10px]">
           <button onclick="showWhatsAppShare(decodeURIComponent('${safeShare}'), 'Share beef'); event.stopImmediatePropagation();" class="px-2 py-0.5 bg-[#ffaa00] text-black rounded">📲 Share WA + Link</button>
           ${!b.locked && b.status === 'proposed' ? `<button onclick="respondToBeefLink('${b.id}', 'accept')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Accept</button>` : ''}
-          ${!b.locked && b.status === 'accepted' ? `<button onclick="requestToJoinBeef('${b.id}')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Request to Join</button>` : ''}
+          ${!b.locked && b.status === 'accepted' && !isParticipant ? `<button onclick="requestToJoinBeef('${b.id}')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Request to Join</button>` : ''}
           ${showPayStake ? `<button onclick="payBeefStake('${b.id}', ${b.stake}); event.stopImmediatePropagation();" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">PAY ₦${b.stake} STAKE</button>` : ''}
           ${currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com' ? `<button onclick="adminCancelBeef('${b.id}')" class="px-2 py-0.5 bg-red-700 text-white rounded">CANCEL (admin)</button>` : ''}
           ${currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com' && !b.locked ? `<button onclick="adminLockBeef('${b.id}')" class="px-2 py-0.5 bg-orange-600 text-white rounded">LOCK (admin)</button>` : ''}
@@ -3430,20 +3475,21 @@ async function submitJoinForm(ev) {
     });
     const data = await res.json();
     closeJoinModal();
-    let msg = data.message || 'Request sent!';
+    let msg = data.message || 'Request processed!';
     if (data.accessCode) {
-      msg += `\n\n🔑 YOUR CODE: ${data.accessCode}\nCopy and save this now. Use it to login.`;
-      try { await navigator.clipboard.writeText(data.accessCode); msg += '\n(Copied to clipboard!)'; } catch {}
+      msg = `✅ Access code generated for you!\n\n🔑 CODE: ${data.accessCode}\n\nSave this now and use your email + this code to login.\n\nThen complete payment to unlock.`;
+      try { await navigator.clipboard.writeText(data.accessCode); msg += '\n(Code copied to clipboard!)'; } catch {}
     }
     if (data.teamIdMissing) {
-      msg += '\n\n⚠️ FPL Team ID missing - admin will be prompted to fix it (check cockpit). You can update later.';
+      msg += '\n\n⚠️ No FPL Team ID provided - go to Admin panel to fix it (or update your profile).';
     }
     alert(msg);
     // If admin is open, refresh to see update
     if (typeof loadAdminOverview === 'function') loadAdminOverview();
   } catch (e) {
     closeJoinModal();
-    alert('Request logged. Please message the commissioner with your details if needed.');
+    alert('Error submitting. Please try again or message the commissioner with your details.');
+    console.error('Join submit error', e);
   }
 }
 

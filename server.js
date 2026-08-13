@@ -830,18 +830,19 @@ async function logEvent(type, payload) {
 
 async function notifyAdminOfJoinRequest(join) {
   console.log("\n========================================");
-  console.log("📨 NEW JOIN REQUEST - ACTION REQUIRED");
-  console.log("Send access code to the user's real email:");
+  console.log("📨 NEW SELF-SERVE JOIN");
+  console.log("Manager auto-created with code (self-serve flow):");
   console.log("  Name:   ", join.name);
   console.log("  Email:  ", join.email);
   console.log("  FPL Club:", join.fplClubName);
   console.log("  FPL ID: ", join.fplId || 'not provided');
+  console.log("  CODE:   ", join.accessCode || 'N/A');
   console.log("  Time:   ", new Date().toISOString());
-  console.log("Use /api/admin/add-manager (with your admin token or login as admin) to generate code + add them.");
+  console.log("Check admin cockpit for the new manager (no manual code gen needed unless fixing).");
   console.log("========================================\n");
 
-  const subject = "D League Clubhouse - Access Request Received";
-  const text = `Hi ${join.name},\n\nWe received your join request for FPL club "${join.fplClubName}" (FPL ID: ${join.fplId || 'N/A'}).\nThe commissioner will verify and email you the access code + instructions shortly.\n\nThank you,\nD League Clubhouse`;
+  const subject = "D League Clubhouse - New Self-Serve Access";
+  const text = `Hi ${join.name},\n\nYou (or the system) generated your access code for FPL club "${join.fplClubName}".\n\nYour code: ${join.accessCode || 'see dashboard'}\n\nLogin at the Clubhouse with your email + this code.\n\nThank you,\nD League Clubhouse`;
 
   // Send to the requester (confirmation) + BCC to admin
   if (mailer) {
@@ -2502,36 +2503,21 @@ exports.seedDemoIfNeeded = seedDemoData;
 
 // ============ ROUTES ============
 
-app.get("/health", async (req, res) => {
-  // On every ping (from users, webhooks, or free cron pinger), do full self-heal.
-  // This makes wake-ups instant and state consistent. Creative way to stay "fresh" on free tier.
-  try {
-    const s = await loadStore();
-    writeAtomicSidecar(s);
-    writeAtomicCollection('managers', s.managers);
-    writeAtomicCollection('payments', s.payments);
-    writeAtomicCollection('ledger', s.ledger);
-    writeAtomicCollection('beefs', s.beefs || []);
-    writeAtomicCollection('sponsorships', s.sponsorships || []);
-    writeAtomicCollection('settings', s.settings || {});
-    if (db) {
-      db.pragma("wal_checkpoint(FULL)");
-    }
-  } catch (e) {
-    console.warn('[health] heal failed', e.message);
-  }
+app.get("/health", (req, res) => {
+  // FAST health check for Render deploy readiness and uptime pings.
+  // Full self-heal + atomic writes happen on boot and via explicit admin actions.
+  // This prevents slow health checks from delaying deploys (yellow/green status).
   lastHealthPing = nowISO();
   healthPingCount++;
   res.json({ 
     status: "ok", 
-    time: nowISO(), 
-    demo: DEMO_MODE, 
-    version: "1.0.0",
-    healed: true,
+    time: nowISO(),
     pingReceived: true,
-    lastHealthPing,
-    healthPingCount,
-    message: "Service is awake and state promoted from best sources. Thanks for the ping!"
+    healthPingCount
+  });
+  // Optional: schedule light heal in background for free tier wake-ups (non-blocking)
+  setImmediate(() => {
+    // light background tasks if needed; avoid heavy loadStore here
   });
 });
 
