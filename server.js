@@ -2090,6 +2090,8 @@ function buildManagerView(mgr) {
     email: mgr.email,
     fplTeam: mgr.fpl || {},
     uclTeam: mgr.ucl || {},
+    fplClubName: mgr.fplClubName || '',
+    uclClubName: mgr.uclClubName || '',
     fplPaid,
     uclPaid,
     currentFpl: currentFpl ? currentFpl.points : null,
@@ -2557,45 +2559,50 @@ app.post("/api/join-request", async (req, res) => {
   const { name, email, fplClubName, fplId, fplLeagueJoined, message } = req.body || {};
   if (!name || !email || !fplClubName) return res.status(400).json({ error: "Name, email and FPL club name required (to confirm league join)" });
 
-  const s = await loadStore();
+  const lowerEmail = email.toLowerCase();
 
-  // Self-serve: generate code for manager if new, create basic record immediately so code is available.
-  // This updates admin cockpit instantly. Does NOT mark paid - payments are separate.
-  // Preserves any existing paid managers (by email match).
-  let accessCode = '';
-  const existing = s.managers.find(m => m.email && m.email.toLowerCase() === email.toLowerCase());
-  if (existing) {
-    accessCode = existing.accessCode || '';
-  } else {
-    const short = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '').slice(0,6);
-    accessCode = `${short.toUpperCase()}-${Math.floor(1000 + Math.random()*9000)}`;
-    const mgr = {
-      id: generateId("mgr"),
-      displayName: name,
-      email,
-      accessCode,
-      fpl: { teamId: fplId || '', teamName: fplClubName },
-      ucl: { teamId: '', teamName: '' },
-      fplClubName,
-      selfRegistered: true,
-      teamIdMissing: !fplId,
-      createdAt: nowISO()
-    };
-    s.managers.push(mgr);
-    await persistStore();
-    // sidecar for durability
-    try { writeAtomicCollection('managers', s.managers); } catch {}
+  // Protect admin account - never allow self-request for admin email
+  if (lowerEmail === ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: "Admin accounts cannot be created via self-request." });
   }
 
-  await logEvent("join_request", { name, email, fplClubName, fplId: fplId || '', fplLeagueJoined: !!fplLeagueJoined, message, accessCode, selfRegistered: !existing });
+  const s = await loadStore();
+
+  const existing = s.managers.find(m => m.email && m.email.toLowerCase() === lowerEmail);
+  if (existing) {
+    // Guard: do not allow request or leak code for existing emails
+    return res.status(409).json({ 
+      ok: false, 
+      error: "An account with this email already exists. Use your access code to login (check your email or previous messages)." 
+    });
+  }
+
+  // Self-serve new account only
+  const short = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '').slice(0,6);
+  const accessCode = `${short.toUpperCase()}-${Math.floor(1000 + Math.random()*9000)}`;
+  const mgr = {
+    id: generateId("mgr"),
+    displayName: name,
+    email,
+    accessCode,
+    fpl: { teamId: fplId || '', teamName: fplClubName },
+    ucl: { teamId: '', teamName: '' },
+    fplClubName,
+    selfRegistered: true,
+    teamIdMissing: !fplId,
+    createdAt: nowISO()
+  };
+  s.managers.push(mgr);
+  await persistStore();
+  try { writeAtomicCollection('managers', s.managers); } catch {}
+
+  await logEvent("join_request", { name, email, fplClubName, fplId: fplId || '', fplLeagueJoined: !!fplLeagueJoined, message, accessCode, selfRegistered: true });
   await notifyAdminOfJoinRequest({ name, email, fplClubName, fplId: fplId || '', accessCode });
 
   res.json({ 
     ok: true, 
-    message: existing 
-      ? "You already have an account. Your code was sent previously or is in your email." 
-      : `Success! Your access code is: ${accessCode}. Save it now. Admin cockpit updated with your details.`,
-    accessCode: accessCode || undefined,
+    message: `Success! Your access code is: ${accessCode}. Save it now.`,
+    accessCode,
     teamIdMissing: !fplId
   });
 });

@@ -223,6 +223,13 @@ function showDashboard() {
 
   $('welcome-line').textContent = `WELCOME BACK, MANAGER • ${new Date().getFullYear()}`;
   $('manager-name').textContent = currentManager.displayName;
+  // Persona beside manager name once taken (intuitive)
+  if (currentManager.persona) {
+    const nameEl = $('manager-name');
+    if (nameEl) {
+      nameEl.innerHTML = `${currentManager.displayName} <span class="text-xs align-super text-[#00ff85] font-semibold">(${currentManager.persona})</span>`;
+    }
+  }
 
   // Wallet display (real balance from ledger settlements) + prominent bank update
   const nameEl = $('manager-name');
@@ -500,18 +507,16 @@ function renderProminentFeatures() {
   bar.id = 'quick-features-bar';
   bar.className = 'mt-3 p-4 bg-gradient-to-r from-[#0a0a0a] to-black border-2 border-[#00ff85] rounded-3xl';
 
-  const personaBtn = currentManager.persona 
-    ? `<button onclick="showPersonaQuiz(); showWhatsAppShare('My D-League Persona: ' + currentManager.persona, 'Share my persona')" class="flex-1 py-3 text-sm bg-[#003322] text-[#00ff85] font-bold rounded-2xl">🧠 My Persona: ${currentManager.persona} (Retake / Share)</button>`
-    : `<button onclick="showPersonaQuiz()" class="flex-1 py-3 text-sm bg-[#003322] text-[#00ff85] font-bold rounded-2xl">🧠 Take Persona Quiz (6 questions)</button>`;
-
+  const liveProj = (currentManager.currentFpl != null) ? `${currentManager.currentFpl} pts` : '—';
   bar.innerHTML = `
-    <div class="font-black text-lg mb-2 text-[#00ff85]">⚡ QUICK ACTIONS — Start Beef • Persona • Simulate & Brag</div>
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-      <button onclick="showBeefModal()" class="py-3 bg-purple-600 hover:bg-purple-700 text-white font-black rounded-2xl text-base active:scale-[0.98]">⚔️ START A BEEF</button>
-      ${personaBtn}
-      <button onclick="showLineupAndSim()" class="py-3 bg-[#ffaa00] hover:bg-yellow-600 text-black font-black rounded-2xl text-base active:scale-[0.98]">🔮 SIMULATE NEXT GW + SHARE CARD</button>
+    <div class="font-black text-lg mb-2 text-[#00ff85]">⚡ QUICK ACTIONS</div>
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+      <button onclick="showBeefModal()" class="py-3 bg-purple-600 hover:bg-purple-700 text-white font-black rounded-2xl text-base active:scale-[0.98]">⚔️ Start a Beef</button>
+      <button onclick="showPersonaQuiz()" class="py-3 bg-[#003322] hover:bg-green-900 text-[#00ff85] font-black rounded-2xl text-base active:scale-[0.98]">Know Your Manager persona</button>
+      <button onclick="showLineupAndSim()" class="py-3 bg-[#ffaa00] hover:bg-yellow-600 text-black font-black rounded-2xl text-base active:scale-[0.98]">Simulate next game week</button>
+      <button onclick="showLiveProjection()" class="py-3 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl text-base active:scale-[0.98]">Live GW: ${liveProj}</button>
     </div>
-    <div class="mt-2 text-[10px] text-[#888] text-center">Projections & pots above • Bragging cards auto-generate • Persona persists</div>
+    <div class="mt-2 text-[10px] text-[#888] text-center">find out what kind of manager you are • Live = API current player stats • Simulate = what you may get</div>
   `;
   anchor.parentNode.insertBefore(bar, anchor.nextSibling);
 }
@@ -530,6 +535,53 @@ function showLineupAndSim() {
     const sim = document.querySelector('button[onclick*="simulateNextGW"]');
     if (sim) sim.click();
   }, 300);
+}
+
+function showLiveProjection() {
+  if (!currentManager || !currentManager.fpl || !currentManager.fpl.teamId) {
+    return alert('No FPL team ID set for this manager. Set it in your profile to enable live projections.');
+  }
+  const teamId = currentManager.fpl.teamId;
+
+  // Always fetch fresh live data on click
+  (async () => {
+    try {
+      // Get current GW
+      const bs = await fetch('https://fantasy.premierleague.com/api/bootstrap-static/').then(r => r.json());
+      const currentEvent = bs.events.find(e => e.is_current) || bs.events.find(e => !e.finished);
+      const gw = currentEvent ? currentEvent.id : ((standingsData && standingsData.currentRound && standingsData.currentRound.fpl) || 1);
+
+      // Fresh picks
+      const picksRes = await fetch(`https://fantasy.premierleague.com/api/entry/${teamId}/event/${gw}/picks/`);
+      const picksData = await picksRes.json();
+
+      // Fresh live
+      const liveRes = await fetch(`https://fantasy.premierleague.com/api/event/${gw}/live/`);
+      const liveData = await liveRes.json();
+
+      let total = 0;
+      if (picksData && picksData.picks && liveData && liveData.elements) {
+        for (const p of picksData.picks) {
+          const el = liveData.elements.find(e => e.id === p.element);
+          if (el && el.stats) {
+            total += (el.stats.total_points || 0) * (p.multiplier || 1);
+          }
+        }
+      }
+
+      const msg = `Fresh Live GW${gw} Projection (from FPL API right now for YOU): ${Math.round(total)} pts\n\nThis is computed from your squad's current picks + live player points.\n\n"Simulate next game week" uses a variance model for what you MAY get.\n\nOpening lineup for details...`;
+      alert(msg);
+
+      const viewer = $('lineup-viewer');
+      if (viewer && typeof loadAndRenderLineup === 'function') {
+        loadAndRenderLineup(currentManager.id, viewer);
+      }
+    } catch (e) {
+      alert('Fresh fetch failed: ' + (e.message || e) + '. Falling back to cached.');
+      const proj = currentManager.currentFpl != null ? currentManager.currentFpl : '—';
+      alert(`Cached Live GW Projection: ${proj} pts`);
+    }
+  })();
 }
 
 function createActiveBeefsContainer() {
@@ -1526,8 +1578,7 @@ function renderCombinedRace() {
       <div class="flex items-center gap-3">
         <div class="w-6 text-center font-mono text-xs text-[#888]">${idx + 1}</div>
         <div>
-          <div class="font-semibold">${m.displayName} ${m.id === currentManager.id ? '<span class="text-[10px] ml-1 text-[#00ff85]">(YOU)</span>' : ''}</div>
-          <div class="text-[10px] text-[#888]">${m.fplTeam.teamName || ''}</div>
+          <div class="font-semibold">${m.displayName} ${m.fplClubName ? `(${m.fplClubName})` : (m.fplTeam.teamName ? `(${m.fplTeam.teamName})` : '')} ${m.id === currentManager.id ? '<span class="text-[10px] ml-1 text-[#00ff85]">(YOU)</span>' : ''}</div>
         </div>
       </div>
       <div class="text-right">
@@ -1722,6 +1773,9 @@ function renderManagerHero() {
   }
 
   // Removed in UI cleanup: fpl-status, ucl-status, combined-rank, wallet-balance — no longer set
+
+  // Refresh prominent bar with latest proj/persona
+  if (typeof renderProminentFeatures === 'function') renderProminentFeatures();
 }
 
 async function loadTicker() {
@@ -2207,7 +2261,7 @@ async function loadAndRenderLineup(managerId, container) {
     // SUPERPOWER: Simulate Next GW based on current/prev performance (for planning + bragging)
     const simBtn = document.createElement('button');
     simBtn.className = 'mt-2 px-3 py-1 text-xs bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]';
-    simBtn.textContent = '🔮 Simulate My Next GW Performance';
+    simBtn.textContent = 'Simulate next game week';
     simBtn.onclick = () => simulateNextGW(data, recent, container);
     container.appendChild(simBtn);
 
@@ -2225,12 +2279,13 @@ async function loadAndRenderLineup(managerId, container) {
 function simulateNextGW(managerData, recent, container) {
   const basePts = recent.points || (managerData.fplTotal || 60);
   const avg = (window.standingsData && window.standingsData.roundAverages && window.standingsData.roundAverages.fpl) || 65;
-  // Simple model: base on personal avg + league avg + variance + form
+  // How it works: 60% your recent performance + 40% league average + random variance for form/opponents + small form bias.
+  // This models "what you MAY get next week" based on stats (not the official API live projection).
   const variance = (Math.random() - 0.5) * 25; // +/-12.5
   const formBoost = basePts > avg ? 4 : -3;
   const proj = Math.max(20, Math.round(basePts * 0.6 + avg * 0.4 + variance + formBoost));
   const chipNote = recent.activeChip ? ' (chip available last week)' : '';
-  const simHtml = `<div class="mt-3 p-2 bg-black/60 rounded text-xs border border-[#00ff85]">🔮 Next GW sim for ${managerData.displayName}: ~${proj} pts (based on your ${basePts} recent + league avg ${avg}${chipNote}). Variance possible ±15. Good luck!</div>`;
+  const simHtml = `<div class="mt-3 p-2 bg-black/60 rounded text-xs border border-[#00ff85]">Simulate next game week for ${managerData.displayName}: ~${proj} pts (your recent ${basePts} + league avg ${avg}${chipNote}). Possible range ±15. (Variance model from stats)</div>`;
   const old = container.querySelector('.sim-result');
   if (old) old.remove();
   const div = document.createElement('div');
@@ -2238,11 +2293,11 @@ function simulateNextGW(managerData, recent, container) {
   div.innerHTML = simHtml;
   container.appendChild(div);
 
-  // WA share for sim (natural extension)
+  // WA share for sim 
   const waBtn = document.createElement('button');
   waBtn.className = 'mt-1 ml-1 px-2 py-0.5 text-[10px] bg-[#25D366] text-white rounded';
-  waBtn.textContent = '📲 Share sim on WA';
-  waBtn.onclick = () => showWhatsAppShare(encodeURIComponent(`🔮 Next GW sim for ${managerData.displayName}: ~${proj} pts`), 'Share Sim on WA');
+  waBtn.textContent = '📲 Share on WA';
+  waBtn.onclick = () => showWhatsAppShare(`Simulate next game week for ${managerData.displayName}: ~${proj} pts`, 'Share Sim on WA');
   container.appendChild(waBtn);
 }
 
@@ -2919,7 +2974,7 @@ function renderFplTailored() {
       const row = document.createElement('div');
       row.className = `flex justify-between items-center px-3 py-1.5 rounded-xl cursor-pointer ${isMe ? 'bg-[#0d2a1f]' : 'hover:bg-[#111]'}`;
       row.innerHTML = `
-        <div>${m.displayName} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
+        <div>${m.displayName} ${m.fplClubName ? `(${m.fplClubName})` : ''} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
         <div class="font-mono font-bold">${m.fplTotal ?? '—'} pts</div>
       `;
       row.onclick = () => showManagerSquadWithInsight(m.id);
@@ -2965,15 +3020,6 @@ function renderFplTailored() {
   // Ensure lineup viewer populated
   if (typeof renderLineupViewer === 'function') setTimeout(renderLineupViewer, 100);
 
-  // Manager Persona (new superpower - 6 question quiz for personality type + match others)
-  if ($('fpl-personal-beef')) {
-    const personaDiv = document.createElement('div');
-    personaDiv.className = 'mt-3 p-2 bg-[#111] rounded text-xs border border-[#00ff85]';
-    const currentP = (currentManager && currentManager.persona) ? `<div class="mb-1 font-semibold">Your Persona: ${currentManager.persona} <button onclick="showWhatsAppShare(encodeURIComponent('My D League Persona: ' + currentManager.persona), 'Share on WA')" class="ml-1 text-[10px] px-1 bg-[#25D366] text-white rounded">WA</button></div>` : '';
-    personaDiv.innerHTML = `${currentP}<button onclick="showPersonaQuiz()" class="px-2 py-1 bg-[#003322] text-[#00ff85] rounded">🧠 Take/Retake 6-Question Manager Persona Quiz</button>`;
-    $('fpl-personal-beef').appendChild(personaDiv);
-  }
-
 }
 
 function renderUclTailored() {
@@ -2991,7 +3037,7 @@ function renderUclTailored() {
       const row = document.createElement('div');
       row.className = `flex justify-between items-center px-3 py-1.5 rounded-xl cursor-pointer ${isMe ? 'bg-[#222]' : 'hover:bg-[#1c1c1c]'}`;
       row.innerHTML = `
-        <div>${m.displayName} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
+        <div>${m.displayName} ${m.uclClubName ? `(${m.uclClubName})` : ''} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
         <div class="font-mono font-bold">${m.uclTotal ?? '—'} pts</div>
       `;
       row.onclick = () => {
@@ -3413,27 +3459,21 @@ function submitPersonaQuiz() {
   const persona = PERSONA_TYPES[typeIdx];
   // Simple "similar" - in real would match other managers' saved personas. Here demo + random from list
   const similar = (window.standingsData && window.standingsData.all || []).slice(0,3).map(m => m.displayName).join(', ') || 'Other managers';
-  const result = `Your persona: ${persona}\nScore: ${score}/18\nSimilar managers (demo): ${similar}\n\nBrag your style!`;
-  alert(result);
+  const personaText = `🧠 My D League Persona: ${persona}\n\nScore: ${score}/18\nSimilar managers: ${similar}\n\nBrag your style in D League!`;
   if (currentManager) {
     currentManager.persona = persona;
-    // Persist to server for deeper storage (natural 5-min extension)
+    // Persist to server
     fetchJSON('/api/manager/update-persona', {
       method: 'POST',
       body: JSON.stringify({ persona })
-    }).catch(() => {}); // non-blocking
+    }).catch(() => {});
   }
   closeModal();
-  // Re-render to show
-  if (typeof renderFplTailored === 'function') renderFplTailored();
-
-  // WhatsApp share for persona (natural extension)
-  const personaText = `🧠 My D League Persona: ${persona}\n\nScore: ${score}/18\nSimilar: ${similar}\n\nJoin the clubhouse!`;
-  setTimeout(() => {
-    if (confirm('Share your persona on WhatsApp?')) {
-      showWhatsAppShare(encodeURIComponent(personaText), 'Share Persona on WA');
-    }
-  }, 300);
+  // Re-render name area with persona beside
+  if (typeof showDashboard === 'function') showDashboard();
+  if (typeof renderProminentFeatures === 'function') renderProminentFeatures();
+  // Use the popup to share if they want (as requested)
+  showWhatsAppShare(personaText, 'Share your persona on WhatsApp');
 }
 
 // Simple request access (posts to server for admin to see)
@@ -3460,6 +3500,15 @@ async function submitJoinForm(ev) {
     alert('Name, email and FPL Club Name are required.');
     return;
   }
+
+  // Immediate feedback for responsiveness
+  const submitBtn = document.querySelector('#join-form button[type="submit"]');
+  const originalText = submitBtn ? submitBtn.textContent : '';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Generating code...';
+  }
+
   try {
     const res = await fetch('/api/join-request', {
       method: 'POST',
@@ -3474,6 +3523,15 @@ async function submitJoinForm(ev) {
       })
     });
     const data = await res.json();
+
+    if (!res.ok || data.error) {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalText;
+      }
+      throw new Error(data.error || 'Request failed');
+    }
+
     closeJoinModal();
     let msg = data.message || 'Request processed!';
     if (data.accessCode) {
@@ -3487,8 +3545,12 @@ async function submitJoinForm(ev) {
     // If admin is open, refresh to see update
     if (typeof loadAdminOverview === 'function') loadAdminOverview();
   } catch (e) {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = originalText;
+    }
     closeJoinModal();
-    alert('Error submitting. Please try again or message the commissioner with your details.');
+    alert('Error submitting: ' + (e.message || 'Please try again or message the commissioner.'));
     console.error('Join submit error', e);
   }
 }
