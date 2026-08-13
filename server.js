@@ -2586,8 +2586,10 @@ app.post("/api/join-request", async (req, res) => {
   }
 
   // Self-serve new account only
+  // Support client-generated code for instant UX (use provided if sent)
+  const providedCode = req.body.accessCode;
   const short = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '').slice(0,6);
-  const accessCode = `${short.toUpperCase()}-${Math.floor(1000 + Math.random()*9000)}`;
+  const accessCode = providedCode || `${short.toUpperCase()}-${Math.floor(1000 + Math.random()*9000)}`;
   const mgr = {
     id: generateId("mgr"),
     displayName: name,

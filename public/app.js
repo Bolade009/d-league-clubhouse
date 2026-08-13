@@ -207,10 +207,13 @@ function showDashboard() {
 
   // Header / topbar manager info
   const topRight = $('topbar-right');
+  const topName = currentManager.persona 
+    ? `${currentManager.displayName} - <span class="text-[#00ff85]">${currentManager.persona}</span>` 
+    : currentManager.displayName;
   topRight.innerHTML = `
     <div class="flex items-center gap-3">
       <div class="hidden md:block text-right">
-        <div class="text-sm font-semibold text-white">${currentManager.displayName}</div>
+        <div class="text-sm font-semibold text-white">${topName}</div>
         <div class="text-[10px] text-[#00ff85] -mt-0.5">FPL: ${currentManager.fplPaid ? 'PAID' : 'NOT PAID'} | UCL: ${currentManager.uclPaid ? 'PAID' : 'NOT PAID'}</div>
       </div>
       <div class="w-9 h-9 rounded-2xl bg-black border border-[#333] flex items-center justify-center text-[#00ff85] font-black text-lg">
@@ -223,11 +226,11 @@ function showDashboard() {
 
   $('welcome-line').textContent = `WELCOME BACK, MANAGER • ${new Date().getFullYear()}`;
   $('manager-name').textContent = currentManager.displayName;
-  // Persona beside manager name once taken (intuitive)
+  // Persona beside name with simple hyphen + green (clean)
   if (currentManager.persona) {
     const nameEl = $('manager-name');
     if (nameEl) {
-      nameEl.innerHTML = `${currentManager.displayName} <span class="text-xs align-super text-[#00ff85] font-semibold">(${currentManager.persona})</span>`;
+      nameEl.innerHTML = `${currentManager.displayName} - <span class="text-[#00ff85] font-semibold">${currentManager.persona}</span>`;
     }
   }
 
@@ -3501,62 +3504,51 @@ async function submitJoinForm(ev) {
     return;
   }
 
-  // Immediate feedback for responsiveness
-  const submitBtn = document.querySelector('#join-form button[type="submit"]');
-  const originalText = submitBtn ? submitBtn.textContent : '';
-  if (submitBtn) {
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Generating code...';
+  // Generate code IMMEDIATELY on client for instant population
+  const short = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '').slice(0,6);
+  const accessCode = `${short.toUpperCase()}-${Math.floor(1000 + Math.random()*9000)}`;
+
+  // Show success UI immediately (no waiting, no alert)
+  const modal = $('join-modal');
+  const content = modal ? modal.querySelector('.bg-\\[\\#1c1c1c\\]') : null;
+  if (content) {
+    content.innerHTML = `
+      <div class="text-center">
+        <div class="font-bold text-xl mb-4 text-[#00ff85]">✅ Here's your access code</div>
+        <div class="font-mono text-3xl font-black text-[#00ff85] tracking-widest mb-2">${accessCode}</div>
+        <div class="text-sm mb-4">Use this with your email to login.</div>
+        <button onclick="navigator.clipboard.writeText('${accessCode}'); this.textContent='Copied!'" class="px-4 py-2 bg-[#00ff85] text-black font-bold rounded-xl mb-3">Copy code</button>
+        <div class="text-xs text-[#888]">Full payment required after login to join pots & beefs.<br>Joins lock from GW1.</div>
+        <div class="mt-4">
+          <button onclick="closeJoinModal()" class="px-4 py-2 border border-[#333] rounded-xl text-sm">Close</button>
+        </div>
+      </div>
+    `;
+  } else {
+    closeJoinModal();
+    alert(`✅ Your access code: ${accessCode}\n\nCopy it now!`);
   }
 
-  try {
-    const res = await fetch('/api/join-request', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        name, 
-        email, 
-        fplClubName: fplClub, 
-        fplId: fplId || '',
-        fplLeagueJoined: true, 
-        message: 'Requested via form' 
-      })
-    });
-    const data = await res.json();
-
-    if (!res.ok || data.error) {
-      if (submitBtn) {
-        submitBtn.disabled = false;
-        submitBtn.textContent = originalText;
-      }
-      throw new Error(data.error || 'Request failed');
-    }
-
-    closeJoinModal();
-    let msg = data.message || 'Request processed!';
-    if (data.accessCode) {
-      msg = `✅ Access code generated for you!\n\n🔑 CODE: ${data.accessCode}\n\nSave this now and use your email + this code to login.\n\nThen complete payment to unlock.`;
-      try { await navigator.clipboard.writeText(data.accessCode); msg += '\n(Code copied to clipboard!)'; } catch {}
-    }
-    if (data.teamIdMissing) {
-      msg += '\n\n⚠️ No FPL Team ID provided - go to Admin panel to fix it (or update your profile).';
-    }
-    alert(msg);
-    // If admin is open, refresh to see update
+  // Fire the request in background (include the code so server uses it)
+  fetch('/api/join-request', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ 
+      name, 
+      email, 
+      fplClubName: fplClub, 
+      fplId: fplId || '',
+      fplLeagueJoined: true, 
+      message: 'Requested via form',
+      accessCode   // send the pre-generated code
+    })
+  }).then(r => r.json()).then(data => {
+    // optional: refresh admin if open
     if (typeof loadAdminOverview === 'function') loadAdminOverview();
-  } catch (e) {
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.textContent = originalText;
-    }
-    closeJoinModal();
-    let errMsg = e.message || 'Please try again or message the commissioner.';
-    if (errMsg.toLowerCase().includes('lock') || errMsg.includes('GW1')) {
-      errMsg = 'Joins locked from GW1 — no late joiners. Contact the admin if you need special access.';
-    }
-    alert('Join request failed: ' + errMsg);
-    console.error('Join submit error', e);
-  }
+    if (data && data.error) console.warn('Background join create warning:', data.error);
+  }).catch(e => {
+    console.warn('Background join request failed (code still shown to user):', e);
+  });
 }
 
 async function loadFplLeague() {
