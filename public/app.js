@@ -539,6 +539,13 @@ function renderActiveBeefs() {
     const preset = BEEF_PRESETS.find(p => p.id === b.category);
     const beefDesc = preset ? preset.desc : (b.category || '');
 
+    const myId = currentManager && currentManager.id;
+    const parts = [...(b.opponentIds || []), ...(b.participants || [])];
+    if (b.proposerId) parts.push(b.proposerId);
+    const isParticipant = !!myId && parts.includes(myId);
+    const alreadyPaid = paidDetails.some(p => p.managerId === myId);
+    const showPayStake = isParticipant && !alreadyPaid && !b.locked;
+
     html += `
       <div class="bg-black p-3 rounded-2xl border border-[#ffaa00]">
         <div class="font-bold text-[#ffaa00]">⚔️ ${b.proposerName || 'Proposer'} vs ${(b.opponentNames || b.participantNames || []).join(' & ') || 'Opponents'}</div>
@@ -553,6 +560,7 @@ function renderActiveBeefs() {
           <button onclick="showWhatsAppShare(decodeURIComponent('${safeShare}'), 'Share beef'); event.stopImmediatePropagation();" class="px-2 py-0.5 bg-[#ffaa00] text-black rounded">📲 Share WA + Link</button>
           ${!b.locked && b.status === 'proposed' ? `<button onclick="respondToBeefLink('${b.id}', 'accept')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Accept</button>` : ''}
           ${!b.locked && b.status === 'accepted' ? `<button onclick="requestToJoinBeef('${b.id}')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Request to Join</button>` : ''}
+          ${showPayStake ? `<button onclick="payBeefStake('${b.id}', ${b.stake}); event.stopImmediatePropagation();" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">PAY ₦${b.stake} STAKE</button>` : ''}
           ${currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com' ? `<button onclick="adminCancelBeef('${b.id}')" class="px-2 py-0.5 bg-red-700 text-white rounded">CANCEL (admin)</button>` : ''}
           ${currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com' && !b.locked ? `<button onclick="adminLockBeef('${b.id}')" class="px-2 py-0.5 bg-orange-600 text-white rounded">LOCK (admin)</button>` : ''}
         </div>
@@ -595,14 +603,17 @@ async function loadAdminOverview() {
         const when = (e.at || '').slice(11,16);
         const existing = managersByEmail[email];
         const isAdded = e.type === 'manager_added';
+        const isSelf = p.selfRegistered || (existing && existing.selfRegistered);
         let actionHtml = '';
+        const code = (existing && existing.accessCode) || p.accessCode || '—';
+        const teamMissing = (p.teamIdMissing || (existing && existing.teamIdMissing)) && ! (existing && existing.fpl && existing.fpl.teamId);
         if (isAdded || existing) {
-          const code = (existing && existing.accessCode) || p.accessCode || '—';
           actionHtml = `
             <div class="text-right">
-              <div><span class="px-2 py-0.5 text-xs rounded bg-[#003322] text-[#00ff85]">${isAdded ? 'ADDED' : 'APPROVED'}</span></div>
+              <div><span class="px-2 py-0.5 text-xs rounded ${isSelf ? 'bg-[#003322] text-[#00ff85]' : 'bg-[#003322] text-[#00ff85]'}">${isSelf ? 'SELF-REGISTERED' : (isAdded ? 'ADDED' : 'APPROVED')}</span>${teamMissing ? ' <span class="px-1 text-[9px] bg-red-900 text-red-300 rounded">MISSING TEAM ID - FIX</span>' : ''}</div>
               <div class="font-mono text-sm mt-1">${code}</div>
               <button onclick="navigator.clipboard.writeText('${code}');this.textContent='copied!'" class="mt-1 text-[10px] px-2 py-0.5 bg-[#00ff85] text-black rounded">copy code</button>
+              ${teamMissing ? `<button onclick="editManager('${email}', '${(existing && existing.displayName || p.name || '').replace(/'/g,'\\\'')}', '${(existing && existing.fplClubName || p.fplClubName || '').replace(/'/g,'\\\'')}', '${(existing && existing.fpl && existing.fpl.teamId || p.fplId || '').replace(/'/g,'\\\'')}', '', '${code}');" class="mt-1 block text-[9px] px-2 py-0.5 bg-red-600 text-white rounded">FIX TEAM ID NOW</button>` : ''}
             </div>`;
         } else {
           actionHtml = `<button data-name="${(p.name || '').replace(/"/g, '&quot;')}" data-email="${(p.email || '').replace(/"/g, '&quot;')}" data-club="${(p.fplClubName || '').replace(/"/g, '&quot;')}" data-fplid="${(p.fplId || '').replace(/"/g, '&quot;')}"
@@ -614,8 +625,8 @@ async function loadAdminOverview() {
             <div class="flex-1 min-w-0">
               <div class="font-semibold text-base">${p.name || 'Unknown'}</div>
               <div class="text-sm text-[#00ff85] truncate">${p.email || ''}</div>
-              <div class="text-sm font-mono text-[#888] mt-0.5">${p.fplClubName || ''}</div>
-              <div class="text-[10px] text-[#666] mt-1">${when} • ${e.type}</div>
+              <div class="text-sm font-mono text-[#888] mt-0.5">${p.fplClubName || ''} ${p.fplId ? '| FPL ID: ' + p.fplId : ''}</div>
+              <div class="text-[10px] text-[#666] mt-1">${when} • ${e.type} ${isSelf ? '(self-gen code)' : ''}</div>
             </div>
             <div class="flex-shrink-0">${actionHtml}</div>
           </div>`;
@@ -657,13 +668,16 @@ async function loadAdminOverview() {
       const isProtected = !!(m._protectedRealPaid || m._recoveredFromPayments || m._restored || (m.email && (m.email.includes('recovered-') || m.email.includes('paid-'))));
       const protectedBadge = isProtected ? '<span class="text-[9px] bg-orange-900 text-orange-300 px-1 rounded ml-1">REAL PAID - RECLAIM</span>' : '';
       const reclaimBtn = isProtected ? `<button onclick="reclaimPaidManager('${m.id}', '${(m.displayName||'').replace(/'/g,'\\\'')}', '${(m.fplClubName||'').replace(/'/g,'\\\'')}')" class="mt-1 block text-[9px] px-2 py-0.5 bg-orange-600 hover:bg-orange-500 text-white rounded">Reclaim / change code</button>` : '';
+      const teamIdMissing = m.selfRegistered && !(m.fplTeam && m.fplTeam.teamId);
+      const missingBadge = teamIdMissing ? ' <span class="text-[9px] bg-red-900 text-red-300 px-1 rounded">MISSING FPL TEAM ID - FIX</span>' : '';
       return `
         <div class="flex justify-between items-center bg-[#1c1c1c] border border-[#333] p-3 rounded-2xl mb-2">
           <div>
-            <div class="font-semibold">${m.displayName} ${isAdmin ? '<span class="text-xs bg-[#003322] text-[#00ff85] px-1 rounded">ADMIN</span>' : ''} ${protectedBadge}</div>
+            <div class="font-semibold">${m.displayName} ${isAdmin ? '<span class="text-xs bg-[#003322] text-[#00ff85] px-1 rounded">ADMIN</span>' : ''} ${protectedBadge} ${missingBadge}</div>
             <div class="text-xs text-[#888]">${m.email}</div>
             <div class="text-xs text-[#00ff85] mt-0.5">${club}</div>
             <div class="text-xs text-[#666]">FPL: ${fplStatus} | UCL: ${uclStatus}</div>
+            <div class="text-[10px] font-mono text-[#aaa] mt-0.5">FPL TeamID: ${m.fplTeam && m.fplTeam.teamId ? m.fplTeam.teamId : '—'} | UCL: ${m.uclTeam && m.uclTeam.teamId ? m.uclTeam.teamId : '—'}</div>
           </div>
           <div class="text-right">
             <div class="font-mono text-sm">${code}</div>
@@ -831,8 +845,8 @@ async function loadAdminOverview() {
         const bdata = await fetchJSON('/api/admin/beefs');
         const bdiv = document.createElement('div');
         bdiv.className = 'mt-4 p-5 bg-[#111] border-2 border-[#ffaa00] rounded-3xl';
-        let bh = `<div class="font-black text-lg mb-2 text-[#ffaa00]">⚔️ BEEFS — ADMIN: CANCEL / SEE PAYERS / REFUNDS</div>
-          <div class="text-[10px] text-[#888] mb-2">Pot size shown after 10% cut (cuts go to house reserve immediately on any stake payment). Cancel aborts + full refund to paid wallets + reverse cuts.</div>`;
+        let bh = `<div class="font-black text-lg mb-2 text-[#ffaa00]">⚔️ BEEFS — ADMIN: CANCEL / SEE PAYERS / REFUNDS (AUTO-SETTLE WIRED)</div>
+          <div class="text-[10px] text-[#888] mb-2">Preset beefs auto-resolve after finished GW using FPL API + your saved team IDs (see League IDs box). Manual cancel/lock still here. 10% cuts immediate on pay.</div>`;
         const bl = (bdata.beefs || []);
         if (bl.length === 0) {
           bh += `<div class="text-xs text-[#666]">No beefs found.</div>`;
@@ -925,8 +939,9 @@ async function loadAdminOverview() {
         <input id="credit-amt" type="number" placeholder="Amount e.g. 4500" class="bg-[#111] border border-[#444] text-sm p-1 rounded w-28" value="4500">
         <input id="credit-note" placeholder="Note e.g. GW9 winner - recovered" class="bg-[#111] border border-[#444] text-sm p-1 rounded flex-1 min-w-[180px]">
         <button onclick="submitManualCredit()" class="px-4 py-1 bg-[#ffcc00] text-black font-bold rounded text-sm">CREDIT WALLET</button>
+        <button onclick="submitManualDeduct()" class="px-4 py-1 bg-red-700 text-white rounded text-sm">DEDUCT (negative adjust)</button>
       </div>
-      <div class="text-[10px] mt-1 text-[#888]">Adds ledger entry. Use positive for credit (missing win). Negative to correct. Wallet recalcs automatically on refresh.</div>
+      <div class="text-[10px] mt-1 text-[#888]">Positive = credit missing win. Negative or DEDUCT = correct mistaken auto-settle. Always logged in ledger. No admin payout burden — winners get wallet credit auto on finished GW.</div>
     `;
     panel.appendChild(creditWrap);
 
@@ -948,6 +963,40 @@ async function loadAdminOverview() {
       <div class="text-[10px] mt-1 text-[#888]">Creates confirmed payment record. Use this to fix cases where payment arrived during an update. List of paid will show the manager (even if restored by admin).</div>
     `;
     panel.appendChild(markPaidWrap);
+
+    // LEAGUE IDs + MANAGER TEAM IDs visibility (critical to avoid ID mismatches for auto beef/H2H/cup)
+    const leagueWrap = document.createElement('div');
+    leagueWrap.className = 'mt-4 p-4 bg-[#1a1a1a] border border-[#ffaa00] rounded-2xl text-sm';
+    const lids = data.leagueIds || {};
+    let leagueHtml = `<div class="font-bold text-[#ffaa00] mb-1">LEAGUE IDs (used for auto standings, H2H, runner-ups, beef resolution)</div>`;
+    leagueHtml += `<div>FPL Classic: <span class="font-mono bg-black px-1">${lids.fplClassic || 'NOT SET — set via admin for accurate D-League rankings'}</span></div>`;
+    leagueHtml += `<div>FPL H2H: <span class="font-mono bg-black px-1">${lids.fplH2h || 'NOT SET — required for end-of-season H2H pot'}</span></div>`;
+    leagueHtml += `<div>UCL: <span class="font-mono bg-black px-1">${lids.ucl || 'not set'}</span></div>`;
+    leagueHtml += `<div class="text-[10px] mt-1 text-[#888]">These + each manager's FPL/UCL Team ID below must match exactly what you use in FPL. Beefs/awards/H2H use them to auto-resolve via API data.</div>`;
+    leagueWrap.innerHTML = leagueHtml;
+    panel.appendChild(leagueWrap);
+
+    // ADMIN SUPERPOWERS — make life easy without coding. Visible + one-click for season.
+    const powerWrap = document.createElement('div');
+    powerWrap.className = 'mt-4 p-4 bg-[#112211] border border-[#00ff85] rounded-2xl text-sm';
+    powerWrap.innerHTML = `
+      <div class="font-bold mb-2 text-[#00ff85]">ADMIN SUPERPOWERS (season-proof, no code changes needed)</div>
+      <div class="flex flex-wrap gap-2">
+        <button onclick="triggerSettle()" class="px-3 py-1 bg-[#00ff85] text-black rounded text-xs">Force FPL Settle (current-1)</button>
+        <button onclick="fetch('/api/admin/settle-end-season', {method:'POST'}).then(r=>r.json()).then(d=>alert('End season: ' + JSON.stringify(d.awarded||d)))" class="px-3 py-1 bg-[#ffaa00] text-black rounded text-xs">SETTLE H2H + RUNNER UPS (end season)</button>
+        <button onclick="loadAdminOverview()" class="px-3 py-1 border border-[#333] rounded text-xs">Refresh All</button>
+        <button onclick="window.open('/api/standings','_blank')" class="px-3 py-1 border border-[#333] rounded text-xs">Raw Standings + IDs</button>
+        <button onclick="alert('Beefs now auto-settle on finished GW sync (uses your league IDs + per-manager teamIds + picks data). Check logs or trigger settle. No more manual per beef!')" class="px-3 py-1 border border-[#333] rounded text-xs">Beef Auto Info</button>
+        <button onclick="if(confirm('Deduct uses negative in Credit form above (see note). Or use manual-credit endpoint with negative amount.')) alert('Use the CREDIT/ADJUST form with negative amount + note for deducts. Always logged.')" class="px-3 py-1 border border-[#333] rounded text-xs">How to Deduct Wallet</button>
+        <button onclick="previewAutoSettle()" class="px-3 py-1 bg-purple-700 text-white rounded text-xs">Preview Auto Settle Winners</button>
+        <button onclick="forceSpecificRoundSettle()" class="px-3 py-1 bg-purple-700 text-white rounded text-xs">Force Specific Round Settle</button>
+        <button onclick="showIdMappingsAudit()" class="px-3 py-1 bg-purple-700 text-white rounded text-xs">View Detailed ID Mappings + Missing</button>
+        <button onclick="simulateGWResults()" class="px-3 py-1 bg-purple-700 text-white rounded text-xs">Simulate GW Results (admin)</button>
+        <button onclick="bulkUpdateIdsCsv()" class="px-3 py-1 bg-purple-700 text-white rounded text-xs">Bulk Update Team IDs (CSV paste)</button>
+      </div>
+      <div class="text-[10px] mt-2 text-[#888]">All use exact FPL data + your saved league/manager IDs. Set IDs once, forget. Sync pinger + 30m interval handles timing after GW finished flag.</div>
+    `;
+    panel.appendChild(powerWrap);
 
     // RECENT PAYOUT ACTIVITY — shows auto successes + any manual so admin sees full history/updates + ledger state
     const payoutWrap = document.createElement('div');
@@ -1127,6 +1176,94 @@ async function submitManualCredit() {
   }
 }
 
+async function submitManualDeduct() {
+  const mgrSelect = document.getElementById('credit-mgr');
+  const amtEl = document.getElementById('credit-amt');
+  const noteEl = document.getElementById('credit-note');
+  if (!mgrSelect || !amtEl || !noteEl) return;
+  const managerId = mgrSelect.value;
+  let amount = Number(amtEl.value);
+  if (amount > 0) amount = -amount; // force negative
+  const note = noteEl.value.trim() || 'Admin deduct / correction';
+  if (!managerId || !amount) return alert('Select manager and amount');
+  if (!confirm(`DEDUCT ₦${Math.abs(amount)} from selected manager? (negative ledger entry, wallet adjusts)`)) return;
+  try {
+    const res = await fetchJSON('/api/admin/manual-credit', {
+      method: 'POST',
+      body: JSON.stringify({ managerId, amount, note })
+    });
+    alert(res.message || 'Deduct applied.');
+    loadAdminOverview();
+    if (typeof loadAllData === 'function') loadAllData();
+  } catch (e) {
+    alert('Deduct failed: ' + (e.message || e));
+  }
+}
+
+// === ADDITIONAL SUPERPOWERS (preview, force round, ID audit, sim GW) ===
+async function previewAutoSettle() {
+  if (!window.standingsData) await loadStandings();
+  const round = (window.standingsData.currentRound && window.standingsData.currentRound.fpl || 2) - 1;
+  const winners = (window.standingsData.fpl || []).slice(0,3).map((m,i) => `${i+1}. ${m.displayName} (~${m.fplTotal||'?'} total)`).join('\n');
+  alert(`Preview Auto Settle for GW${round} (based on current data):\n\nTop projected:\n${winners}\n\nBeefs will auto-resolve via picks data if preset. Run settle to confirm.`);
+}
+
+async function forceSpecificRoundSettle() {
+  const r = prompt('Force settle which FPL round number?', (window.standingsData && window.standingsData.currentRound && window.standingsData.currentRound.fpl || 2)-1 );
+  if (!r) return;
+  try {
+    await fetchJSON('/api/settle/run', { method: 'POST', body: JSON.stringify({ comp: 'fpl', round: parseInt(r) }) });
+    alert(`Forced settle for round ${r}. Check ledger/pots.`);
+    loadAdminOverview();
+  } catch(e) { alert('Force failed: ' + e.message); }
+}
+
+function showIdMappingsAudit() {
+  const mgrs = (window.lastAdminData && window.lastAdminData.managers) || [];
+  let missing = [];
+  let html = 'ID MAPPINGS AUDIT (league + per manager teamIds):\n\n';
+  mgrs.forEach(m => {
+    const fplId = m.fplTeam && m.fplTeam.teamId ? m.fplTeam.teamId : 'MISSING';
+    const uclId = m.uclTeam && m.uclTeam.teamId ? m.uclTeam.teamId : '—';
+    html += `${m.displayName}: FPL=${fplId} UCL=${uclId}\n`;
+    if (fplId === 'MISSING' && m.fplPaid) missing.push(m.displayName);
+  });
+  html += `\nLeague IDs: ${JSON.stringify( (window.lastAdminData && window.lastAdminData.leagueIds) || {} )}\n`;
+  if (missing.length) html += `\n⚠️ MISSING TEAM IDs (paid): ${missing.join(', ')} — use edit/fix buttons!`;
+  alert(html);
+}
+
+async function simulateGWResults() {
+  if (!confirm('Admin: Simulate fake final scores for current round (demo only, does not persist)?')) return;
+  // Simple sim: perturb current data
+  const data = window.standingsData || {};
+  const fpl = (data.fpl || []).map(m => ({...m, fplTotal: (m.fplTotal||60) + Math.floor((Math.random()-0.5)*30) }));
+  alert('Simulated GW results (example):\n' + fpl.slice(0,5).map(m=>`${m.displayName}: ${m.fplTotal}`).join('\n') + '\n\nUse for preview. Real sync overwrites.');
+  // Could call a temp endpoint but for now visual superpower.
+}
+
+async function bulkUpdateIdsCsv() {
+  const csv = prompt('Paste CSV lines: email,fplTeamId,uclTeamId (one per line, header optional). Updates by email, preserves paid etc.');
+  if (!csv) return;
+  const lines = csv.trim().split(/\n+/).filter(l => l.includes(','));
+  let updated = 0;
+  for (const line of lines) {
+    const [email, fplId, uclId] = line.split(',').map(x => x.trim());
+    if (!email) continue;
+    const short = email.split('@')[0].replace(/[^a-z0-9]/g,'').slice(0,6).toUpperCase();
+    const code = `${short}-${Math.floor(1000+Math.random()*9000)}`;
+    try {
+      await fetchJSON('/api/admin/add-manager', {
+        method: 'POST',
+        body: JSON.stringify({ email, fplId: fplId || '', uclId: uclId || '', name: email.split('@')[0], accessCode: code })
+      });
+      updated++;
+    } catch(e) {}
+  }
+  alert(`Bulk update attempted for ${updated} entries. Refresh to see. Safe for existing paid (preserves).`);
+  loadAdminOverview();
+}
+
 async function confirmManualPayout(managerId, amount) {
   if (!confirm(`Confirm MANUAL payout (fallback after auto failed) of ₦${amount}? This just marks the prior request complete in ledger (no double debit).`)) return;
   try {
@@ -1268,17 +1405,41 @@ async function reclaimPaidManager(managerId, currentName, currentClub) {
 
 async function editManager(email, currentName, currentClub, currentFplId, currentUclId, currentCode) {
   if (!email) return alert('No email');
-  const name = prompt('Display name:', currentName || '') || currentName;
-  const accessCode = prompt('Access code:', currentCode || '') || currentCode;
-  const fplClubName = prompt('FPL club / team name:', currentClub || '') || currentClub;
-  const fplId = prompt('FPL Team ID:', currentFplId || '') || currentFplId;
-  const uclId = prompt('UCL Team ID (optional):', currentUclId || '') || currentUclId;
+  const modal = $('modal');
+  const content = $('modal-content');
+  content.innerHTML = `
+    <div class="space-y-3">
+      <div class="font-bold text-lg">Edit Manager — only change what you need</div>
+      <div class="text-xs text-[#888]">Team IDs and league IDs are critical for auto beefs, H2H, runner-ups. Edit one field at a time if preferred. Paid status & history preserved.</div>
+      <div><label class="text-xs">Display Name</label><input id="edit-name" value="${currentName || ''}" class="w-full bg-[#111] border border-[#444] p-1 rounded text-sm"></div>
+      <div><label class="text-xs">Access Code</label><input id="edit-code" value="${currentCode || ''}" class="w-full bg-[#111] border border-[#444] p-1 rounded text-sm"></div>
+      <div><label class="text-xs">FPL Club Name</label><input id="edit-club" value="${currentClub || ''}" class="w-full bg-[#111] border border-[#444] p-1 rounded text-sm"></div>
+      <div><label class="text-xs">FPL Team ID (exact from FPL)</label><input id="edit-fplid" value="${currentFplId || ''}" class="w-full bg-[#111] border border-[#444] p-1 rounded text-sm font-mono"></div>
+      <div><label class="text-xs">UCL Team ID (optional)</label><input id="edit-uclid" value="${currentUclId || ''}" class="w-full bg-[#111] border border-[#444] p-1 rounded text-sm font-mono"></div>
+      <div class="flex gap-2">
+        <button onclick="submitEditManager('${email}')" class="flex-1 py-2 bg-[#00ff85] text-black font-bold rounded">SAVE CHANGES</button>
+        <button onclick="closeModal()" class="flex-1 py-2 border border-[#333] rounded">CANCEL</button>
+      </div>
+      <div class="text-[10px] text-[#666]">League IDs shown above in this panel. Make sure they match your FPL leagues exactly.</div>
+    </div>
+  `;
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+}
 
+async function submitEditManager(email) {
+  const name = $('edit-name') ? $('edit-name').value.trim() : '';
+  const accessCode = $('edit-code') ? $('edit-code').value.trim() : '';
+  const fplClubName = $('edit-club') ? $('edit-club').value.trim() : '';
+  const fplId = $('edit-fplid') ? $('edit-fplid').value.trim() : '';
+  const uclId = $('edit-uclid') ? $('edit-uclid').value.trim() : '';
+  if (!name && !accessCode && !fplClubName && !fplId && !uclId) return alert('No changes');
   try {
     const res = await fetchJSON('/api/admin/add-manager', {
       method: 'POST',
       body: JSON.stringify({ name, email, accessCode, fplId, uclId, fplClubName })
     });
+    closeModal();
     alert('✅ Manager updated!\n' + (res.message || 'Details saved. Paid status preserved.'));
     loadAdminOverview();
   } catch (e) {
@@ -1664,20 +1825,6 @@ async function requestToJoinBeef(beefId) {
   }
 }
 
-async function requestToJoinBeef(beefId) {
-  if (!beefId) return;
-  try {
-    await fetchJSON('/api/beef/request-join', {
-      method: 'POST',
-      body: JSON.stringify({ beefId })
-    });
-    alert('Join request sent. The current participants will be notified to approve or decline.');
-    await loadAllData();
-  } catch (e) {
-    alert(e.message || 'Failed to request join');
-  }
-}
-
 // old challenge accept/decline/show removed (challenges no longer used; beefs use dedicated flows)
 
 
@@ -2011,9 +2158,117 @@ async function loadAndRenderLineup(managerId, container) {
       ? 'UCL • Captain (C) ×2' 
       : 'Points from FPL public API • Captain (C) ×2 • Bench shown';
     container.appendChild(note);
+
+    // SUPERPOWER: Simulate Next GW based on current/prev performance (for planning + bragging)
+    const simBtn = document.createElement('button');
+    simBtn.className = 'mt-2 px-3 py-1 text-xs bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]';
+    simBtn.textContent = '🔮 Simulate My Next GW Performance';
+    simBtn.onclick = () => simulateNextGW(data, recent, container);
+    container.appendChild(simBtn);
+
+    // Bragging rights: Winning card
+    const bragBtn = document.createElement('button');
+    bragBtn.className = 'mt-2 ml-2 px-3 py-1 text-xs bg-[#ffaa00] text-black rounded';
+    bragBtn.textContent = '🏆 Generate Winning Card to Share';
+    bragBtn.onclick = () => generateWinningCard(data, recent);
+    container.appendChild(bragBtn);
   } catch (e) {
     container.innerHTML = `<div class="text-center text-red-400 text-xs py-4">Could not load lineup. Sync scores first.</div>`;
   }
+}
+
+function simulateNextGW(managerData, recent, container) {
+  const basePts = recent.points || (managerData.fplTotal || 60);
+  const avg = (window.standingsData && window.standingsData.roundAverages && window.standingsData.roundAverages.fpl) || 65;
+  // Simple model: base on personal avg + league avg + variance + form
+  const variance = (Math.random() - 0.5) * 25; // +/-12.5
+  const formBoost = basePts > avg ? 4 : -3;
+  const proj = Math.max(20, Math.round(basePts * 0.6 + avg * 0.4 + variance + formBoost));
+  const chipNote = recent.activeChip ? ' (chip available last week)' : '';
+  const simHtml = `<div class="mt-3 p-2 bg-black/60 rounded text-xs border border-[#00ff85]">🔮 Next GW sim for ${managerData.displayName}: ~${proj} pts (based on your ${basePts} recent + league avg ${avg}${chipNote}). Variance possible ±15. Good luck!</div>`;
+  const old = container.querySelector('.sim-result');
+  if (old) old.remove();
+  const div = document.createElement('div');
+  div.className = 'sim-result';
+  div.innerHTML = simHtml;
+  container.appendChild(div);
+
+  // WA share for sim (natural extension)
+  const waBtn = document.createElement('button');
+  waBtn.className = 'mt-1 ml-1 px-2 py-0.5 text-[10px] bg-[#25D366] text-white rounded';
+  waBtn.textContent = '📲 Share sim on WA';
+  waBtn.onclick = () => showWhatsAppShare(encodeURIComponent(`🔮 Next GW sim for ${managerData.displayName}: ~${proj} pts`), 'Share Sim on WA');
+  container.appendChild(waBtn);
+}
+
+function generateWinningCard(managerData, recent) {
+  const pts = recent.points || '?';
+  const gw = recent.round || '?';
+  const text = `🏆 D LEAGUE WINNER GW${gw}!\n\n${managerData.displayName} scored ${pts} pts.\n\nBragging rights! Join at d-league-clubhouse\n#DLeague #FPL`;
+  const cardText = `D LEAGUE\nGW${gw} CHAMP\n\n${managerData.displayName}\n${pts} PTS\n\n🔥 Bragging Card`;
+
+  // Canvas visual card (5-min extension for nice shareable image)
+  const canvas = document.createElement('canvas');
+  canvas.width = 400;
+  canvas.height = 220;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#00ff85';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(10, 10, canvas.width - 20, canvas.height - 20);
+
+  ctx.fillStyle = '#ffaa00';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.fillText('D LEAGUE', 30, 50);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 16px sans-serif';
+  ctx.fillText(`GW${gw} WINNER`, 30, 80);
+  ctx.fillStyle = '#00ff85';
+  ctx.font = 'bold 28px sans-serif';
+  ctx.fillText(managerData.displayName, 30, 120);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 36px sans-serif';
+  ctx.fillText(`${pts} PTS`, 30, 165);
+  ctx.fillStyle = '#ffaa00';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('🔥 BRAGGING RIGHTS', 30, 195);
+
+  // Show canvas + share options
+  const modal = $('modal');
+  const content = $('modal-content');
+  content.innerHTML = `
+    <div class="text-center">
+      <div class="font-bold mb-2">🏆 Winning Card (canvas)</div>
+      <div id="card-canvas-wrap"></div>
+      <div class="mt-3 flex gap-2 justify-center">
+        <button onclick="downloadCanvas('${canvas.toDataURL()}', 'dleague-win-gw${gw}.png')" class="px-3 py-1 bg-[#00ff85] text-black rounded text-sm">Download PNG</button>
+        <button onclick="shareWinningCardWA('${encodeURIComponent(text)}', '${encodeURIComponent(cardText)}')" class="px-3 py-1 bg-[#25D366] text-white rounded text-sm">📲 Share on WA</button>
+        <button onclick="closeModal()" class="px-3 py-1 border border-[#333] rounded text-sm">Close</button>
+      </div>
+      <div class="text-xs mt-2 text-[#888]">Screenshot or download for brag. WA share uses text + link.</div>
+    </div>
+  `;
+  const wrap = content.querySelector('#card-canvas-wrap');
+  canvas.style.border = '1px solid #333';
+  wrap.appendChild(canvas);
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+}
+
+function downloadCanvas(dataUrl, filename) {
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+function shareWinningCardWA(text, cardText) {
+  const url = `https://wa.me/?text=${text}%0A%0A${cardText}`;
+  window.open(url, '_blank');
+  closeModal();
 }
 
 function fplPlayer(p, captainId, isBench = false) {
@@ -2665,6 +2920,15 @@ function renderFplTailored() {
   // Ensure lineup viewer populated
   if (typeof renderLineupViewer === 'function') setTimeout(renderLineupViewer, 100);
 
+  // Manager Persona (new superpower - 6 question quiz for personality type + match others)
+  if ($('fpl-personal-beef')) {
+    const personaDiv = document.createElement('div');
+    personaDiv.className = 'mt-3 p-2 bg-[#111] rounded text-xs border border-[#00ff85]';
+    const currentP = (currentManager && currentManager.persona) ? `<div class="mb-1 font-semibold">Your Persona: ${currentManager.persona} <button onclick="showWhatsAppShare(encodeURIComponent('My D League Persona: ' + currentManager.persona), 'Share on WA')" class="ml-1 text-[10px] px-1 bg-[#25D366] text-white rounded">WA</button></div>` : '';
+    personaDiv.innerHTML = `${currentP}<button onclick="showPersonaQuiz()" class="px-2 py-1 bg-[#003322] text-[#00ff85] rounded">🧠 Take/Retake 6-Question Manager Persona Quiz</button>`;
+    $('fpl-personal-beef').appendChild(personaDiv);
+  }
+
 }
 
 function renderUclTailored() {
@@ -2910,6 +3174,15 @@ async function adminLockBeef(beefId) {
   }
 }
 
+async function payBeefStake(beefId, stake) {
+  if (!beefId || !stake || !currentManager) return alert('Cannot pay stake');
+  try {
+    await initiatePayment(null, null, { beefId, amount: Number(stake) });
+  } catch (e) {
+    alert('Failed to start beef stake payment: ' + (e.message || e));
+  }
+}
+
 async function markManagerPaid() {
   const mgrSel = document.getElementById('mark-paid-mgr');
   const compSel = document.getElementById('mark-paid-comp');
@@ -3049,6 +3322,75 @@ function switchLeague(mode) {
   if (oldCombined) oldCombined.closest('div')?.classList.add('hidden');
 }
 
+// === MANAGER PERSONA SUPERPOWER ===
+// 6 questions to type managers (Captain style, risk, etc). See your type + similar others.
+const PERSONA_QUESTIONS = [
+  { q: "Captain choice style?", opts: ["Safe top player", "Differential / punty", "Form hot streak", "Value / budget"] , scores: [0,1,2,3] },
+  { q: "Transfer activity?", opts: ["Patient, few changes", "Very active, chase points", "Reactive to injuries", "Wildcard heavy"] , scores: [0,3,1,2] },
+  { q: "Bench philosophy?", opts: ["Ignore bench", "Value cheap bench", "Bench boost believer", "Rotate aggressively"] , scores: [0,1,3,2] },
+  { q: "Chip timing?", opts: ["Save for big weeks", "Use early on doubles", "Save for blank weeks", "Triple captain punts"] , scores: [1,2,0,3] },
+  { q: "Overall risk?", opts: ["Consistent safe", "High variance punts", "Balanced", "Contrarian"] , scores: [0,3,1,2] },
+  { q: "Focus area?", opts: ["Attackers for hauls", "Defence for cleans", "Midfield control", "All-round value"] , scores: [3,1,2,0] }
+];
+
+const PERSONA_TYPES = [
+  "Captain Clutch (safe + captain hero)",
+  "Differential Daredevil (punty picks)",
+  "Bench Bandit (smart bench play)",
+  "Wildcard Warrior (aggressive changes)",
+  "Value Viking (budget king)",
+  "Balanced Builder (consistent)"
+];
+
+function showPersonaQuiz() {
+  const m = $('modal');
+  const c = $('modal-content');
+  let html = `<div class="space-y-4"><div class="font-bold text-lg">🧠 Manager Persona Quiz (6 quick Qs)</div>`;
+  PERSONA_QUESTIONS.forEach((q,i) => {
+    html += `<div><div class="text-sm mb-1">${i+1}. ${q.q}</div>`;
+    q.opts.forEach((o,j) => {
+      html += `<label class="block text-xs"><input type="radio" name="p${i}" value="${j}"> ${o}</label>`;
+    });
+    html += `</div>`;
+  });
+  html += `<button onclick="submitPersonaQuiz()" class="mt-3 w-full py-2 bg-[#00ff85] text-black font-bold rounded">Compute My Persona + See Matches</button></div>`;
+  c.innerHTML = html;
+  m.classList.remove('hidden'); m.classList.add('flex');
+}
+
+function submitPersonaQuiz() {
+  let score = 0;
+  PERSONA_QUESTIONS.forEach((q,i) => {
+    const sel = document.querySelector(`input[name="p${i}"]:checked`);
+    if (sel) score += q.scores[parseInt(sel.value)];
+  });
+  const typeIdx = Math.min(Math.floor(score / 2), PERSONA_TYPES.length-1);
+  const persona = PERSONA_TYPES[typeIdx];
+  // Simple "similar" - in real would match other managers' saved personas. Here demo + random from list
+  const similar = (window.standingsData && window.standingsData.all || []).slice(0,3).map(m => m.displayName).join(', ') || 'Other managers';
+  const result = `Your persona: ${persona}\nScore: ${score}/18\nSimilar managers (demo): ${similar}\n\nBrag your style!`;
+  alert(result);
+  if (currentManager) {
+    currentManager.persona = persona;
+    // Persist to server for deeper storage (natural 5-min extension)
+    fetchJSON('/api/manager/update-persona', {
+      method: 'POST',
+      body: JSON.stringify({ persona })
+    }).catch(() => {}); // non-blocking
+  }
+  closeModal();
+  // Re-render to show
+  if (typeof renderFplTailored === 'function') renderFplTailored();
+
+  // WhatsApp share for persona (natural extension)
+  const personaText = `🧠 My D League Persona: ${persona}\n\nScore: ${score}/18\nSimilar: ${similar}\n\nJoin the clubhouse!`;
+  setTimeout(() => {
+    if (confirm('Share your persona on WhatsApp?')) {
+      showWhatsAppShare(encodeURIComponent(personaText), 'Share Persona on WA');
+    }
+  }, 300);
+}
+
 // Simple request access (posts to server for admin to see)
 // Now asks for FPL club name to confirm league membership
 // New seamless 2026 form (no sequential prompts)
@@ -3088,7 +3430,17 @@ async function submitJoinForm(ev) {
     });
     const data = await res.json();
     closeJoinModal();
-    alert(data.message || 'Request sent! Admin will review and send access code via email or panel.');
+    let msg = data.message || 'Request sent!';
+    if (data.accessCode) {
+      msg += `\n\n🔑 YOUR CODE: ${data.accessCode}\nCopy and save this now. Use it to login.`;
+      try { await navigator.clipboard.writeText(data.accessCode); msg += '\n(Copied to clipboard!)'; } catch {}
+    }
+    if (data.teamIdMissing) {
+      msg += '\n\n⚠️ FPL Team ID missing - admin will be prompted to fix it (check cockpit). You can update later.';
+    }
+    alert(msg);
+    // If admin is open, refresh to see update
+    if (typeof loadAdminOverview === 'function') loadAdminOverview();
   } catch (e) {
     closeJoinModal();
     alert('Request logged. Please message the commissioner with your details if needed.');

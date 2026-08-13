@@ -1166,6 +1166,176 @@ function computeWinnerFromLogic(logic, s) {
   return mgrScores[0] ? mgrScores[0].m : s.managers[0];
 }
 
+// Server-side preset logic for auto-resolving beefs and awards using detailed FPL picks data (per round, per teamId).
+// Beefs use the joinDeadline round's final data. This uses the same picks stored during syncFPL (extra.picks with multiplier, type, points).
+const BEEF_LOGIC_MAP = {
+  'cap-clutch': 'highestCaptain',
+  'bench-bandit': 'highestBench',
+  'clean-king': 'defencePoints',
+  'mid-maestro': 'midfieldPoints',
+  'fwd-fury': 'forwardPoints',
+  'chip-wizard': 'chipPerformance',
+  'transfer-king': 'transferImpact',
+  'underdog': 'biggestSurprise'
+};
+
+function getManagerRoundData(managerId, round, s) {
+  const sc = (s.scores || []).find(sc => sc.managerId === managerId && sc.competition === 'fpl' && sc.round === round && sc.isFinal);
+  return {
+    total: sc && typeof sc.points === 'number' ? sc.points : 0,
+    picks: (sc && sc.extra && sc.extra.picks) || [],
+    chip: sc && sc.extra ? sc.extra.activeChip : null
+  };
+}
+
+function computeBeefWinner(beef, round, s) {
+  const logicKey = beef.category || '';
+  const logic = BEEF_LOGIC_MAP[logicKey] || logicKey;
+  const parts = [beef.proposerId, ...(beef.opponentIds || []), ...(beef.participants || [])].filter(Boolean);
+  if (!parts.length) return null;
+
+  let best = null;
+  let bestScore = -Infinity;
+
+  for (const pid of parts) {
+    const data = getManagerRoundData(pid, round, s);
+    const picks = data.picks;
+    let score = 0;
+
+    if (logic === 'highestCaptain') {
+      const cap = picks.find(p => p.multiplier > 1);
+      score = cap ? (cap.points || 0) : 0;
+    } else if (logic === 'highestBench') {
+      score = picks.filter(p => (p.multiplier === 0 || p.multiplier == null)).reduce((sum, p) => sum + (p.points || 0), 0);
+    } else if (logic === 'defencePoints') {
+      score = picks.filter(p => p.type === 2).reduce((sum, p) => sum + (p.points || 0), 0);
+    } else if (logic === 'midfieldPoints') {
+      score = picks.filter(p => p.type === 3).reduce((sum, p) => sum + (p.points || 0), 0);
+    } else if (logic === 'forwardPoints') {
+      score = picks.filter(p => p.type === 4).reduce((sum, p) => sum + (p.points || 0), 0);
+    } else if (logic === 'chipPerformance') {
+      score = data.chip ? (data.total * 1.4) : data.total; // slight boost for chip use
+    } else if (logic === 'transferImpact') {
+      score = data.total; // could enhance with transfer count if stored
+    } else if (logic === 'biggestSurprise') {
+      const avg = (s.settings.roundAverages && s.settings.roundAverages.fpl) || 65;
+      score = data.total > avg * 1.6 ? data.total : 0;
+    } else {
+      score = data.total;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = s.managers.find(mm => mm.id === pid);
+    }
+  }
+  return best;
+}
+
+async function autoSettleBeefs(round) {
+  const s = await loadStore();
+  const toSettle = (s.beefs || []).filter(b =>
+    b.status === 'accepted' &&
+    (b.joinDeadline || 0) <= round &&
+    !['settled', 'declined', 'cancelled'].includes(b.status)
+  );
+  if (!toSettle.length) return;
+
+  console.log(`[AUTO BEEF] Checking ${toSettle.length} beefs for round ${round} auto-resolve using FPL picks data`);
+  for (const beef of toSettle) {
+    try {
+      const winner = computeBeefWinner(beef, round, s);
+      if (winner) {
+        const ok = await settleBeef(beef.id, winner.id);
+        if (ok) {
+          await logEvent('beef_auto_settled', { beefId: beef.id, winner: winner.id, round, category: beef.category });
+        }
+      }
+    } catch (e) {
+      console.warn('[AUTO BEEF] resolve failed for', beef.id, e.message);
+    }
+  }
+}
+
+// End-of-season one-off awards: H2H pot (if fplH2h ID set), plus 1st/2nd league runner-up from classic league or internal scores using house cuts / overall pot.
+// Uses exact teamId matching from FPL league standings API so no manual mapping issues.
+async function settleEndOfSeasonH2HAndRunners() {
+  const s = await loadStore();
+  const lids = s.settings.leagueIds || {};
+  let awarded = [];
+
+  // H2H - one off at season end
+  if (lids.fplH2h) {
+    const data = await fetchFplLeagueStandings(lids.fplH2h, true);
+    const results = data && data.standings && data.standings.results ? data.standings.results : [];
+    if (results.length > 0) {
+      const top = results[0];
+      const h2hWinner = s.managers.find(m => m.fpl && String(m.fpl.teamId) === String(top.entry));
+      const pot = s.settings.h2hOverallPot || 0;
+      if (h2hWinner && pot > 0) {
+        s.ledger.push({
+          id: generateId('ldg'),
+          type: 'h2h_season_win',
+          managerId: h2hWinner.id,
+          amount: pot,
+          note: 'End of season H2H winner (one-off from extra 1k contributions + boosts)'
+        });
+        s.settings.h2hOverallPot = 0;
+        awarded.push({ type: 'h2h', manager: h2hWinner.displayName, amount: pot });
+      }
+    }
+  }
+
+  // League runner ups (1st and 2nd) funded from season reserve / overall pot (house cuts)
+  const reserve = s.settings.seasonReserveBoost || 0;
+  const overallPot = s.settings.fplOverallPot || 0;
+  if (lids.fplClassic) {
+    const data = await fetchFplLeagueStandings(lids.fplClassic, false);
+    const results = data && data.standings && data.standings.results ? data.standings.results : [];
+    if (results.length >= 3) {
+      const r1 = results[1];
+      const r2 = results[2];
+      const mgr1 = s.managers.find(m => m.fpl && String(m.fpl.teamId) === String(r1.entry));
+      const mgr2 = s.managers.find(m => m.fpl && String(m.fpl.teamId) === String(r2.entry));
+
+      if (mgr1 && (reserve > 0 || overallPot > 0)) {
+        const share1 = Math.floor(Math.max(reserve, overallPot) * 0.12); // 12% slice for 1st runner up
+        if (share1 > 0) {
+          s.ledger.push({ id: generateId('ldg'), type: 'season_runner_up', managerId: mgr1.id, amount: share1, note: '1st League Runner Up (from house cuts / season pots)' });
+          awarded.push({ type: 'runner1', manager: mgr1.displayName, amount: share1 });
+        }
+      }
+      if (mgr2) {
+        const share2 = Math.floor(Math.max(reserve, overallPot) * 0.08);
+        if (share2 > 0) {
+          s.ledger.push({ id: generateId('ldg'), type: 'season_runner_up', managerId: mgr2.id, amount: share2, note: '2nd League Runner Up (from house cuts / season pots)' });
+          awarded.push({ type: 'runner2', manager: mgr2.displayName, amount: share2 });
+        }
+      }
+    }
+  } else {
+    // Fallback to internal scores total for runner ups if no classic ID set
+    const sorted = [...s.managers].map(m => {
+      const tot = (s.scores || []).filter(sc => sc.managerId === m.id && sc.competition === 'fpl').reduce((a,sc) => a + (sc.points||0), 0);
+      return { m, tot };
+    }).sort((a,b) => b.tot - a.tot);
+    if (sorted.length >= 3 && reserve > 0) {
+      const share1 = Math.floor(reserve * 0.12);
+      const share2 = Math.floor(reserve * 0.08);
+      s.ledger.push({ id: generateId('ldg'), type: 'season_runner_up', managerId: sorted[1].m.id, amount: share1, note: '1st Runner Up (internal fallback)' });
+      s.ledger.push({ id: generateId('ldg'), type: 'season_runner_up', managerId: sorted[2].m.id, amount: share2, note: '2nd Runner Up (internal fallback)' });
+      awarded.push({ type: 'runner1-fb', manager: sorted[1].m.displayName, amount: share1 });
+      awarded.push({ type: 'runner2-fb', manager: sorted[2].m.displayName, amount: share2 });
+    }
+  }
+
+  if (awarded.length) {
+    await persistStore();
+    await logEvent('end_of_season_awards', { awarded });
+  }
+  return awarded;
+}
+
 async function settleSponsoredAwards(round) {
   const s = await loadStore();
   // Group sponsorships by target, sum pot
@@ -1305,16 +1475,40 @@ async function autoSettleIfNeeded() {
   // Auto award for presets using programmable logic (after GW ends via API)
   await autoAwardPresets("fpl", curF - 1);
   await settleSponsoredAwards(curF - 1);
-  // Beefs are settled manually via admin (settleBeef) which credits to wallet.
-  // TODO: for h2h settled, credit winner 90% house 10%
+
+  // Auto settle preset beefs (using detailed per-team FPL picks data for the deadline round).
+  // Only runs for finished GWs (see sync timing). Beefs auto-resolve if they match presets.
+  await autoSettleBeefs(curF - 1);
+
+  if (curF >= 38) {
+    await settleEndOfSeasonH2HAndRunners();
+  }
 }
 
 async function autoAwardPresets(comp, round) {
   const s = await loadStore();
-  // Example: Auto resolve any open personal beef or sponsored using compute logic from JS side or here
-  // For live, frontend or external can call compute and settle
-  console.log(`[AutoAward] Check for preset awards for ${comp} round ${round} using real API data`);
-  // In full impl, iterate open challenges with logic id, compute winner from scores/picks, award minus 10%
+  console.log(`[AutoAward] Checking presets/sponsored for ${comp} round ${round} using FPL data`);
+  // Beefs auto via autoSettleBeefs using FPL picks + logic (cap/bench/pos etc per round data).
+  // Sponsored/presets lightly auto if targets set.
+  // Example: if there are active 'preset' sponsorships without specific beef, award top by logic.
+  const activePresets = (s.sponsorships || []).filter(sp => sp.target && sp.target.startsWith('preset:') && sp.status === 'active');
+  if (activePresets.length) {
+    // award top overall or by simple logic to first sponsor target
+    const top = s.managers.sort((a,b) => {
+      const sa = getManagerScore(a.id, comp, round) || {points:0};
+      const sb = getManagerScore(b.id, comp, round) || {points:0};
+      return (sb.points || 0) - (sa.points || 0);
+    })[0];
+    if (top) {
+      const pot = activePresets.reduce((sum, sp) => sum + (sp.amount || 0), 0);
+      if (pot > 0) {
+        s.ledger.push({ id: generateId('ldg'), type: 'preset_award', managerId: top.id, competition: comp, round, amount: Math.floor(pot * 0.9), note: `Auto preset award for round ${round}` });
+        // reduce or mark settled
+        activePresets.forEach(sp => sp.status = 'settled');
+        await persistStore();
+      }
+    }
+  }
 }
 
 async function createTransferRecipient(mgr) {
@@ -1594,7 +1788,17 @@ async function syncFPL(roundsToSync = null) {
 
   s.settings.lastSyncAt = nowISO();
   await persistStore();
-  await autoSettleIfNeeded();
+
+  // Only auto-settle previous GW once FPL has marked it finished (scores final, usually next day 09:00 per FPL rules).
+  // This prevents settling on projections or before lockdown. Reduces need for admin intervention.
+  const prevRound = (currentEvent && currentEvent.id ? currentEvent.id - 1 : null);
+  const prevEv = prevRound ? eventMap[prevRound] : null;
+  if (prevEv && prevEv.finished) {
+    await autoSettleIfNeeded();
+  } else if (prevRound) {
+    console.log(`[SYNC FPL] GW${prevRound} not yet finished in FPL bootstrap — deferring auto settle (will catch on next sync/ping).`);
+  }
+
   await logEvent("sync_fpl_completed", { rounds, managers: s.managers.length });
   return { ok: true };
 }
@@ -1826,8 +2030,9 @@ async function getProjectedPayouts() {
   const overallFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.75) + voluntaryOverall + (fplPaid * extraToOverall);
   const cupFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.25) + voluntaryCup + (fplPaid * extraToCup);
 
-  // seasonReserveBoost accumulates actual 10% from settled beefs + sponsored + voluntary reserve boosts
-  const seasonReserveBoost = (s.settings.seasonReserveBoost || Math.floor(sponsored * 0.1)) + voluntaryReserve;
+  // seasonReserveBoost accumulates actual 10% house cuts from paid beef stakes (immediate on confirmPayment / paidFromWallet) + voluntary 'reserve' pot boosts.
+  // Note: some sponsors also target reserve directly (100%). Beef cuts are never taken again at settle.
+  const seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + voluntaryReserve;
 
   const h2hTotal = h2hFromExtra + voluntaryH2H;
 
@@ -1895,6 +2100,7 @@ function buildManagerView(mgr) {
     combined: fplTotal + uclTotal,
     wallet,
     payoutDetails: mgr.payoutDetails || "",
+    persona: mgr.persona || null,
     // no fines
     // Detailed FPL data for squad view
     recentCaptain: recentFpl.captain || null,
@@ -2008,7 +2214,7 @@ async function fetchUCLStats() {
     );
 
     const standingsData = await fetchWithFootballAuth(
-      `${FOOTBALL_API_BASE}/competitions/CL/standings?season=2025`
+      `${FOOTBALL_API_BASE}/competitions/CL/standings`  // current season; add ?season=2026 if needed for 26/27
     );
 
     if (!matchesData) return null;
@@ -2367,12 +2573,45 @@ app.post("/api/join-request", async (req, res) => {
 
   const s = await loadStore();
 
-  await logEvent("join_request", { name, email, fplClubName, fplId: fplId || '', fplLeagueJoined: !!fplLeagueJoined, message });
-  await notifyAdminOfJoinRequest({ name, email, fplClubName, fplId: fplId || '' });
+  // Self-serve: generate code for manager if new, create basic record immediately so code is available.
+  // This updates admin cockpit instantly. Does NOT mark paid - payments are separate.
+  // Preserves any existing paid managers (by email match).
+  let accessCode = '';
+  const existing = s.managers.find(m => m.email && m.email.toLowerCase() === email.toLowerCase());
+  if (existing) {
+    accessCode = existing.accessCode || '';
+  } else {
+    const short = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '').slice(0,6);
+    accessCode = `${short.toUpperCase()}-${Math.floor(1000 + Math.random()*9000)}`;
+    const mgr = {
+      id: generateId("mgr"),
+      displayName: name,
+      email,
+      accessCode,
+      fpl: { teamId: fplId || '', teamName: fplClubName },
+      ucl: { teamId: '', teamName: '' },
+      fplClubName,
+      selfRegistered: true,
+      teamIdMissing: !fplId,
+      createdAt: nowISO()
+    };
+    s.managers.push(mgr);
+    await persistStore();
+    // sidecar for durability
+    try { writeAtomicCollection('managers', s.managers); } catch {}
+  }
 
-  // Real emails: the console above shows the details. Admin checks /api/admin/overview or events.
-  // In future: wire nodemailer with your SMTP (Gmail app password, SendGrid etc).
-  res.json({ ok: true, message: "Request received! Check your email (" + email + "). The commissioner will send your access code shortly." });
+  await logEvent("join_request", { name, email, fplClubName, fplId: fplId || '', fplLeagueJoined: !!fplLeagueJoined, message, accessCode, selfRegistered: !existing });
+  await notifyAdminOfJoinRequest({ name, email, fplClubName, fplId: fplId || '', accessCode });
+
+  res.json({ 
+    ok: true, 
+    message: existing 
+      ? "You already have an account. Your code was sent previously or is in your email." 
+      : `Success! Your access code is: ${accessCode}. Save it now. Admin cockpit updated with your details.`,
+    accessCode: accessCode || undefined,
+    teamIdMissing: !fplId
+  });
 });
 
 // Admin endpoint to add a new manager (protected with SYNC_TOKEN as X-Admin-Token for simplicity)
@@ -2397,7 +2636,7 @@ app.post("/api/admin/add-manager", async (req, res) => {
     }
   }
   const { name, email, accessCode, fplId, uclId, fplClubName } = req.body || {};
-  if (!name || !email || !accessCode) return res.status(400).json({ error: "name, email, accessCode required" });
+  if (!email) return res.status(400).json({ error: "email required" });
 
   const s = await loadStore();
 
@@ -2418,9 +2657,9 @@ app.post("/api/admin/add-manager", async (req, res) => {
   if (existing) {
     // Authorized admin call (auth passed above): allow updating details of already registered manager.
     // This protects existing paid/registered users (no duplicate error) while letting commissioner fix FPL ID, name, code, club etc. even after season live.
-    existing.displayName = name;
-    existing.email = email;
-    existing.accessCode = accessCode;
+    if (name) existing.displayName = name;
+    if (email) existing.email = email;
+    if (accessCode) existing.accessCode = accessCode;
     if (fplId) existing.fpl = { teamId: fplId, teamName: fplClubName || existing.fpl?.teamName || '' };
     if (uclId) existing.ucl = { teamId: uclId, teamName: fplClubName || existing.ucl?.teamName || '' };
     if (fplClubName) existing.fplClubName = fplClubName;
@@ -3118,6 +3357,24 @@ app.post("/api/manager/update-payout", async (req, res) => {
   await logEvent("payout_details_updated", { managerId: mgr.id });
 
   res.json({ ok: true, message: "Bank details updated. Paystack will auto-create recipient for settlements." });
+});
+
+// Lightweight self-update for persona (5-min extension for persistence)
+app.post("/api/manager/update-persona", async (req, res) => {
+  const mgr = getAuthenticatedManager(req);
+  if (!mgr) return res.status(401).json({ error: "Login required" });
+  const { persona } = req.body || {};
+  if (!persona) return res.status(400).json({ error: "persona required" });
+
+  const s = await loadStore();
+  const dbMgr = s.managers.find(m => m.id === mgr.id);
+  if (!dbMgr) return res.status(404).json({ error: "Manager not found" });
+
+  dbMgr.persona = persona;
+  await persistStore();
+  await logEvent("persona_updated", { managerId: mgr.id, persona });
+
+  res.json({ ok: true, message: "Persona saved." });
 });
 
 app.post("/api/sponsor", async (req, res) => {
@@ -4084,7 +4341,9 @@ app.get("/api/admin/overview", async (req, res) => {
     fplPaid: !!s.payments.find(p => p.managerId === m.id && p.competition === 'fpl' && p.status === 'confirmed'),
     uclPaid: !!s.payments.find(p => p.managerId === m.id && p.competition === 'ucl' && p.status === 'confirmed'),
     fplTeam: m.fpl || {},
-    uclTeam: m.ucl || {}
+    uclTeam: m.ucl || {},
+    selfRegistered: !!m.selfRegistered,
+    teamIdMissing: !!m.teamIdMissing
   }));
 
   res.json({
@@ -4108,6 +4367,7 @@ app.get("/api/admin/overview", async (req, res) => {
       ucl: s.settings.houseUclAdmin || 0    // ₦2,500 per UCL
     },
     leagueLocked: s.settings.leagueLocked || { fpl: false, ucl: false },
+    leagueIds: s.settings.leagueIds || { fplClassic: '', fplH2h: '', ucl: '' },
     complaints: (s.complaints || []).slice(0, 30)
   });
 });
@@ -4138,7 +4398,36 @@ app.post("/api/settle/run", async (req, res) => {
   await autoSettleIfNeeded();
   if (comp === "fpl" || !comp) await settleWeeklyPot("fpl", (await loadStore()).settings.currentRound.fpl);
   if (comp === "ucl" || !comp) await settleWeeklyPot("ucl", (await loadStore()).settings.currentRound.ucl);
-  res.json({ ok: true, message: "Settlements processed, payouts initiated where possible." });
+
+  // End of season (or manual trigger) for H2H + runner ups
+  if (!comp || comp === 'season' || (await loadStore()).settings.currentRound.fpl >= 38) {
+    await settleEndOfSeasonH2HAndRunners();
+  }
+
+  res.json({ ok: true, message: "Settlements processed, payouts initiated where possible. End-of-season awards run if applicable." });
+});
+
+// Explicit end-of-season (H2H + runner ups) - safe to call anytime, idempotent-ish via pot zeroing
+app.post("/api/admin/settle-end-season", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+  const awarded = await settleEndOfSeasonH2HAndRunners();
+  res.json({ ok: true, awarded, message: "End of season H2H + runner-up awards processed using league IDs + teamId matching." });
 });
 
 // Debug endpoint for persistence health (admin only). Shows exactly what is on disk right now.
