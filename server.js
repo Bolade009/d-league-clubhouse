@@ -3039,6 +3039,10 @@ app.post("/api/admin/restore-from-best-backup", async (req, res) => {
   if (best.cup) writeAtomicCollection('cup', best.cup);
   if (best.settings) writeAtomicCollection('settings', best.settings);
 
+  // Run reconstruction in case best backup has payments but incomplete beefs
+  try { reconstructBeefsFromPayments(storeCache); } catch (e) {}
+  writeAtomicCollection('beefs', storeCache.beefs || []);
+
   await persistStore();
   const after = (getStore().managers || []).length;
 
@@ -3099,7 +3103,8 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
   if (data.settings) writeAtomicCollection('settings', data.settings);
 
   storeCache = data;
-  // Ensure beef paidBy is restored from any beef_stake payments in the export (for cases where beef data lagged)
+  // Ensure beef paidBy is restored + run full reconstruction (payments in export can recover any missing beef records)
+  try { reconstructBeefsFromPayments(storeCache); } catch (e) {}
   if (Array.isArray(storeCache.beefs) && Array.isArray(storeCache.payments)) {
     storeCache.beefs.forEach(b => {
       if (!b.paidBy) b.paidBy = {};
@@ -3107,11 +3112,12 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
         if (!b.paidBy[p.managerId]) {
           b.paidBy[p.managerId] = { amount: p.amount || b.stake || 0, ref: p.reference, paidAt: p.confirmedAt || p.at };
           b.totalStaked = (b.totalStaked || 0) + (p.amount || b.stake || 0);
-          // note: cuts would have been applied on original, but restore preserves the reserve if in settings
         }
       });
     });
   }
+  // Re-force the beefs atomic right after restore in case reconstruction added anything
+  writeAtomicCollection('beefs', storeCache.beefs || []);
   await persistStore();
 
   const after = (getStore().managers || []).length;
@@ -3123,6 +3129,160 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
     before,
     after,
     message: `Restored from your export JSON. Managers: ${before} -> ${after}. Full data (managers + ledger + beefs + sponsorships/awards + scores + challenges + events + settings) written to atomics/sidecar/DB. Use the new state immediately; future boots will prefer it.`
+  });
+});
+
+// === ADMIN SUPERPOWERS FOR SMOOTH SEASON RUN ===
+
+// Repair / resurrect beefs from payments + force atomic writes.
+// Call this after restoring a JSON or if you suspect any beef disappeared.
+// This is the key "make beefs immortal" helper.
+app.post("/api/admin/repair-beefs", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const s = await loadStore();
+  const beforeCount = (s.beefs || []).length;
+
+  const recovered = reconstructBeefsFromPayments(s);
+
+  // Force full durability writes for beefs + related
+  writeAtomicCollection('beefs', s.beefs || []);
+  writeAtomicCollection('payments', s.payments || []);
+  writeAtomicCollection('settings', s.settings || {});
+  writeAtomicCollection('ledger', s.ledger || []);
+  writeAtomicSidecar(s);
+  await persistStore();
+
+  const afterCount = (s.beefs || []).length;
+
+  // Return nice summary
+  const summary = (s.beefs || []).map(b => ({
+    id: b.id,
+    category: b.category,
+    stake: b.stake,
+    status: b.status,
+    totalStaked: b.totalStaked || 0,
+    prizePot: b.prizePot || 0,
+    paidCount: Object.keys(b.paidBy || {}).length,
+    reconstructed: !!b.reconstructed || !!b.reconstructedOnPay || !!b.recoveredForUser
+  }));
+
+  await logEvent("admin_repair_beefs", { before: beforeCount, after: afterCount, recovered });
+
+  res.json({
+    ok: true,
+    beforeBeefCount: beforeCount,
+    afterBeefCount: afterCount,
+    recoveredFromPayments: recovered,
+    beefs: summary,
+    message: `Beefs repaired. ${beforeCount} → ${afterCount} (recovered ${recovered}). All atomics + sidecar written. Hard refresh the UI.`
+  });
+});
+
+// Nuclear force persist of EVERY collection to atomics + sidecar.
+// Use after restore, big manual edits, or if you want belt+suspenders durability before redeploy.
+app.post("/api/admin/force-persist-all", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) allowed = true;
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const s = await loadStore();
+
+  // Write every important collection
+  const collections = ['managers', 'payments', 'ledger', 'beefs', 'sponsorships', 'challenges', 'scores', 'h2h', 'events', 'complaints', 'potBoosts'];
+  collections.forEach(c => {
+    writeAtomicCollection(c, s[c] || (c === 'settings' ? s.settings : []));
+  });
+  if (s.settings) writeAtomicCollection('settings', s.settings);
+  if (s.cup) writeAtomicCollection('cup', s.cup);
+  writeAtomicSidecar(s);
+
+  await persistStore();
+
+  res.json({
+    ok: true,
+    message: "Force persisted ALL collections to atomics + sidecar + DB. Beefs, pots, everything hardened.",
+    beefCount: (s.beefs || []).length,
+    firstRunnerUp: s.settings.firstRunnerUpPot || 0,
+    secondRunnerUp: s.settings.secondRunnerUpPot || 0
+  });
+});
+
+// Manual adjustment to runner-up pots (60/40 house cuts).
+// Use for corrections after restore or manual awards. Delta can be positive or negative.
+app.post("/api/admin/adjust-runner-up-pots", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) allowed = true;
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { firstDelta = 0, secondDelta = 0, note = "Admin manual adjustment" } = req.body || {};
+  const s = await loadStore();
+
+  const beforeFirst = s.settings.firstRunnerUpPot || 0;
+  const beforeSecond = s.settings.secondRunnerUpPot || 0;
+
+  s.settings.firstRunnerUpPot = Math.max(0, beforeFirst + Number(firstDelta));
+  s.settings.secondRunnerUpPot = Math.max(0, beforeSecond + Number(secondDelta));
+
+  s.ledger.push({
+    id: generateId("ldg"),
+    type: "admin_pot_adjust",
+    managerId: "admin",
+    amount: 0,
+    note: `${note} (1st: ${firstDelta}, 2nd: ${secondDelta})`,
+    at: nowISO()
+  });
+
+  writeAtomicCollection('settings', s.settings);
+  writeAtomicCollection('ledger', s.ledger);
+  writeAtomicSidecar(s);
+  await persistStore();
+
+  res.json({
+    ok: true,
+    before: { first: beforeFirst, second: beforeSecond },
+    after: { first: s.settings.firstRunnerUpPot, second: s.settings.secondRunnerUpPot },
+    message: `Runner-up pots adjusted. 1st: ${beforeFirst} → ${s.settings.firstRunnerUpPot}, 2nd: ${beforeSecond} → ${s.settings.secondRunnerUpPot}`
   });
 });
 
@@ -4552,7 +4712,10 @@ app.get("/api/admin/overview", async (req, res) => {
     },
     leagueLocked: s.settings.leagueLocked || { fpl: false, ucl: false },
     leagueIds: s.settings.leagueIds || { fplClassic: '', fplH2h: '', ucl: '' },
-    complaints: (s.complaints || []).slice(0, 30)
+    complaints: (s.complaints || []).slice(0, 30),
+    beefCount: (s.beefs || []).length,
+    firstRunnerUpPot: s.settings.firstRunnerUpPot || 0,
+    secondRunnerUpPot: s.settings.secondRunnerUpPot || 0
   });
 });
 
@@ -4697,7 +4860,11 @@ app.get("/api/admin/persistence-status", async (req, res) => {
   } catch (e) {}
 
   const sideBeefs = sidecarData ? (sidecarData.beefs || []).length : 0;
-  const dbBeefs = 0; // would require full parse
+  const atomicBeefCount = atomicStatus.beefs ? atomicStatus.beefs.count : 0;
+  const runnerPots = {
+    firstRunnerUpPot: (sidecarData && sidecarData.settings && sidecarData.settings.firstRunnerUpPot) || 0,
+    secondRunnerUpPot: (sidecarData && sidecarData.settings && sidecarData.settings.secondRunnerUpPot) || 0
+  };
   res.json({
     dataDir: DATA_DIR,
     dbFile: dbPath,
@@ -4707,14 +4874,16 @@ app.get("/api/admin/persistence-status", async (req, res) => {
     sidecarExists: fsSync.existsSync(sidecarPath),
     sidecarManagers: sideMgrCount,
     sidecarBeefs: sideBeefCount,
+    atomicBeefCount,
     sidecarLastPersisted: sideLast,
     sidecarSampleEmails: sideEmails,
     bestBackupManagersSeen: bestBackupCount,
     latestBackupSample: latestBackup,
+    runnerUpPots: runnerPots,
     atomicFiles: atomicStatus,
     lastHealthPing,
     healthPingCount,
-    note: "Per-collection atomics written on every action. Cron pings to /health keep awake + auto-heal. Yellow box shows live health + ping count. Self-heal on every restart."
+    note: "Beefs protected via atomic current-beefs.json + payment reconstruction. After restore use /api/admin/repair-beefs then /api/admin/force-persist-all. Runner up pots (1st 60% / 2nd 40%) funded immediately on paid beefs & sponsors."
   });
 });
 

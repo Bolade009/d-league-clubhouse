@@ -886,6 +886,18 @@ async function loadAdminOverview() {
         </div>
       </div>
 
+      <!-- BEEF & DATA HEALING SUPERPOWERS (for smooth season + after restores) -->
+      <div class="mb-6 p-4 bg-[#1a1400] border border-[#ffaa00] rounded-3xl">
+        <div class="font-bold text-[#ffaa00] mb-2 text-sm tracking-widest">🛡️ BEEF IMMORTALITY + DATA HEALING (REDEPLOY SAFE)</div>
+        <div class="flex flex-wrap gap-2">
+          <button onclick="repairBeefs()" class="px-4 py-2 bg-[#ffaa00] hover:bg-white text-black font-bold rounded-2xl text-sm">REPAIR BEEFS (from payments) + Persist</button>
+          <button onclick="forcePersistAll()" class="px-4 py-2 bg-[#222] hover:bg-[#444] text-[#ffaa00] font-bold rounded-2xl text-sm border border-[#ffaa00]">FORCE PERSIST ALL (atomics + sidecar)</button>
+          <button onclick="showAdjustRunnerPotsModal()" class="px-4 py-2 bg-[#222] hover:bg-[#444] text-[#ffaa00] font-bold rounded-2xl text-sm border border-[#ffaa00]">ADJUST 1st/2nd RUNNER-UP POTS</button>
+          <button onclick="loadAdminOverview()" class="px-3 py-2 bg-[#333] text-xs rounded-2xl">Refresh</button>
+        </div>
+        <div class="text-[10px] text-[#aa8800] mt-2">Use REPAIR BEEFS after restoring any JSON that had bolade-henry or other paid beefs. Then FORCE PERSIST. Beefs + 60/40 runner-up cuts will survive restarts/hard refreshes.</div>
+      </div>
+
       <!-- Stats Dashboard -->
       <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
         <div class="bg-[#161616] border border-[#222] rounded-2xl p-4">
@@ -1018,6 +1030,8 @@ async function loadAdminOverview() {
           <div class="font-bold text-[#ffcc00] mb-1">PERSISTENCE HEALTH (auto on every boot — no manual watching needed)</div>
           <div>Sidecar: <b>${side}</b> managers | DB: <b>${dbm}</b> | Best backup: ${pstatus.bestBackupManagersSeen || 0}${pingInfo}</div>
           <div class="mt-1">Atom ics (freshest per collection): ${atomicSummary}</div>
+          <div class="mt-1"><b>BEEFS (atomic):</b> ${pstatus.atomicBeefCount || pstatus.sidecarBeefs || 0} | Sidecar beefs: ${pstatus.sidecarBeefs || 0}</div>
+          <div class="mt-1"><b>RUNNER-UP POTS:</b> 1st: ₦${(pstatus.runnerUpPots && pstatus.runnerUpPots.firstRunnerUpPot) || 0} | 2nd: ₦${(pstatus.runnerUpPots && pstatus.runnerUpPots.secondRunnerUpPot) || 0}</div>
           <div class="mt-1">Sample emails: ${emails || '(none)'}</div>
           <div class="mt-1 text-[#888]">Last: ${pstatus.sidecarLastPersisted || 'unknown'}</div>
           <button onclick="reconcileAndPersist()" class="mt-2 px-3 py-1 bg-[#ffcc00] text-black rounded text-xs font-bold">FORCE RECONCILE (rarely needed)</button>
@@ -1584,6 +1598,50 @@ async function triggerSettle() {
     alert('Settlement triggered. Check ledger.');
     await loadAllData();
   } catch(e) { alert('Settle failed'); }
+}
+
+// === NEW ADMIN SUPERPOWERS (call after restore or for season ops) ===
+async function repairBeefs() {
+  if (!confirm('Repair all beefs from their payment records + force write atomics? This is safe and recommended after restoring a JSON with paid beefs (e.g. bolade vs henry).')) return;
+  try {
+    const res = await fetchJSON('/api/admin/repair-beefs', { method: 'POST' });
+    alert(res.message || `Repaired. Beefs: ${res.beforeBeefCount} → ${res.afterBeefCount}`);
+    await loadAdminOverview();
+    // also refresh the main UI beef display
+    await loadAllData();
+  } catch (e) {
+    alert('Repair failed: ' + (e.message || e));
+  }
+}
+
+async function forcePersistAll() {
+  if (!confirm('Force write every collection (managers, beefs, payments, settings, runner pots etc) to atomics + sidecar? Safe nuclear option.')) return;
+  try {
+    const res = await fetchJSON('/api/admin/force-persist-all', { method: 'POST' });
+    alert(res.message || 'All data force persisted.');
+    await loadAdminOverview();
+  } catch (e) {
+    alert('Force persist failed: ' + (e.message || e));
+  }
+}
+
+async function showAdjustRunnerPotsModal() {
+  const first = prompt('Delta for 1ST runner-up pot (positive or negative number, e.g. 300 or -100):', '0');
+  if (first === null) return;
+  const second = prompt('Delta for 2ND runner-up pot (e.g. 200 or -50):', '0');
+  if (second === null) return;
+  const note = prompt('Reason/note for ledger (optional):', 'Admin correction after restore') || 'Admin correction';
+  try {
+    const res = await fetchJSON('/api/admin/adjust-runner-up-pots', {
+      method: 'POST',
+      body: JSON.stringify({ firstDelta: Number(first), secondDelta: Number(second), note })
+    });
+    alert(res.message || 'Pots adjusted.');
+    await loadAdminOverview();
+    await loadAllData(); // refresh top pots
+  } catch (e) {
+    alert('Adjust failed: ' + (e.message || e));
+  }
 }
 
 async function loadStandings() {
