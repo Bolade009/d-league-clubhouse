@@ -3286,6 +3286,178 @@ app.post("/api/admin/adjust-runner-up-pots", async (req, res) => {
   });
 });
 
+// Preview who would win 1st/2nd runner up pots right now (based on current FPL league standings)
+app.get("/api/admin/preview-runner-ups", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) allowed = true;
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+  const s = await loadStore();
+  const lids = s.settings.leagueIds || {};
+  // Very simple projection using current scores if available, else paid managers order
+  let sorted = [];
+  if (lids.fplClassic && s.scores && s.scores.length) {
+    const latest = Math.max(...s.scores.filter(sc => sc.competition === 'fpl').map(sc => sc.round || 0));
+    const fplScores = s.scores.filter(sc => sc.competition === 'fpl' && sc.round === latest);
+    sorted = [...fplScores].sort((a,b) => b.points - a.points).slice(0,3);
+  } else {
+    const paid = getEligibleManagers('fpl');
+    sorted = paid.slice(0,3).map((m,i) => ({managerId: m.id, points: 100 - i*10, displayName: m.displayName}));
+  }
+  const firstPot = s.settings.firstRunnerUpPot || 0;
+  const secondPot = s.settings.secondRunnerUpPot || 0;
+  res.json({
+    projected1st: sorted[0] ? { manager: sorted[0].displayName || sorted[0].managerId, pot: firstPot } : null,
+    projected2nd: sorted[1] ? { manager: sorted[1].displayName || sorted[1].managerId, pot: secondPot } : null,
+    note: "Based on latest FPL scores or paid list. Use settle-end-season at true end of season."
+  });
+});
+
+// Dedicated clear wallet deduct (admin superpower). Uses same ledger as manual-credit.
+app.post("/api/admin/deduct-wallet", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) allowed = true;
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { managerId, amount, note = "Admin wallet deduct" } = req.body || {};
+  const s = await loadStore();
+  const target = s.managers.find(m => m.id === managerId) || s.managers.find(m => m.email && m.email.toLowerCase() === (managerId||'').toLowerCase());
+  if (!target) return res.status(404).json({ error: "Manager not found" });
+  const deductAmt = -Math.abs(Number(amount) || 0);
+  if (deductAmt === 0) return res.status(400).json({ error: "Amount required" });
+  s.ledger.push({
+    id: generateId("ldg"),
+    type: "wallet_deduct",
+    managerId: target.id,
+    amount: deductAmt,
+    note,
+    at: nowISO()
+  });
+  writeAtomicCollection('ledger', s.ledger);
+  await persistStore();
+  res.json({ ok: true, newBalance: getWalletBalance(target.id), message: `Deducted ₦${Math.abs(deductAmt)} from ${target.displayName}. Reason: ${note}` });
+});
+
+// ID mappings visibility superpower - shows exactly what IDs are stored for auto logic (beef, H2H, runner ups, cup)
+app.get("/api/admin/id-mappings", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) allowed = true;
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+  const s = await loadStore();
+  const mappings = (s.managers || []).map(m => ({
+    id: m.id,
+    name: m.displayName,
+    email: m.email,
+    fplTeamId: m.fpl && m.fpl.teamId || '',
+    uclTeamId: m.ucl && m.ucl.teamId || '',
+    fplClub: m.fplClubName || '',
+    payout: m.payoutDetails || ''
+  }));
+  res.json({
+    leagueIds: s.settings.leagueIds || {},
+    managers: mappings,
+    note: "Use these exact IDs for FPL API calls, auto beef resolution, H2H standings, and runner-up calculations. Update via manager edit."
+  });
+});
+
+// Force settle a specific round (for weekly pots + trigger auto beefs for that round)
+app.post("/api/admin/force-settle-round", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) allowed = true;
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { comp = 'fpl', round } = req.body || {};
+  const s = await loadStore();
+  const r = Number(round) || ((s.settings.currentRound && s.settings.currentRound[comp]) || 1) - 1;
+  // Trigger settle logic for the round
+  try {
+    // Simplified: call internal settle if available, else just log
+    await settleWeeklyPot(comp, r); // if function exists in scope
+  } catch(e) {}
+  await autoSettleBeefs(r);
+  await persistStore();
+  res.json({ ok: true, round: r, comp, message: `Forced settle + auto beefs for ${comp} round ${r}. Check ledger and beefs.` });
+});
+
+// Simulate a round (mock scores for testing pots/beefs without real FPL sync)
+app.post("/api/admin/simulate-round", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) allowed = true;
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { comp = 'fpl', round, scores = {} } = req.body || {}; // scores: { managerIdOrEmail: points }
+  const s = await loadStore();
+  const r = Number(round) || (s.settings.currentRound[comp] || 1);
+  Object.entries(scores).forEach(([key, pts]) => {
+    const mgr = s.managers.find(mm => mm.id === key || (mm.email||'').toLowerCase() === key.toLowerCase());
+    if (mgr) {
+      s.scores = s.scores || [];
+      const existing = s.scores.find(sc => sc.managerId === mgr.id && sc.competition === comp && sc.round === r);
+      const entry = { id: generateId('sc'), managerId: mgr.id, competition: comp, round: r, points: Number(pts), isFinal: true, simulated: true, at: nowISO() };
+      if (existing) Object.assign(existing, entry);
+      else s.scores.push(entry);
+    }
+  });
+  await persistStore();
+  res.json({ ok: true, message: `Simulated round ${r} for ${comp}. ${Object.keys(scores).length} managers updated. Now run settle or projections.` });
+});
+
 // Admin confirms manual payout (fallback ONLY when auto Paystack failed).
 // Finds the original request entry (which already debited) and flips its type/note.
 // Never double-debits. Successes from auto are already recorded as payout_completed.

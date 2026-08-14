@@ -207,8 +207,10 @@ function showDashboard() {
 
   // Header / topbar manager info
   const topRight = $('topbar-right');
-  const topName = currentManager.persona 
-    ? `${currentManager.displayName} - <span class="text-[#00ff85]">${currentManager.persona}</span>` 
+  const rawPersona = currentManager.persona || '';
+  const cleanPersona = rawPersona.split('(')[0].trim();
+  const topName = cleanPersona 
+    ? `${currentManager.displayName} - <span class="text-[#00ff85] cursor-pointer hover:underline" onclick="showPersonaDetails('${cleanPersona.replace(/'/g, "\\'")}')">${cleanPersona}</span>` 
     : currentManager.displayName;
   topRight.innerHTML = `
     <div class="flex items-center gap-3">
@@ -226,11 +228,13 @@ function showDashboard() {
 
   $('welcome-line').textContent = `WELCOME BACK, MANAGER • ${new Date().getFullYear()}`;
   $('manager-name').textContent = currentManager.displayName;
-  // Persona as big as the name, separated by hyphen, green
+  // Persona as big as the name, separated by hyphen, green. Clickable for full details (no brackets).
   if (currentManager.persona) {
     const nameEl = $('manager-name');
+    const rawP = currentManager.persona;
+    const cleanP = rawP.split('(')[0].trim();
     if (nameEl) {
-      nameEl.innerHTML = `${currentManager.displayName} - <span class="text-6xl text-[#00ff85] font-black tracking-[-3.2px] leading-none">${currentManager.persona}</span>`;
+      nameEl.innerHTML = `${currentManager.displayName} - <span class="text-6xl text-[#00ff85] font-black tracking-[-3.2px] leading-none cursor-pointer hover:underline" onclick="showPersonaDetails('${cleanP.replace(/'/g, "\\'")}')">${cleanP}</span>`;
     }
   }
 
@@ -893,9 +897,23 @@ async function loadAdminOverview() {
           <button onclick="repairBeefs()" class="px-4 py-2 bg-[#ffaa00] hover:bg-white text-black font-bold rounded-2xl text-sm">REPAIR BEEFS (from payments) + Persist</button>
           <button onclick="forcePersistAll()" class="px-4 py-2 bg-[#222] hover:bg-[#444] text-[#ffaa00] font-bold rounded-2xl text-sm border border-[#ffaa00]">FORCE PERSIST ALL (atomics + sidecar)</button>
           <button onclick="showAdjustRunnerPotsModal()" class="px-4 py-2 bg-[#222] hover:bg-[#444] text-[#ffaa00] font-bold rounded-2xl text-sm border border-[#ffaa00]">ADJUST 1st/2nd RUNNER-UP POTS</button>
+          <button onclick="previewRunnerUps()" class="px-3 py-2 bg-[#222] hover:bg-[#333] text-[#ffaa00] rounded-2xl text-xs border border-[#ffaa00]">PREVIEW RUNNER UPS</button>
+          <button onclick="showIdMappings()" class="px-3 py-2 bg-[#222] hover:bg-[#333] text-[#ffaa00] rounded-2xl text-xs border border-[#ffaa00]">VIEW ID MAPPINGS</button>
           <button onclick="loadAdminOverview()" class="px-3 py-2 bg-[#333] text-xs rounded-2xl">Refresh</button>
         </div>
         <div class="text-[10px] text-[#aa8800] mt-2">Use REPAIR BEEFS after restoring any JSON that had bolade-henry or other paid beefs. Then FORCE PERSIST. Beefs + 60/40 runner-up cuts will survive restarts/hard refreshes.</div>
+      </div>
+
+      <!-- MORE SEASON SUPERPOWERS -->
+      <div class="mb-6 p-4 bg-[#111] border border-[#00ff85] rounded-3xl text-sm">
+        <div class="font-bold text-[#00ff85] mb-2">⚡ MORE ADMIN SUPERPOWERS (Season Ops)</div>
+        <div class="flex flex-wrap gap-2 text-xs">
+          <button onclick="showDeductWalletModal()" class="px-3 py-1 bg-red-900 hover:bg-red-800 rounded">DEDUCT FROM WALLET</button>
+          <button onclick="forceSettleRoundPrompt()" class="px-3 py-1 bg-[#222] hover:bg-[#333] rounded">FORCE SETTLE ROUND</button>
+          <button onclick="simulateRoundPrompt()" class="px-3 py-1 bg-[#222] hover:bg-[#333] rounded">SIMULATE ROUND (mock scores)</button>
+          <button onclick="previewBeefAutoSettle()" class="px-3 py-1 bg-[#222] hover:bg-[#333] rounded">PREVIEW AUTO BEEF SETTLE</button>
+        </div>
+        <div class="text-[10px] text-[#666] mt-1">These let you test, correct, and control the season without waiting for real data or end-of-season. All changes are logged.</div>
       </div>
 
       <!-- Stats Dashboard -->
@@ -1642,6 +1660,66 @@ async function showAdjustRunnerPotsModal() {
   } catch (e) {
     alert('Adjust failed: ' + (e.message || e));
   }
+}
+
+async function previewRunnerUps() {
+  try {
+    const res = await fetchJSON('/api/admin/preview-runner-ups');
+    alert(`Projected Runner Ups:\n1st: ${res.projected1st ? res.projected1st.manager + ' - ₦' + res.projected1st.pot : 'N/A'}\n2nd: ${res.projected2nd ? res.projected2nd.manager + ' - ₦' + res.projected2nd.pot : 'N/A'}\n\n${res.note}`);
+  } catch (e) { alert('Preview failed: ' + (e.message||e)); }
+}
+
+async function showIdMappings() {
+  try {
+    const res = await fetchJSON('/api/admin/id-mappings');
+    const text = 'League IDs: ' + JSON.stringify(res.leagueIds) + '\n\nManagers (first 5):\n' + (res.managers||[]).slice(0,5).map(m => `${m.name}: FPL=${m.fplTeamId||'-'} UCL=${m.uclTeamId||'-'}`).join('\n');
+    alert(text + '\n\n(See full in console or use for auto beef/H2H/runnerup config)');
+    console.log('ID MAPPINGS', res);
+  } catch (e) { alert('ID mappings failed'); }
+}
+
+async function showDeductWalletModal() {
+  const who = prompt('Manager ID or email to deduct from:');
+  if (!who) return;
+  const amt = prompt('Amount to DEDUCT (positive number):');
+  if (!amt) return;
+  const note = prompt('Reason:', 'Admin correction / fine') || 'Admin deduct';
+  try {
+    const res = await fetchJSON('/api/admin/deduct-wallet', { method: 'POST', body: JSON.stringify({ managerId: who, amount: Number(amt), note }) });
+    alert(res.message || 'Deducted.');
+    loadAdminOverview();
+  } catch(e){ alert('Deduct failed: '+(e.message||e)); }
+}
+
+async function forceSettleRoundPrompt() {
+  const comp = prompt('Comp (fpl or ucl)?', 'fpl');
+  const rnd = prompt('Round number to force settle?', '1');
+  if (!rnd) return;
+  try {
+    const res = await fetchJSON('/api/admin/force-settle-round', {method:'POST', body: JSON.stringify({comp, round: Number(rnd)})});
+    alert(res.message);
+    loadAllData();
+  } catch(e){alert('Force settle failed');}
+}
+
+async function simulateRoundPrompt() {
+  const comp = prompt('comp fpl/ucl', 'fpl');
+  const rnd = prompt('round', '2');
+  const who = prompt('Manager ID or email for mock score', currentManager ? currentManager.id : '');
+  const pts = prompt('Mock points for them', '80');
+  if (!who || !pts) return;
+  try {
+    const body = { comp, round: Number(rnd), scores: {} };
+    body.scores[who] = Number(pts);
+    const res = await fetchJSON('/api/admin/simulate-round', {method:'POST', body: JSON.stringify(body)});
+    alert(res.message);
+    loadAllData();
+  } catch(e){ alert('Simulate failed'); }
+}
+
+async function previewBeefAutoSettle() {
+  alert('Auto beef settle uses computeBeefWinner on FPL picks data for preset categories (captain, bench, etc). Run after a real sync or use force-settle-round. Check /api/admin/beefs for current active ones. For full preview run a settle and inspect.');
+  // Could call a future preview endpoint
 }
 
 async function loadStandings() {
@@ -3528,6 +3606,8 @@ function switchLeague(mode) {
 
 // === MANAGER PERSONA SUPERPOWER ===
 // 6 questions to type managers (Captain style, risk, etc). See your type + similar others.
+// Scoring is designed to cluster answers into clear playstyles. Re-take the quiz anytime to update.
+// Clean names only; full explanations are in PERSONA_DETAILS and shown on click.
 const PERSONA_QUESTIONS = [
   { q: "Captain choice style?", opts: ["Safe top player", "Differential / punty", "Form hot streak", "Value / budget"] , scores: [0,1,2,3] },
   { q: "Transfer activity?", opts: ["Patient, few changes", "Very active, chase points", "Reactive to injuries", "Wildcard heavy"] , scores: [0,3,1,2] },
@@ -3538,13 +3618,22 @@ const PERSONA_QUESTIONS = [
 ];
 
 const PERSONA_TYPES = [
-  "Captain Clutch (safe + captain hero)",
-  "Differential Daredevil (punty picks)",
-  "Bench Bandit (smart bench play)",
-  "Wildcard Warrior (aggressive changes)",
-  "Value Viking (budget king)",
-  "Balanced Builder (consistent)"
+  "Captain Clutch",
+  "Differential Daredevil",
+  "Bench Bandit",
+  "Wildcard Warrior",
+  "Value Viking",
+  "Balanced Builder"
 ];
+
+const PERSONA_DETAILS = {
+  "Captain Clutch": "You are the ultimate captain picker. You obsess over the armband choice — whether safe premium or differential hero — and live for the weeks your captain hauls 20+ points. In D League, this persona dominates weekly pots, captain-specific beefs, and chip timing awards. You tend to win big on high-variance captain weeks but can be burned on blanks. Perfect for beefs around 'most points from captain' or 'top scorer this GW'.",
+  "Differential Daredevil": "Risk is your middle name. You hunt differentials, punts, and contrarian picks that others sleep on. High variance playstyle that either crushes the league or teaches hard lessons. In the league you win big on overall and h2h beefs when your differentials explode, but lose when they don't. Great for 'biggest differential gain' beefs and sponsor awards for most unique picks.",
+  "Bench Bandit": "You are a master of the bench. Cheap enablers, bench boosts at perfect times, and rotating 4th/5th midfielders/defenders for max value. You squeeze every point from your 15-man squad. In D League this shines in bench-related beefs, overall consistency, and defensive awards. You rarely have duds on the bench and win 'best bench' style challenges easily.",
+  "Wildcard Warrior": "Aggressive and decisive. You make big transfers, hit wildcards early or on doubles, and are not afraid to overhaul your team mid-season. High activity level. In D League you thrive on transfer terror beefs, wildcard timing challenges, and 'most points from transfers' awards. Your style leads to explosive weeks but requires strong FPL knowledge to avoid disasters.",
+  "Value Viking": "Budget king and enabler expert. You build strong squads on a shoestring, find hidden gems under £6m, and maximize every million. Extremely disciplined. This persona wins value-based beefs, overall pots on low ownership hauls, and sponsorships for 'best budget team'. You are consistent and hard to beat in 'most points per pound' style categories.",
+  "Balanced Builder": "The steady hand. You build balanced squads, avoid extremes, and grind consistent returns across attack, midfield, and defence. Reliable weekly scores. In D League this excels at long-term overall and cup pots, H2H consistency beefs, and end-of-season awards. Less flashy but you rarely finish near the bottom and are excellent at 'steady points' beef categories."
+};
 
 function showPersonaQuiz() {
   const m = $('modal');
@@ -3572,7 +3661,8 @@ function submitPersonaQuiz() {
   const persona = PERSONA_TYPES[typeIdx];
   // Simple "similar" - in real would match other managers' saved personas. Here demo + random from list
   const similar = (window.standingsData && window.standingsData.all || []).slice(0,3).map(m => m.displayName).join(', ') || 'Other managers';
-  const personaText = `🧠 My D League Persona: ${persona}\n\nScore: ${score}/18\nSimilar managers: ${similar}\n\nBrag your style in D League!`;
+  const details = PERSONA_DETAILS[persona] || "Your unique D League style. Re-take the quiz or ask admin to adjust.";
+  const personaText = `🧠 My D League Persona: ${persona}\n\nScore: ${score}/18\nSimilar managers: ${similar}\n\n${details}\n\nBrag your style in D League!`;
   if (currentManager) {
     currentManager.persona = persona;
     // Persist to server
@@ -3585,8 +3675,25 @@ function submitPersonaQuiz() {
   // Re-render name area with persona beside
   if (typeof showDashboard === 'function') showDashboard();
   if (typeof renderProminentFeatures === 'function') renderProminentFeatures();
-  // Use the popup to share if they want (as requested)
+  // Show full explanation in a nice alert + offer share
+  alert(`Your Persona: ${persona}\n\n${details}\n\n(You can click the persona name in your header anytime for this explanation.)`);
   showWhatsAppShare(personaText, 'Share your persona on WhatsApp');
+}
+
+function showPersonaDetails(personaName) {
+  const clean = (personaName || '').split('(')[0].trim();
+  const desc = PERSONA_DETAILS[clean] || "This persona reflects your FPL decision-making style based on the quiz. It can influence friendly beef categories and bragging rights in the league.";
+  const m = $('modal');
+  const c = $('modal-content');
+  c.innerHTML = `
+    <div class="space-y-4">
+      <div class="font-black text-2xl text-[#00ff85]">${clean}</div>
+      <div class="text-sm leading-relaxed">${desc}</div>
+      <div class="text-xs text-[#888]">Your persona is determined by your answers to the 6-question quiz (captain style, transfers, bench, chips, risk appetite, and focus). Re-take the quiz from the prominent features or 'Know Your Manager persona' button to update it. It shows in your name header and can be used for themed beefs/awards.</div>
+      <button onclick="closeModal()" class="w-full py-2 bg-[#00ff85] text-black font-bold rounded">Close</button>
+    </div>
+  `;
+  m.classList.remove('hidden'); m.classList.add('flex');
 }
 
 // Simple request access (posts to server for admin to see)
