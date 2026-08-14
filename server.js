@@ -353,6 +353,58 @@ function reconstructBeefsFromPayments(s) {
   return added;
 }
 
+// Derive and set first/secondRunnerUpPot from all confirmed beef_stake + sponsor payments.
+// This is the key to making runner-up funding solid even after restore/export of paid beefs.
+// House cuts are 10% split 60/40. Call after bringing in payment/beef data via restore or repair.
+function reconcileRunnerUpPots(s) {
+  if (!s || !s.settings) return { first: 0, second: 0 };
+  const payments = s.payments || [];
+  let totalCuts = 0;
+
+  // Sponsors (paystack path) - use payment records
+  payments.filter(p => p.type === 'sponsor' && p.status === 'confirmed').forEach(p => {
+    const amt = Number(p.amount) || 0;
+    totalCuts += Math.floor(amt * 0.1);
+  });
+
+  // Beef cuts: derive from the beef records' paidBy (this is the authoritative "who paid how much for this beef").
+  // Avoid using beef_stake payments here to prevent double-counting the same stakes.
+  const beefs = s.beefs || [];
+  beefs.forEach(b => {
+    if (b.paidBy && typeof b.paidBy === 'object') {
+      Object.values(b.paidBy).forEach(pay => {
+        const amt = Number(pay && pay.amount) || 0;
+        totalCuts += Math.floor(amt * 0.1);
+      });
+    }
+  });
+
+  // Wallet sponsors via sponsorships records (cuts applied directly in sponsor path)
+  const sponsorships = s.sponsorships || [];
+  sponsorships.forEach(sp => {
+    const amt = Number(sp.amount) || 0;
+    totalCuts += Math.floor(amt * 0.1);
+  });
+
+  const first = Math.floor(totalCuts * 0.6);
+  const second = totalCuts - first;
+
+  const prevFirst = s.settings.firstRunnerUpPot || 0;
+  const prevSecond = s.settings.secondRunnerUpPot || 0;
+
+  // Take the max so we don't lose value if some was already awarded or manually adjusted upward.
+  // For a fresh restore of paid data, this will populate the correct value from the paid records.
+  s.settings.firstRunnerUpPot = Math.max(prevFirst, first);
+  s.settings.secondRunnerUpPot = Math.max(prevSecond, second);
+
+  if (first > prevFirst || second > prevSecond) {
+    console.log(`[reconcile] Runner up pots updated from paid records: 1st ${prevFirst}→${s.settings.firstRunnerUpPot}, 2nd ${prevSecond}→${s.settings.secondRunnerUpPot}`);
+    writeAtomicCollection('settings', s.settings);
+  }
+
+  return { first: s.settings.firstRunnerUpPot, second: s.settings.secondRunnerUpPot };
+}
+
 function loadAtomicCollection(name) {
   try {
     const p = path.join(DATA_DIR, `current-${name}.json`);
@@ -582,6 +634,7 @@ async function loadStore() {
 
     // Reconstruct any beefs that have payment records but lost their beef doc. Critical for "beefs never disappear".
     try { reconstructBeefsFromPayments(storeCache); } catch (e) { console.warn('[beef] reconstruct failed', e.message); }
+    try { reconcileRunnerUpPots(storeCache); } catch (e) { console.warn('[runnerup] reconcile failed', e.message); }
 
     if (afterCount > beforeCount) {
       console.log(`[store] Reconciled extra managers: ${beforeCount} -> ${afterCount}. All ledger entries preserved.`);
@@ -660,6 +713,7 @@ async function loadStore() {
 
     // Reconstruct beefs from payments after recovery too
     try { reconstructBeefsFromPayments(storeCache); } catch (e) { console.warn('[beef] reconstruct after recovery failed', e.message); }
+    try { reconcileRunnerUpPots(storeCache); } catch (e) { console.warn('[runnerup] reconcile failed', e.message); }
 
     // After any load, immediately promote the current state to per-collection atomics.
     // This ensures that even if we loaded from an older full sidecar, the latest merged view is durable.
@@ -674,6 +728,9 @@ async function loadStore() {
     if (storeCache.settings) writeAtomicCollection('settings', storeCache.settings);
     // force promote beefs atomic to ensure never lost
     writeAtomicCollection('beefs', storeCache.beefs || []);
+
+    // Ensure runner up pots are consistent with payments (solid for restores)
+    try { reconcileRunnerUpPots(storeCache); } catch (e) {}
 
     return storeCache;
   } catch (e) {
@@ -3116,8 +3173,12 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
       });
     });
   }
+  // CRITICAL: Re-derive runner-up pots from the (now restored) paid beef/sponsor records.
+  // This fixes the case where exported settings had 0 for runner pots even though beefs were paid.
+  try { reconcileRunnerUpPots(storeCache); } catch (e) {}
   // Re-force the beefs atomic right after restore in case reconstruction added anything
   writeAtomicCollection('beefs', storeCache.beefs || []);
+  writeAtomicCollection('settings', storeCache.settings || {});
   await persistStore();
 
   const after = (getStore().managers || []).length;
@@ -3161,6 +3222,9 @@ app.post("/api/admin/repair-beefs", async (req, res) => {
 
   const recovered = reconstructBeefsFromPayments(s);
 
+  // Re-derive the runner-up pots from paid beefs (this is what populates first/second after a restore of paid beefs)
+  const runnerPots = reconcileRunnerUpPots(s);
+
   // Force full durability writes for beefs + related
   writeAtomicCollection('beefs', s.beefs || []);
   writeAtomicCollection('payments', s.payments || []);
@@ -3190,8 +3254,9 @@ app.post("/api/admin/repair-beefs", async (req, res) => {
     beforeBeefCount: beforeCount,
     afterBeefCount: afterCount,
     recoveredFromPayments: recovered,
+    runnerUpPots: runnerPots,
     beefs: summary,
-    message: `Beefs repaired. ${beforeCount} → ${afterCount} (recovered ${recovered}). All atomics + sidecar written. Hard refresh the UI.`
+    message: `Beefs repaired. ${beforeCount} → ${afterCount} (recovered ${recovered}). Runner-up pots now ${runnerPots.first}/${runnerPots.second}. All atomics + sidecar written. Hard refresh the UI.`
   });
 });
 

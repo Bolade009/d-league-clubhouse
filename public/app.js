@@ -1623,9 +1623,9 @@ async function repairBeefs() {
   if (!confirm('Repair all beefs from their payment records + force write atomics? This is safe and recommended after restoring a JSON with paid beefs (e.g. bolade vs henry).')) return;
   try {
     const res = await fetchJSON('/api/admin/repair-beefs', { method: 'POST' });
-    alert(res.message || `Repaired. Beefs: ${res.beforeBeefCount} → ${res.afterBeefCount}`);
+    alert(res.message || `Repaired. Beefs: ${res.beforeBeefCount} → ${res.afterBeefCount}. Runner pots: ${JSON.stringify(res.runnerUpPots)}`);
     await loadAdminOverview();
-    // also refresh the main UI beef display
+    // also refresh the main UI beef display + pots
     await loadAllData();
   } catch (e) {
     alert('Repair failed: ' + (e.message || e));
@@ -2967,19 +2967,54 @@ function showWhatsAppShare(waText, label = 'Share on WhatsApp') {
   if (old) old.remove();
 
   const encoded = encodeURIComponent(waText);
+  const rawForCopy = waText; // human readable with newlines etc.
+
   const bar = document.createElement('div');
   bar.id = 'whatsapp-share-bar';
   bar.className = 'fixed bottom-4 left-1/2 -translate-x-1/2 bg-[#111] border border-[#00ff85] p-3 rounded-2xl z-[200] text-xs max-w-md shadow-lg';
   bar.innerHTML = `
     <div class="font-semibold mb-1">${label}</div>
     <div class="flex gap-2 flex-wrap">
-      <button onclick="navigator.clipboard.writeText(decodeURIComponent('${encoded}')).then(()=>alert('Copied to clipboard! Paste in WhatsApp.')).catch(()=>{}); " class="px-3 py-1 bg-[#00ff85] text-black rounded">Copy text</button>
-      <button onclick="window.open('https://wa.me/?text=${encoded}', '_blank'); document.getElementById('whatsapp-share-bar').remove();" class="px-3 py-1 bg-[#00ff85] text-black rounded">Open WhatsApp</button>
-      <button onclick="document.getElementById('whatsapp-share-bar').remove()" class="px-3 py-1 border border-[#333] rounded">Close</button>
+      <button class="copy-btn px-3 py-1 bg-[#00ff85] text-black rounded">Copy text</button>
+      <button class="wa-btn px-3 py-1 bg-[#00ff85] text-black rounded">Open WhatsApp</button>
+      <button class="close-btn px-3 py-1 border border-[#333] rounded">Close</button>
     </div>
-    <div class="text-[10px] text-[#666] mt-1">This bar stays until closed. Share the link so others can contribute to the award or join similar beefs!</div>
+    <div class="text-[10px] text-[#666] mt-1">Tap Open WhatsApp or copy the text and paste into your group chat.</div>
   `;
   document.body.appendChild(bar);
+
+  // Use real event listeners (more reliable than inline onclick + template interpolation)
+  const copyBtn = bar.querySelector('.copy-btn');
+  const waBtn = bar.querySelector('.wa-btn');
+  const closeBtn = bar.querySelector('.close-btn');
+
+  if (copyBtn) {
+    copyBtn.onclick = () => {
+      navigator.clipboard.writeText(rawForCopy).then(() => {
+        alert('Copied to clipboard! Paste directly into WhatsApp.');
+      }).catch(() => {
+        // fallback
+        prompt('Copy this text manually:', rawForCopy);
+      });
+    };
+  }
+
+  if (waBtn) {
+    waBtn.onclick = () => {
+      const url = 'https://wa.me/?text=' + encoded;
+      window.open(url, '_blank');
+      // remove after a short delay so the tap registers
+      setTimeout(() => {
+        if (bar && bar.parentNode) bar.parentNode.removeChild(bar);
+      }, 300);
+    };
+  }
+
+  if (closeBtn) {
+    closeBtn.onclick = () => {
+      if (bar && bar.parentNode) bar.parentNode.removeChild(bar);
+    };
+  }
 }
 
 function showLedgerModal() {
