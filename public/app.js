@@ -341,8 +341,23 @@ async function loadAllData() {
     // Also set for prominent top display
     fetchJSON('/api/beefs').then(d => {
       if (d && Array.isArray(d.beefs)) {
-        window.activeBeefs = d.beefs;
-        d.beefs.forEach(sb => {
+        const serverBeefs = d.beefs;
+        let localBeefs = [];
+        try { localBeefs = JSON.parse(localStorage.getItem('dl_activeBeefs') || '[]'); } catch {}
+        // Merge to ensure beefs never disappear: keep any local-only (e.g. after transient server empty), prefer server data for known IDs
+        const byId = new Map();
+        (serverBeefs || []).forEach(b => { if (b && b.id) byId.set(b.id, { ...b }); });
+        (localBeefs || []).forEach(b => {
+          if (b && b.id && !byId.has(b.id)) {
+            byId.set(b.id, { ...b });
+          }
+        });
+        const mergedBeefs = Array.from(byId.values());
+        window.activeBeefs = mergedBeefs;
+        // Never nuke a good local backup with server [] on hard refresh
+        const toPersist = (mergedBeefs && mergedBeefs.length > 0) ? mergedBeefs : (serverBeefs && serverBeefs.length > 0 ? serverBeefs : localBeefs);
+        try { localStorage.setItem('dl_activeBeefs', JSON.stringify(toPersist || [])); } catch {}
+        (serverBeefs || []).forEach(sb => {
           const exists = playerChallenges.findIndex(pc => pc.serverId === sb.id);
           if (exists === -1) {
             playerChallenges.push({
@@ -361,7 +376,16 @@ async function loadAllData() {
           }
         });
       }
-    }).catch(e => console.warn('server beefs load failed', e))
+    }).catch(e => {
+      console.warn('server beefs load failed', e);
+      // fallback local backup so active beefs (paid or not) never disappear on refresh
+      try {
+        const backup = JSON.parse(localStorage.getItem('dl_activeBeefs') || '[]');
+        if (backup.length && (!window.activeBeefs || window.activeBeefs.length === 0)) {
+          window.activeBeefs = backup;
+        }
+      } catch {}
+    })
   ];
   await Promise.allSettled(loads);
   renderManagerHero();
@@ -412,14 +436,15 @@ function renderTopPotsAndActions() {
   const overall = fpl.overallWinnerPot || 0;
   const cup = fpl.cupWinnerPot || 0;
   const weekly = fpl.weeklyPot90 || 0;
-  const reserve = fpl.seasonReserveBoost || 0;
+  const firstRU = fpl.firstRunnerUpPot || 0;
+  const secondRU = fpl.secondRunnerUpPot || 0;
 
   // Build once, then update values for speed (avoids full re-parse on every data refresh)
   if (!container.hasChildNodes() || container.querySelector('#pot-grid') === null) {
     container.innerHTML = `
       <div class="mt-4 p-4 bg-[#0a0a0a] border border-[#00ff85] rounded-3xl">
         <div class="font-black text-lg mb-2 text-[#00ff85]">💰 THE POTS – GROW THEM BY PLAYING BEEFS & SPONSORING</div>
-        <div id="pot-grid" class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+        <div id="pot-grid" class="grid grid-cols-2 md:grid-cols-6 gap-3 text-sm">
           <div class="bg-black p-3 rounded-2xl border border-[#333]">
             <div class="text-xs text-[#888]">This GW pot</div>
             <div id="pot-weekly" class="text-2xl font-black text-[#00ff85]">₦0</div>
@@ -437,23 +462,28 @@ function renderTopPotsAndActions() {
             <div id="pot-cup" class="text-2xl font-black">₦0</div>
           </div>
           <div class="bg-black p-3 rounded-2xl border border-[#333]">
-            <div class="text-xs text-[#888]">Season Reserve Boost for Group decided awards by mid-season</div>
-            <div id="pot-reserve" class="text-2xl font-black">₦0</div>
+            <div class="text-xs text-[#888]">1st League Runner Up (60% of house cuts)</div>
+            <div id="pot-first-ru" class="text-2xl font-black">₦0</div>
+          </div>
+          <div class="bg-black p-3 rounded-2xl border border-[#333]">
+            <div class="text-xs text-[#888]">2nd League Runner Up (40% of house cuts)</div>
+            <div id="pot-second-ru" class="text-2xl font-black">₦0</div>
           </div>
         </div>
-        <div class="mt-3 text-xs text-[#00ff85]">Beef and sponsored awards fund the season reserve through 10% house cuts</div>
+        <div class="mt-3 text-xs text-[#00ff85]">Beef and sponsored awards fund the 1st/2nd league runner-ups through 60/40 house cuts (immediate on payment)</div>
 
         <div class="mt-2 text-[10px]">
           <span class="font-semibold">Active Sponsored:</span> 
           <span id="top-spon-inline">See awards section or sponsor to boost a pot!</span>
         </div>
 
-        <div class="mt-3 grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+        <div class="mt-3 grid grid-cols-2 md:grid-cols-6 gap-2 text-xs">
           <button onclick="boostPot('weekly')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost this week's</button>
           <button onclick="boostPot('h2h')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost H2H</button>
           <button onclick="boostPot('overall')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost Overall</button>
           <button onclick="boostPot('cup')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost Cup</button>
-          <button onclick="boostPot('reserve')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost Reserve</button>
+          <button onclick="boostPot('first-ru')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost 1st RU</button>
+          <button onclick="boostPot('second-ru')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost 2nd RU</button>
         </div>
 
         <div id="pot-boosts-list" class="mt-3 text-[11px] text-[#aaa] max-h-24 overflow-auto"></div>
@@ -470,7 +500,8 @@ function renderTopPotsAndActions() {
   setVal('pot-h2h', h2h);
   setVal('pot-overall', overall);
   setVal('pot-cup', cup);
-  setVal('pot-reserve', reserve);
+  setVal('pot-first-ru', firstRU);
+  setVal('pot-second-ru', secondRU);
 
   // Render recent boosts with names (only if data present)
   const boostsWrap = document.getElementById('pot-boosts-list');
@@ -480,7 +511,7 @@ function renderTopPotsAndActions() {
       boostsWrap.innerHTML = '<div class="font-semibold text-[#00ff85] mb-0.5">Recent pot boosts:</div>' +
         recent.map(b => {
           const namePart = b.clubName ? `${b.managerName} of ${b.clubName}` : b.managerName;
-          const t = b.target === 'weekly' ? "this week's pot" : (b.target === 'h2h' ? 'H2H pot' : (b.target === 'overall' ? 'overall pot' : (b.target === 'cup' ? 'cup pot' : 'reserve boost')));
+          const t = b.target === 'weekly' ? "this week's pot" : (b.target === 'h2h' ? 'H2H pot' : (b.target === 'overall' ? 'overall pot' : (b.target === 'cup' ? 'cup pot' : (b.target === 'first-ru' || b.target === 'second-ru' ? 'runner-up' : b.target))));
           return `<div>${namePart} added ₦${(b.amount||b.boostAmount||0).toLocaleString()} to ${t}</div>`;
         }).join('');
     } else {
@@ -946,7 +977,7 @@ async function loadAdminOverview() {
         const bdiv = document.createElement('div');
         bdiv.className = 'mt-4 p-5 bg-[#111] border-2 border-[#ffaa00] rounded-3xl';
         let bh = `<div class="font-black text-lg mb-2 text-[#ffaa00]">⚔️ BEEFS — ADMIN: CANCEL / SEE PAYERS / REFUNDS (AUTO-SETTLE WIRED)</div>
-          <div class="text-[10px] text-[#888] mb-2">Preset beefs auto-resolve after finished GW using FPL API + your saved team IDs (see League IDs box). Manual cancel/lock still here. 10% cuts immediate on pay.</div>`;
+          <div class="text-[10px] text-[#888] mb-2">10% house cuts (paid) go immediately 60/40 to 1st/2nd runner-up pots. Beefs persist and never disappear.</div>`;
         const bl = (bdata.beefs || []);
         if (bl.length === 0) {
           bh += `<div class="text-xs text-[#666]">No beefs found.</div>`;
@@ -1851,8 +1882,12 @@ async function loadProjections() {
       <div class="text-2xl font-black tabular-nums">₦${f.cupWinnerPot || 0}</div>
     </div>
     <div>
-      <div class="text-[#00ff85] text-xs">SEASON RESERVE BOOST</div>
-      <div class="text-xl font-black tabular-nums">₦${f.seasonReserveBoost || 0}</div>
+      <div class="text-[#00ff85] text-xs">1ST LEAGUE RUNNER UP (60%)</div>
+      <div class="text-xl font-black tabular-nums">₦${f.firstRunnerUpPot || 0}</div>
+    </div>
+    <div>
+      <div class="text-[#00ff85] text-xs">2ND LEAGUE RUNNER UP (40%)</div>
+      <div class="text-xl font-black tabular-nums">₦${f.secondRunnerUpPot || 0}</div>
     </div>
   `;
 }
@@ -1879,7 +1914,7 @@ function renderProjectionsLive() {
       <div class="text-xs">H2H season: ₦${proj.fpl?.h2hOverallPot || 0}</div>
       <div class="text-xs">Overall winner: ₦${proj.fpl?.overallWinnerPot || 0}</div>
       <div class="text-xs">Cup winner: ₦${proj.fpl?.cupWinnerPot || 0}</div>
-      <div class="text-xs">Season reserve boost: ₦${proj.fpl?.seasonReserveBoost || 0}</div>
+      <div class="text-xs">1st RU: ₦${proj.fpl?.firstRunnerUpPot || 0} • 2nd RU: ₦${proj.fpl?.secondRunnerUpPot || 0}</div>
     `;
   }
   if (uclWrap) {
@@ -1893,6 +1928,22 @@ function renderProjectionsLive() {
 
 let playerChallenges = JSON.parse(localStorage.getItem('dl_playerChallenges') || '[]');
 window.activeBeefs = window.activeBeefs || [];
+try {
+  if ((!window.activeBeefs || window.activeBeefs.length === 0)) {
+    const b = JSON.parse(localStorage.getItem('dl_activeBeefs') || '[]');
+    if (b.length) window.activeBeefs = b;
+  }
+} catch {}
+// Also merge on any future refresh to be extra safe
+window.mergeBeefsForSafety = function(serverB) {
+  try {
+    const loc = JSON.parse(localStorage.getItem('dl_activeBeefs') || '[]');
+    const m = new Map();
+    (serverB||[]).forEach(x=>x&&x.id&&m.set(x.id,x));
+    (loc||[]).forEach(x=>x&&x.id&&!m.has(x.id)&&m.set(x.id,x));
+    return Array.from(m.values());
+  } catch { return serverB || loc || []; }
+};
 
 function savePlayerChallenges() {
   localStorage.setItem('dl_playerChallenges', JSON.stringify(playerChallenges));
@@ -1997,7 +2048,7 @@ function showSponsorModal() {
       </select>
       <input id="sp-amount" type="number" placeholder="Amount to sponsor (e.g. 10000)" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm" value="10000">
       <button id="sp-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">SPONSOR &amp; PAY (wallet if balance, else Paystack)</button>
-      <div class="text-[10px] mt-1">Pay to activate. 10% of pot to season reserve boost (for the 3 end awards); 90% to winner(s).</div>
+      <div class="text-[10px] mt-1">Pay to activate. 10% house cut to 1st/2nd runner-up (60/40); 90% to winner(s).</div>
     </div>
   `;
   modal.classList.remove('hidden');
@@ -2079,7 +2130,8 @@ function boostPot(target) {
     h2h: "H2H pot",
     overall: "overall league pot",
     cup: "cup pot",
-    reserve: "season reserve boost (for 3 awards)"
+    'first-ru': "1st runner up (60%)",
+    'second-ru': "2nd runner up (40%)"
   };
   const label = labels[target] || target;
   const amtStr = prompt(`Enter amount in ₦ to add to ${label} (e.g. 1000). 100% goes to the pot.`, '1000');
@@ -3120,7 +3172,7 @@ function showBeefModal() {
       </select>
       <input id="beef-stake" type="number" value="5000" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
       <button id="beef-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">PROPOSE (deduct from wallet if balance; Paystack on accept)</button>
-      <div class="text-[10px] mt-1">Select one or more paid FPL managers. Stake per person. 10% of total pot (n×stake) goes to season reserve boost for the 3 group awards at end. <strong>Joins close before FPL GW deadline (admin can lock early).</strong></div>
+      <div class="text-[10px] mt-1">Select one or more paid FPL managers. Stake per person. 10% house cut to 1st/2nd runner-up pots (60/40); 90% to winner. <strong>Joins close before FPL GW deadline (admin can lock early).</strong></div>
     </div>
   `;
   modal.classList.remove('hidden');
@@ -3235,7 +3287,7 @@ async function respondToBeefLink(beefId, action) {
 }
 
 async function adminCancelBeef(beefId) {
-  if (!confirm('Cancel this beef? This will set status cancelled, fully refund all paid stakes to the payers\' wallets, and reverse the 10% cuts from the house reserve pot.')) return;
+  if (!confirm('Cancel this beef? This will set status cancelled, fully refund all paid stakes to the payers\' wallets, and reverse the 10% cuts from the 1st/2nd runner-up pots.')) return;
   try {
     await fetchJSON('/api/admin/cancel-beef', {
       method: 'POST',

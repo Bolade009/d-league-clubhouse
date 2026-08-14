@@ -174,12 +174,14 @@ function createEmptyStore() {
       totalUclRevenue: 0,
       houseFplAdmin: 0,
       houseUclAdmin: 0,
-      // Season pots populated from: weekly ₦500 contrib (10% reserve → 75% overall / 25% cup) + h2h from extra 1k only + seasonReserveBoost from beef/sponsor 10% cuts
+      // Season pots: weekly contribs split, + direct 60/40 runner-up pots from 10% house cuts on beef/sponsor payments (immediate)
       fplOverallPot: 0,
       fplCupPot: 0,
       uclOverallPot: 0,
       h2hOverallPot: 0,
       seasonReserveBoost: 0,
+      firstRunnerUpPot: 0,
+      secondRunnerUpPot: 0,
       // History for season review
       history: {
         weekly: [],      // {round, comp, winners: [{id, points}], pot, split, at}
@@ -299,6 +301,58 @@ function writeAtomicCollection(name, data) {
   }
 }
 
+// Reconstruct any beef records referenced by beef_stake payments but missing from beefs list.
+// This guarantees "beefs never disappear" as long as their stake payments were initiated.
+function reconstructBeefsFromPayments(s) {
+  if (!s) return 0;
+  s.beefs = s.beefs || [];
+  const beefMap = new Map(s.beefs.map(b => [b.id, b]));
+  const stakePays = (s.payments || []).filter(p => p && p.type === 'beef_stake' && p.beefId);
+  let added = 0;
+  stakePays.forEach(p => {
+    if (!beefMap.has(p.beefId)) {
+      const stakeAmt = Number(p.amount) || 0;
+      const recovered = {
+        id: p.beefId,
+        proposerId: p.managerId,
+        opponentIds: [],
+        participants: [p.managerId],
+        category: 'Recovered beef (from payment record)',
+        stake: stakeAmt,
+        status: 'accepted',
+        paidBy: {},
+        totalStaked: 0,
+        prizePot: 0,
+        at: p.confirmedAt || p.initiatedAt || nowISO(),
+        reconstructed: true
+      };
+      s.beefs.push(recovered);
+      beefMap.set(p.beefId, recovered);
+      added++;
+      console.log(`[beef] Reconstructed missing beef ${p.beefId} from stake payment for durability`);
+    }
+  });
+  // Also fill/repair paidBy + prizePot from confirmed payments for all beefs
+  s.beefs.forEach(b => {
+    b.paidBy = b.paidBy || {};
+    stakePays.filter(p => p.beefId === b.id && p.status === 'confirmed').forEach(p => {
+      if (!b.paidBy[p.managerId]) {
+        const amt = p.amount || b.stake || 0;
+        b.paidBy[p.managerId] = { amount: amt, ref: p.reference, paidAt: p.confirmedAt || p.at };
+        b.totalStaked = (b.totalStaked || 0) + amt;
+      }
+    });
+    const paidSoFar = Object.values(b.paidBy).reduce((sum, v) => sum + (Number(v.amount) || 0), 0);
+    if (paidSoFar > 0) {
+      b.prizePot = Math.floor(paidSoFar * 0.9);
+    }
+  });
+  if (added > 0) {
+    writeAtomicCollection('beefs', s.beefs || []);
+  }
+  return added;
+}
+
 function loadAtomicCollection(name) {
   try {
     const p = path.join(DATA_DIR, `current-${name}.json`);
@@ -416,7 +470,7 @@ async function loadStore() {
       const payLen = (src.data.payments || []).length;
       const beefLen = (src.data.beefs || []).length;
       const persistedAt = (src.data.settings && src.data.settings.lastPersistedAt) || '';
-      const score = mgrs.length * 10000 + ledgerLen * 10 + payLen * 5 + beefLen * 5 + (persistedAt ? 1 : 0);
+      const score = mgrs.length * 10000 + ledgerLen * 10 + payLen * 5 + beefLen * 100 + (persistedAt ? 1 : 0);
       if (score > bestScore) {
         bestScore = score;
         bestSource = { ...src, mgrCount: mgrs.length, ledgerLen };
@@ -436,7 +490,7 @@ async function loadStore() {
     if (atomicManagers && Array.isArray(atomicManagers)) loaded.managers = atomicManagers;
     if (atomicPayments && Array.isArray(atomicPayments)) loaded.payments = atomicPayments;
     if (atomicLedger && Array.isArray(atomicLedger)) loaded.ledger = atomicLedger;
-    if (atomicBeefs && Array.isArray(atomicBeefs)) loaded.beefs = atomicBeefs;
+    if (atomicBeefs && Array.isArray(atomicBeefs) && atomicBeefs.length > 0) loaded.beefs = atomicBeefs;
     if (atomicSponsorships && Array.isArray(atomicSponsorships)) loaded.sponsorships = atomicSponsorships;
     if (atomicChallenges && Array.isArray(atomicChallenges)) loaded.challenges = atomicChallenges;
     if (atomicComplaints && Array.isArray(atomicComplaints)) loaded.complaints = atomicComplaints;
@@ -451,6 +505,8 @@ async function loadStore() {
       storeCache.settings = { ...defaults.settings };
       needsPersist = true;
     }
+    storeCache.settings.firstRunnerUpPot = storeCache.settings.firstRunnerUpPot || 0;
+    storeCache.settings.secondRunnerUpPot = storeCache.settings.secondRunnerUpPot || 0;
     // Initialize collection keys to arrays only if completely absent (first run); do not overwrite or persist empty if key missing after partial load
     ['managers','payments','scores','ledger','h2h','challenges','sponsorships','events','complaints','beefs','potBoosts'].forEach(k => {
       if (!Array.isArray(storeCache[k])) storeCache[k] = [];
@@ -495,7 +551,8 @@ async function loadStore() {
 
       // For revenue/pot numbers, take the maximum seen (never lose money tracking)
       const moneyKeys = ['totalFplRevenue', 'totalUclRevenue', 'houseFplAdmin', 'houseUclAdmin',
-                         'fplOverallPot', 'fplCupPot', 'uclOverallPot', 'h2hOverallPot', 'seasonReserveBoost'];
+                         'fplOverallPot', 'fplCupPot', 'uclOverallPot', 'h2hOverallPot', 'seasonReserveBoost',
+                         'firstRunnerUpPot', 'secondRunnerUpPot'];
       moneyKeys.forEach(k => {
         let maxVal = (result.settings[k] || 0);
         allSources.forEach(src => {
@@ -523,6 +580,9 @@ async function loadStore() {
     storeCache = mergeSources(storeCache, sidecar, bestBackup);
     const afterCount = (storeCache.managers || []).length;
 
+    // Reconstruct any beefs that have payment records but lost their beef doc. Critical for "beefs never disappear".
+    try { reconstructBeefsFromPayments(storeCache); } catch (e) { console.warn('[beef] reconstruct failed', e.message); }
+
     if (afterCount > beforeCount) {
       console.log(`[store] Reconciled extra managers: ${beforeCount} -> ${afterCount}. All ledger entries preserved.`);
     }
@@ -546,6 +606,8 @@ async function loadStore() {
       storeCache.settings.currentRound = { fpl: 1, ucl: 1 };
       storeCache.settings.leagueLocked = { fpl: false, ucl: false };
       storeCache.settings.history = { weekly: [], awards: [], beefs: [], standings: [] };
+      storeCache.settings.firstRunnerUpPot = 0;
+      storeCache.settings.secondRunnerUpPot = 0;
       storeCache.scores = [];
       needsPersist = true;
       console.log("[store] Normalized to 2026/27 season start (round=1, unlocked). Existing managers/payments/ledger fully protected.");
@@ -596,6 +658,9 @@ async function loadStore() {
       if (pb) storeCache.potBoosts = pb;
     }
 
+    // Reconstruct beefs from payments after recovery too
+    try { reconstructBeefsFromPayments(storeCache); } catch (e) { console.warn('[beef] reconstruct after recovery failed', e.message); }
+
     // After any load, immediately promote the current state to per-collection atomics.
     // This ensures that even if we loaded from an older full sidecar, the latest merged view is durable.
     writeAtomicCollection('managers', storeCache.managers);
@@ -607,6 +672,8 @@ async function loadStore() {
     writeAtomicCollection('potBoosts', storeCache.potBoosts || []);
     writeAtomicCollection('complaints', storeCache.complaints || []);
     if (storeCache.settings) writeAtomicCollection('settings', storeCache.settings);
+    // force promote beefs atomic to ensure never lost
+    writeAtomicCollection('beefs', storeCache.beefs || []);
 
     return storeCache;
   } catch (e) {
@@ -897,30 +964,54 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
       existing.paystackData = paystackData;
     }
     if (existing.type === 'beef_stake' && existing.beefId) {
-      const beef = (s.beefs || []).find(b => b.id === existing.beefId);
+      let beef = (s.beefs || []).find(b => b.id === existing.beefId);
+      const payerId = existing.managerId;
+      const paidAmt = existing.amount || (beef && beef.stake) || 0;
+      if (!beef && existing.beefId) {
+        // Create stub so paid beef never disappears and cut is always accounted
+        beef = {
+          id: existing.beefId,
+          proposerId: payerId,
+          opponentIds: [],
+          participants: [payerId],
+          category: 'Beef (recovered on payment)',
+          stake: paidAmt,
+          status: 'accepted',
+          paidBy: {},
+          totalStaked: 0,
+          prizePot: 0,
+          at: nowISO(),
+          reconstructedOnPay: true
+        };
+        s.beefs = s.beefs || [];
+        s.beefs.push(beef);
+      }
       if (beef) {
         beef.stakePaid = true;
         beef.stakePaymentRef = reference;
-        const payerId = existing.managerId;
-        const paidAmt = existing.amount || beef.stake || 0;
         beef.paidBy = beef.paidBy || {};
         if (!beef.paidBy[payerId]) {
           beef.paidBy[payerId] = { amount: paidAmt, ref: reference, paidAt: nowISO() };
           beef.totalStaked = (beef.totalStaked || 0) + paidAmt;
           const cut = Math.floor(paidAmt * 0.1);
-          s.settings.seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + cut;
+          const first = Math.floor(cut * 0.6);
+          const second = cut - first;
+          s.settings.firstRunnerUpPot = (s.settings.firstRunnerUpPot || 0) + first;
+          s.settings.secondRunnerUpPot = (s.settings.secondRunnerUpPot || 0) + second;
           s.ledger.push({
             id: generateId("ldg"),
-            type: "season_reserve_boost",
+            type: "runner_up_fund",
             managerId: "system",
             amount: -cut,
-            note: `10% immediate house cut from beef stake payment for "${beef.category}"`,
+            note: `House cut 60/40 to 1st/2nd runner up from beef stake payment for "${beef.category}"`,
             at: nowISO()
           });
           beef.prizePot = (beef.prizePot || 0) + (paidAmt - cut);
         }
       }
     }
+    writeAtomicCollection('beefs', s.beefs || []);
+    writeAtomicCollection('settings', s.settings || {});
     await persistStore();
     return existing;
   }
@@ -938,12 +1029,30 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
   s.payments.push(payment);
 
   if (payment.type === 'beef_stake' && payment.beefId) {
-    const beef = (s.beefs || []).find(b => b.id === payment.beefId);
+    let beef = (s.beefs || []).find(b => b.id === payment.beefId);
+    const payerId = payment.managerId;
+    const paidAmt = payment.amount || (beef && beef.stake) || 0;
+    if (!beef && payment.beefId) {
+      beef = {
+        id: payment.beefId,
+        proposerId: payerId,
+        opponentIds: [],
+        participants: [payerId],
+        category: 'Beef (recovered on payment)',
+        stake: paidAmt,
+        status: 'accepted',
+        paidBy: {},
+        totalStaked: 0,
+        prizePot: 0,
+        at: nowISO(),
+        reconstructedOnPay: true
+      };
+      s.beefs = s.beefs || [];
+      s.beefs.push(beef);
+    }
     if (beef) {
       beef.stakePaid = true;
       beef.stakePaymentRef = reference || payment.reference;
-      const payerId = payment.managerId;
-      const paidAmt = payment.amount || beef.stake || 0;
       beef.paidBy = beef.paidBy || {};
       beef.paidBy[payerId] = {
         amount: paidAmt,
@@ -952,13 +1061,16 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
       };
       beef.totalStaked = (beef.totalStaked || 0) + paidAmt;
       const cut = Math.floor(paidAmt * 0.1);
-      s.settings.seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + cut;
+      const first = Math.floor(cut * 0.6);
+      const second = cut - first;
+      s.settings.firstRunnerUpPot = (s.settings.firstRunnerUpPot || 0) + first;
+      s.settings.secondRunnerUpPot = (s.settings.secondRunnerUpPot || 0) + second;
       s.ledger.push({
         id: generateId("ldg"),
-        type: "season_reserve_boost",
+        type: "runner_up_fund",
         managerId: "system",
         amount: -cut,
-        note: `10% immediate house cut from beef stake payment for "${beef.category}"`,
+        note: `House cut 60/40 to 1st/2nd runner up from beef stake payment for "${beef.category}"`,
         at: nowISO()
       });
       beef.prizePot = (beef.prizePot || 0) + (paidAmt - cut);
@@ -974,6 +1086,23 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
       target: payment.sponsorTarget,
       status: 'active'
     });
+    // Immediate house cut 60/40 to runner ups on sponsor payment
+    const sponsorAmt = Number(payment.amount) || 0;
+    const sponsorCut = Math.floor(sponsorAmt * 0.1);
+    if (sponsorCut > 0) {
+      const sf = Math.floor(sponsorCut * 0.6);
+      const ss = sponsorCut - sf;
+      s.settings.firstRunnerUpPot = (s.settings.firstRunnerUpPot || 0) + sf;
+      s.settings.secondRunnerUpPot = (s.settings.secondRunnerUpPot || 0) + ss;
+      s.ledger.push({
+        id: generateId("ldg"),
+        type: "runner_up_fund",
+        managerId: "system",
+        amount: -sponsorCut,
+        note: `10% house cut 60/40 from sponsor "${payment.sponsorTarget}" on payment`,
+        at: nowISO()
+      });
+    }
     // Notify after confirmed payment
     const text = `Thank you! Your sponsorship of ₦${payment.amount} for "${payment.sponsorTarget}" via Paystack is confirmed and active.`;
     await sendEmail(mgr.email, 'Sponsorship Confirmed - D League', text);
@@ -990,8 +1119,10 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
         s.settings.fplOverallPot = (s.settings.fplOverallPot || 0) + amt;
       } else if (target === 'cup') {
         s.settings.fplCupPot = (s.settings.fplCupPot || 0) + amt;
-      } else if (target === 'reserve') {
-        s.settings.seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + amt;
+      } else if (target === 'first-ru' || target === 'reserve') {
+        s.settings.firstRunnerUpPot = (s.settings.firstRunnerUpPot || 0) + amt;
+      } else if (target === 'second-ru') {
+        s.settings.secondRunnerUpPot = (s.settings.secondRunnerUpPot || 0) + amt;
       } else if (target === 'weekly') {
         // Track for current round; will be added to this week's payout + projections
         const cur = (s.settings.currentRound && s.settings.currentRound.fpl) || 1;
@@ -1048,6 +1179,8 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
   writeAtomicCollection('payments', s.payments);
   writeAtomicCollection('ledger', s.ledger);
   writeAtomicCollection('managers', s.managers);
+  writeAtomicCollection('beefs', s.beefs || []);
+  writeAtomicCollection('settings', s.settings || {});
   await persistStore();
   return payment;
 }
@@ -1258,7 +1391,7 @@ async function autoSettleBeefs(round) {
   }
 }
 
-// End-of-season one-off awards: H2H pot (if fplH2h ID set), plus 1st/2nd league runner-up from classic league or internal scores using house cuts / overall pot.
+// End-of-season one-off awards: H2H pot (if fplH2h ID set), plus 1st/2nd league runner-up pots (funded 60/40 by immediate house cuts on paid beefs/sponsors).
 // Uses exact teamId matching from FPL league standings API so no manual mapping issues.
 async function settleEndOfSeasonH2HAndRunners() {
   const s = await loadStore();
@@ -1287,9 +1420,9 @@ async function settleEndOfSeasonH2HAndRunners() {
     }
   }
 
-  // League runner ups (1st and 2nd) funded from season reserve / overall pot (house cuts)
-  const reserve = s.settings.seasonReserveBoost || 0;
-  const overallPot = s.settings.fplOverallPot || 0;
+  // First and second runner up pots funded directly by 60/40 of house cuts (immediate on paid beefs/sponsors)
+  const firstPot = s.settings.firstRunnerUpPot || 0;
+  const secondPot = s.settings.secondRunnerUpPot || 0;
   if (lids.fplClassic) {
     const data = await fetchFplLeagueStandings(lids.fplClassic, false);
     const results = data && data.standings && data.standings.results ? data.standings.results : [];
@@ -1299,34 +1432,34 @@ async function settleEndOfSeasonH2HAndRunners() {
       const mgr1 = s.managers.find(m => m.fpl && String(m.fpl.teamId) === String(r1.entry));
       const mgr2 = s.managers.find(m => m.fpl && String(m.fpl.teamId) === String(r2.entry));
 
-      if (mgr1 && (reserve > 0 || overallPot > 0)) {
-        const share1 = Math.floor(Math.max(reserve, overallPot) * 0.12); // 12% slice for 1st runner up
-        if (share1 > 0) {
-          s.ledger.push({ id: generateId('ldg'), type: 'season_runner_up', managerId: mgr1.id, amount: share1, note: '1st League Runner Up (from house cuts / season pots)' });
-          awarded.push({ type: 'runner1', manager: mgr1.displayName, amount: share1 });
-        }
+      if (mgr1 && firstPot > 0) {
+        s.ledger.push({ id: generateId('ldg'), type: 'first_runner_up', managerId: mgr1.id, amount: firstPot, note: '1st League Runner Up from house cuts (60%)' });
+        s.settings.firstRunnerUpPot = 0;
+        awarded.push({ type: 'runner1', manager: mgr1.displayName, amount: firstPot });
       }
-      if (mgr2) {
-        const share2 = Math.floor(Math.max(reserve, overallPot) * 0.08);
-        if (share2 > 0) {
-          s.ledger.push({ id: generateId('ldg'), type: 'season_runner_up', managerId: mgr2.id, amount: share2, note: '2nd League Runner Up (from house cuts / season pots)' });
-          awarded.push({ type: 'runner2', manager: mgr2.displayName, amount: share2 });
-        }
+      if (mgr2 && secondPot > 0) {
+        s.ledger.push({ id: generateId('ldg'), type: 'second_runner_up', managerId: mgr2.id, amount: secondPot, note: '2nd League Runner Up from house cuts (40%)' });
+        s.settings.secondRunnerUpPot = 0;
+        awarded.push({ type: 'runner2', manager: mgr2.displayName, amount: secondPot });
       }
     }
   } else {
-    // Fallback to internal scores total for runner ups if no classic ID set
+    // Fallback using internal scores
     const sorted = [...s.managers].map(m => {
       const tot = (s.scores || []).filter(sc => sc.managerId === m.id && sc.competition === 'fpl').reduce((a,sc) => a + (sc.points||0), 0);
       return { m, tot };
     }).sort((a,b) => b.tot - a.tot);
-    if (sorted.length >= 3 && reserve > 0) {
-      const share1 = Math.floor(reserve * 0.12);
-      const share2 = Math.floor(reserve * 0.08);
-      s.ledger.push({ id: generateId('ldg'), type: 'season_runner_up', managerId: sorted[1].m.id, amount: share1, note: '1st Runner Up (internal fallback)' });
-      s.ledger.push({ id: generateId('ldg'), type: 'season_runner_up', managerId: sorted[2].m.id, amount: share2, note: '2nd Runner Up (internal fallback)' });
-      awarded.push({ type: 'runner1-fb', manager: sorted[1].m.displayName, amount: share1 });
-      awarded.push({ type: 'runner2-fb', manager: sorted[2].m.displayName, amount: share2 });
+    if (sorted.length >= 3) {
+      if (firstPot > 0) {
+        s.ledger.push({ id: generateId('ldg'), type: 'first_runner_up', managerId: sorted[1].m.id, amount: firstPot, note: '1st Runner Up (fallback)' });
+        s.settings.firstRunnerUpPot = 0;
+        awarded.push({ type: 'runner1-fb', manager: sorted[1].m.displayName, amount: firstPot });
+      }
+      if (secondPot > 0) {
+        s.ledger.push({ id: generateId('ldg'), type: 'second_runner_up', managerId: sorted[2].m.id, amount: secondPot, note: '2nd Runner Up (fallback)' });
+        s.settings.secondRunnerUpPot = 0;
+        awarded.push({ type: 'runner2-fb', manager: sorted[2].m.displayName, amount: secondPot });
+      }
     }
   }
 
@@ -1353,13 +1486,14 @@ async function settleSponsoredAwards(round) {
     const data = byTarget[target];
     let pot = data.pot;
     if (pot <= 0) return;
-    const commission = Math.floor(pot * 0.1);
-    const winnerShareTotal = pot - commission;
+    // house cut taken immediately on sponsor payment; award full pot
+    const winnerShareTotal = pot;
     // Find winners for this target using logic
     const winner = computeWinnerFromLogic(target, s);
     if (winner) {
       const winners = [winner]; // extend for multi if needed
-      const share = Math.floor(winnerShareTotal / winners.length);
+      // cut already taken on sponsor payment; give full pot to winner(s)
+      const share = Math.floor(pot / winners.length);
       winners.forEach(w => {
         s.ledger.push({
           id: generateId("ldg"),
@@ -1368,21 +1502,10 @@ async function settleSponsoredAwards(round) {
           competition: "fpl",
           round,
           amount: share,
-          note: `Won ${target} sponsored by ${data.sponsors.join(', ')} (split if tie, 10% house)`,
+          note: `Won ${target} sponsored by ${data.sponsors.join(', ')}`,
           at: nowISO()
         });
       });
-      s.ledger.push({
-        id: generateId("ldg"),
-        type: "season_reserve_boost",
-        managerId: "system",
-        competition: "fpl",
-        round,
-        amount: -commission,
-        note: `10% cut from sponsored "${target}" to season reserve boost (for end-of-season awards)`,
-        at: nowISO()
-      });
-      s.settings.seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + commission;
       // mark sponsorships settled
       s.sponsorships.forEach(sp => {
         if (sp.target === target) sp.status = 'settled';
@@ -1392,7 +1515,7 @@ async function settleSponsoredAwards(round) {
   await persistStore();
 }
 
-// Settle a beef: total pot = #participants * stake. 90% to winner, 10% to season reserve boost for the 3 end awards.
+// Settle a beef: total pot = #participants * stake. 90% to winner, 10% house cut immediate to 1st/2nd runner-up pots (60/40).
 async function settleBeef(beefId, winnerManagerId) {
   const s = await loadStore();
   const beef = (s.beefs || []).find(b => b.id === beefId);
@@ -1400,7 +1523,7 @@ async function settleBeef(beefId, winnerManagerId) {
   const winner = s.managers.find(m => m.id === winnerManagerId);
   if (!winner) return false;
 
-  // Use pre-reserved prize pot (90% after immediate cuts on payments). Cuts already reflected in seasonReserveBoost.
+  // Use pre-reserved prize pot (90% after immediate cuts on payments). Cuts already reflected in first/second runner-up pots.
   const winnerShare = beef.prizePot || 0;
 
   s.ledger.push({
@@ -1419,6 +1542,7 @@ async function settleBeef(beefId, winnerManagerId) {
   beef.winnerId = winner.id;
   beef.settledAt = nowISO();
 
+  writeAtomicCollection('beefs', s.beefs || []);
   await persistStore();
   await logEvent("beef_settled", { beefId, winner: winner.id, winnerShare });
   return true;
@@ -1440,15 +1564,18 @@ async function cancelBeef(beefId) {
           note: `Full refund for cancelled beef "${beef.category}" (stake returned to wallet)`,
           at: nowISO()
         });
-        // Reverse the 10% cut since cancelled (improper setup or abort)
+        // Reverse the house cut 60/40 since cancelled
         const cut = Math.floor(p.amount * 0.1);
-        s.settings.seasonReserveBoost = Math.max(0, (s.settings.seasonReserveBoost || 0) - cut);
+        const rf = Math.floor(cut * 0.6);
+        const rs = cut - rf;
+        s.settings.firstRunnerUpPot = Math.max(0, (s.settings.firstRunnerUpPot || 0) - rf);
+        s.settings.secondRunnerUpPot = Math.max(0, (s.settings.secondRunnerUpPot || 0) - rs);
         s.ledger.push({
           id: generateId("ldg"),
-          type: "season_reserve_boost",
+          type: "runner_up_fund",
           managerId: "system",
           amount: cut,
-          note: `Reversed 10% cut on refund for cancelled beef "${beef.category}"`,
+          note: `Reversed house cut 60/40 on refund for cancelled beef "${beef.category}"`,
           at: nowISO()
         });
       }
@@ -1458,6 +1585,7 @@ async function cancelBeef(beefId) {
   beef.status = "cancelled";
   beef.cancelledAt = nowISO();
 
+  writeAtomicCollection('beefs', s.beefs || []);
   await persistStore();
   await logEvent("beef_cancelled", { beefId });
   return true;
@@ -2011,7 +2139,7 @@ async function getProjectedPayouts() {
   const voluntaryH2H = potBoosts.filter(b => b.target === 'h2h').reduce((sum, b) => sum + (b.amount || 0), 0);
   const voluntaryOverall = potBoosts.filter(b => b.target === 'overall').reduce((sum, b) => sum + (b.amount || 0), 0);
   const voluntaryCup = potBoosts.filter(b => b.target === 'cup').reduce((sum, b) => sum + (b.amount || 0), 0);
-  const voluntaryReserve = potBoosts.filter(b => b.target === 'reserve').reduce((sum, b) => sum + (b.amount || 0), 0);
+  const voluntaryReserve = potBoosts.filter(b => b.target === 'reserve' || b.target === 'first-ru' || b.target === 'second-ru').reduce((sum, b) => sum + (b.amount || 0), 0);
 
   const weeklyReserveFullSeason = fplPaid * COMPETITIONS.fpl.contributionPerRound * 0.1 * 38;
   const h2hFromExtra = fplPaid * COMPETITIONS.fpl.extraReserve;
@@ -2031,9 +2159,9 @@ async function getProjectedPayouts() {
   const overallFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.75) + voluntaryOverall + (fplPaid * extraToOverall);
   const cupFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.25) + voluntaryCup + (fplPaid * extraToCup);
 
-  // seasonReserveBoost accumulates actual 10% house cuts from paid beef stakes (immediate on confirmPayment / paidFromWallet) + voluntary 'reserve' pot boosts.
-  // Note: some sponsors also target reserve directly (100%). Beef cuts are never taken again at settle.
-  const seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + voluntaryReserve;
+  // first/second runner up pots are funded directly by 60/40 of house cuts (10% from paid beefs/sponsors) immediately on payment.
+  const firstRunnerUpPot = s.settings.firstRunnerUpPot || 0;
+  const secondRunnerUpPot = s.settings.secondRunnerUpPot || 0;
 
   const h2hTotal = h2hFromExtra + voluntaryH2H;
 
@@ -2043,7 +2171,8 @@ async function getProjectedPayouts() {
       h2hOverallPot: h2hTotal,
       overallWinnerPot: overallFromWeeklyReserves,
       cupWinnerPot: cupFromWeeklyReserves,
-      seasonReserveBoost: seasonReserveBoost
+      firstRunnerUpPot: firstRunnerUpPot,
+      secondRunnerUpPot: secondRunnerUpPot
     },
     ucl: {
       mdPot90: Math.floor(uclPotPerMD + uclFormBoost * 100),
@@ -2058,7 +2187,7 @@ async function getProjectedPayouts() {
       fplCup: cupFromWeeklyReserves
     },
     h2hOverallPot: h2hTotal,
-    note: "Pots: weekly 90%, H2H, overall 75%/cup 25% from reserves, season reserve boost from 10% on beefs/sponsors."
+    note: "Pots: weekly 90%, H2H, overall 75%/cup 25% from reserves, first(60%)/second(40%) runner-up from 10% house cuts on beefs/sponsors (immediate on pay)."
   };
 }
 
@@ -3406,6 +3535,24 @@ app.post("/api/sponsor", async (req, res) => {
     target,
     status: 'active'
   });
+  // Immediate house cut 60/40 to 1st/2nd runner-up pots for wallet sponsors/awards too (reflects on pay)
+  const sponsorAmtW = Number(amount) || 0;
+  const sponsorCutW = Math.floor(sponsorAmtW * 0.1);
+  if (sponsorCutW > 0) {
+    const sfW = Math.floor(sponsorCutW * 0.6);
+    const ssW = sponsorCutW - sfW;
+    s.settings.firstRunnerUpPot = (s.settings.firstRunnerUpPot || 0) + sfW;
+    s.settings.secondRunnerUpPot = (s.settings.secondRunnerUpPot || 0) + ssW;
+    s.ledger.push({
+      id: generateId("ldg"),
+      type: "runner_up_fund",
+      managerId: "system",
+      amount: -sponsorCutW,
+      note: `10% house cut 60/40 from sponsor "${target}" (wallet)`,
+      at: nowISO()
+    });
+    writeAtomicCollection('settings', s.settings);
+  }
   writeAtomicSidecar(s);
   writeAtomicCollection('sponsorships', s.sponsorships);
   writeAtomicCollection('ledger', s.ledger);
@@ -3482,13 +3629,16 @@ app.post("/api/beef/propose", async (req, res) => {
     beef.paidBy[mgr.id] = { amount: paidAmt, ref: 'wallet', paidAt: nowISO() };
     beef.totalStaked = paidAmt;
     const cut = Math.floor(paidAmt * 0.1);
-    s.settings.seasonReserveBoost = (s.settings.seasonReserveBoost || 0) + cut;
+    const first = Math.floor(cut * 0.6);
+    const second = cut - first;
+    s.settings.firstRunnerUpPot = (s.settings.firstRunnerUpPot || 0) + first;
+    s.settings.secondRunnerUpPot = (s.settings.secondRunnerUpPot || 0) + second;
     s.ledger.push({
       id: generateId("ldg"),
-      type: "season_reserve_boost",
+      type: "runner_up_fund",
       managerId: "system",
       amount: -cut,
-      note: `10% immediate house cut from beef stake (wallet propose) for "${category}"`,
+      note: `House cut 60/40 to 1st/2nd runner up from beef stake (wallet) for "${category}"`,
       at: nowISO()
     });
     beef.prizePot = paidAmt - cut;
@@ -3499,6 +3649,7 @@ app.post("/api/beef/propose", async (req, res) => {
   writeAtomicSidecar(s);
   writeAtomicCollection('beefs', s.beefs);
   writeAtomicCollection('ledger', s.ledger);
+  writeAtomicCollection('settings', s.settings || {});
   await persistStore();
 
   // Notify opponents via email (if configured) and log for WhatsApp share
@@ -3539,6 +3690,7 @@ app.post("/api/beef/accept", async (req, res) => {
   beef.acceptedBy = mgr.id;
   beef.acceptedAt = nowISO();
   await logEvent("beef_accepted", { beefId, accepter: mgr.email });
+  writeAtomicCollection('beefs', s.beefs || []);
   writeAtomicSidecar(s);
   await persistStore();
 
@@ -3571,6 +3723,7 @@ app.post("/api/beef/decline", async (req, res) => {
   beef.declinedBy = mgr.id;
   beef.declinedAt = nowISO();
   await logEvent("beef_declined", { beefId, decliner: mgr.email });
+  writeAtomicCollection('beefs', s.beefs || []);
   writeAtomicSidecar(s);
   await persistStore();
 
@@ -3616,6 +3769,7 @@ app.post("/api/beef/request-join", async (req, res) => {
   if (!beef.joinApprovals[mgr.id]) beef.joinApprovals[mgr.id] = [];
 
   await logEvent("beef_join_requested", { beefId, requester: mgr.email });
+  writeAtomicCollection('beefs', s.beefs || []);
   writeAtomicSidecar(s);
   await persistStore();
 
@@ -3667,6 +3821,7 @@ app.post("/api/beef/respond-join", async (req, res) => {
     await logEvent("beef_join_declined", { beefId, requester: requesterId, decliner: mgr.email });
   }
 
+  writeAtomicCollection('beefs', s.beefs || []);
   writeAtomicSidecar(s);
   await persistStore();
   res.json({ ok: true, beef });
@@ -3676,6 +3831,19 @@ app.post("/api/beef/respond-join", async (req, res) => {
 app.get("/api/beefs", async (req, res) => {
   const mgr = getAuthenticatedManager(req);
   const s = await loadStore();
+  // Reconstruct any lost beefs + paidBy from payments (beefs must never disappear)
+  try { reconstructBeefsFromPayments(s); } catch (e) {}
+  if (Array.isArray(s.beefs) && Array.isArray(s.payments)) {
+    s.beefs.forEach(b => {
+      if (!b.paidBy) b.paidBy = {};
+      s.payments.filter(p => p.type === 'beef_stake' && p.beefId === b.id && p.status === 'confirmed').forEach(p => {
+        if (!b.paidBy[p.managerId]) {
+          b.paidBy[p.managerId] = { amount: p.amount || b.stake || 0, ref: p.reference, paidAt: p.confirmedAt || p.at };
+          b.totalStaked = (b.totalStaked || 0) + (p.amount || b.stake || 0);
+        }
+      });
+    });
+  }
   // Return all active (proposed or accepted) beefs so everyone can see and join
   let beefs = (s.beefs || []).filter(b => ['proposed', 'accepted'].includes(b.status));
 
@@ -3741,6 +3909,19 @@ app.get("/api/admin/beefs", async (req, res) => {
   }
 
   const s = await loadStore();
+  // Reconstruct any lost beefs + paidBy from payments (never lose paid beefs)
+  try { reconstructBeefsFromPayments(s); } catch (e) {}
+  if (Array.isArray(s.beefs) && Array.isArray(s.payments)) {
+    s.beefs.forEach(b => {
+      if (!b.paidBy) b.paidBy = {};
+      s.payments.filter(p => p.type === 'beef_stake' && p.beefId === b.id && p.status === 'confirmed').forEach(p => {
+        if (!b.paidBy[p.managerId]) {
+          b.paidBy[p.managerId] = { amount: p.amount || b.stake || 0, ref: p.reference, paidAt: p.confirmedAt || p.at };
+          b.totalStaked = (b.totalStaked || 0) + (p.amount || b.stake || 0);
+        }
+      });
+    });
+  }
   const allBeefs = (s.beefs || []).map(b => {
     const proposer = s.managers.find(m => m.id === b.proposerId);
     const oppNames = (b.opponentIds || []).map(oid => {
@@ -3880,7 +4061,7 @@ app.post("/api/admin/settle-beef", async (req, res) => {
   const ok = await settleBeef(beefId, winnerManagerId);
   if (!ok) return res.status(400).json({ error: "Unable to settle beef (already settled, invalid winner, or zero pot)" });
 
-  res.json({ ok: true, message: "Beef settled. 90% to winner, 10% added to season reserve boost." });
+  res.json({ ok: true, message: "Beef settled. 90% to winner, 10% house cut to 1st/2nd runner-up pots." });
 });
 
 app.get("/api/me", async (req, res) => {
@@ -4559,7 +4740,14 @@ async function boot() {
     const atomicP = loadAtomicCollection('payments');
     const atomicL = loadAtomicCollection('ledger');
     const atomicB = loadAtomicCollection('beefs');
-    const side = tryLoadCurrentState();
+    let side = null;
+    try {
+      const p = path.join(DATA_DIR, 'current-state.json');
+      if (fsSync.existsSync(p)) {
+        const d = JSON.parse(fsSync.readFileSync(p, 'utf8'));
+        if (d && Array.isArray(d.managers)) side = d;
+      }
+    } catch {}
     const bestB = findBestBackupData();
 
     let bestState = {};
