@@ -167,6 +167,10 @@ async function performLogin() {
     currentToken = data.token;
     currentManager = data.manager;
 
+    // Clear any previous session artifacts (prevents admin token from a prior session leaking into a new normal login)
+    localStorage.removeItem('dl_activeBeefs');
+    localStorage.removeItem('dl_playerChallenges');
+
     localStorage.setItem('dl_token', currentToken);
     localStorage.setItem('dl_manager_id', currentManager.id);
 
@@ -180,8 +184,15 @@ async function performLogin() {
 }
 
 function logout() {
+  // Aggressively clear everything related to the previous session to prevent any cross-account leakage on refresh
   localStorage.removeItem('dl_token');
   localStorage.removeItem('dl_manager_id');
+  localStorage.removeItem('dl_activeBeefs');
+  localStorage.removeItem('dl_playerChallenges');
+  // Clear any in-memory state
+  currentToken = null;
+  currentManager = null;
+  window.activeBeefs = [];
   location.reload();
 }
 
@@ -194,8 +205,20 @@ async function tryAutoLogin() {
     const me = await fetchJSON(`/api/me?token=${token}`);
     currentToken = token;
     currentManager = me.manager;
+
+    // Safety: if we loaded the admin account via auto-login, make it very obvious.
+    // Normal users should never see this unless they have the real admin code.
+    if (currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com') {
+      console.warn('%c[AUTO-LOGIN] Loaded ADMIN account via localStorage token. If this is unexpected, you may have a stale admin token from previous login on this browser.', 'color:orange; font-weight:bold');
+    }
+
     return true;
-  } catch {
+  } catch (e) {
+    // Critical safety: on any auth failure during auto-login, clear the potentially stale token.
+    // This prevents a normal user from accidentally (or maliciously left) loading the admin account on hard refresh.
+    console.warn('Auto-login failed with token, clearing localStorage to prevent stale admin session leak:', e);
+    localStorage.removeItem('dl_token');
+    localStorage.removeItem('dl_manager_id');
     return false;
   }
 }
@@ -819,6 +842,7 @@ async function loadAdminOverview() {
             <button onclick="navigator.clipboard.writeText('${code}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500)" class="mt-1 text-[10px] px-3 py-0.5 bg-[#222] hover:bg-[#333] rounded">Copy Code</button>
             <button onclick="editManager('${(m.email||'').replace(/'/g,'\\\'')}', '${(m.displayName||'').replace(/'/g,'\\\'')}', '${(m.fplClubName||'').replace(/'/g,'\\\'')}', '${(m.fpl && m.fpl.teamId || '').replace(/'/g,'\\\'')}', '${(m.ucl && m.ucl.teamId || '').replace(/'/g,'\\\'')}', '${code.replace(/'/g,'\\\'')}')" class="mt-1 ml-1 text-[9px] px-2 py-0.5 bg-[#222] hover:bg-[#333] rounded">Edit</button>
             ${reclaimBtn}
+            ${!isAdmin ? `<button onclick="if(confirm('Delete ${ (m.displayName||'').replace(/'/g,'\\\'') }? History stays. This cannot be undone easily.')) deleteManager('${m.id || ''}', '${(m.email||'').replace(/'/g,'\\\'')}');" class="mt-1 ml-1 text-[9px] px-2 py-0.5 bg-red-900 text-white rounded">Delete</button>` : ''}
           </div>
         </div>`;
     }).join('') || '<div class="text-[#666] p-4">No managers</div>';
@@ -1005,7 +1029,8 @@ async function loadAdminOverview() {
       try {
         const bdata = await fetchJSON('/api/admin/beefs');
         const bdiv = document.createElement('div');
-        bdiv.className = 'mt-4 p-5 bg-[#111] border-2 border-[#ffaa00] rounded-3xl';
+        bdiv.id = 'admin-beefs-list';
+        bdiv.className = 'mt-4 p-5 bg-[#111] border-2 border-[#ffaa00] rounded-3xl beef-admin-section';
         let bh = `<div class="font-black text-lg mb-2 text-[#ffaa00]">⚔️ BEEFS — ADMIN: CANCEL / SEE PAYERS / REFUNDS (AUTO-SETTLE WIRED)</div>
           <div class="text-[10px] text-[#888] mb-2">10% house cuts (paid) go immediately 60/40 to 1st/2nd runner-up pots. Beefs persist and never disappear.</div>`;
         const bl = (bdata.beefs || []);
@@ -1563,6 +1588,20 @@ async function reclaimPaidManager(managerId, currentName, currentClub) {
     loadAdminOverview();
   } catch (e) {
     alert('Reclaim failed: ' + (e.message || e));
+  }
+}
+
+async function deleteManager(id, email) {
+  if (!confirm('Really delete this manager from the list? Historical ledger/payments/beefs stay for records. Cannot easily undo.')) return;
+  try {
+    const res = await fetchJSON('/api/admin/delete-manager', {
+      method: 'POST',
+      body: JSON.stringify({ managerId: id, email })
+    });
+    alert(res.message || 'Manager removed.');
+    loadAdminOverview();
+  } catch (e) {
+    alert('Delete failed: ' + (e.message || e));
   }
 }
 
@@ -3096,6 +3135,15 @@ async function bootstrap() {
   if (auto) {
     showDashboard();
     loadAllData();
+
+    // Extra safety guard for the commissioner account leaking to other sessions on refresh
+    if (currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com') {
+      // Show a persistent banner so it's impossible to miss you're in the admin session
+      const banner = document.createElement('div');
+      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#b45309;color:white;padding:6px 12px;font-size:12px;z-index:9999;text-align:center;';
+      banner.innerHTML = '⚠️ You are logged in as the COMMISSIONER / ADMIN account (bolade.oladejo@gmail.com). Use the Logout button to switch to a normal manager account. Hard refresh will re-load this account if its token is in your browser storage.';
+      document.body.appendChild(banner);
+    }
   } else {
     // Keep login screen visible
     $('login-screen').classList.remove('hidden');
@@ -3464,13 +3512,50 @@ async function adminCancelBeef(beefId) {
       method: 'POST',
       body: JSON.stringify({ beefId })
     });
-    alert('Beef cancelled + refunds processed. House reserve updated.');
+    alert('Beef cancelled + refunds processed. Runner-up pots reversed. Cancelled beefs now excluded from active views (refresh if needed).');
     await loadAllData();
     // refresh admin if open
     if (typeof loadAdminOverview === 'function') loadAdminOverview();
+    // Immediately refresh/replace the admin beefs list so cancelled ones exit right away
+    await refreshAdminBeefsList();
   } catch (e) {
     alert('Cancel failed: ' + (e.message || e));
   }
+}
+
+async function refreshAdminBeefsList() {
+  try {
+    let container = document.getElementById('admin-beefs-list');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'admin-beefs-list';
+      container.className = 'mt-4 p-5 bg-[#111] border-2 border-[#ffaa00] rounded-3xl beef-admin-section';
+      const dash = document.getElementById('dashboard');
+      if (dash) dash.appendChild(container);
+    }
+    const bdata = await fetchJSON('/api/admin/beefs');
+    let bh = `<div class="font-black text-lg mb-2 text-[#ffaa00]">⚔️ BEEFS — ADMIN: CANCEL / SEE PAYERS / REFUNDS (AUTO-SETTLE WIRED)</div>
+      <div class="text-[10px] text-[#888] mb-2">10% house cuts (paid) go immediately 60/40 to 1st/2nd runner-up pots. Beefs persist and never disappear.</div>`;
+    const bl = (bdata.beefs || []);
+    if (bl.length === 0) {
+      bh += `<div class="text-xs text-[#666]">No beefs found.</div>`;
+    } else {
+      bl.forEach(bf => {
+        const pstr = (bf.paidDetails || []).map(p=> `${p.displayName} ₦${p.amount}`).join(' • ') || 'no payments';
+        const pz = bf.currentPot || bf.prizePot || 0;
+        const canC = bf.status !== 'settled' && bf.status !== 'cancelled';
+        const presetB = (BEEF_PRESETS || []).find(p => p.id === bf.category);
+        const bDesc = presetB ? presetB.desc : bf.category;
+        const lockBtn = bf.locked ? '' : `<button onclick="adminLockBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-orange-600 text-white text-[10px] rounded">LOCK</button>`;
+        bh += `<div class="mb-2 p-2 bg-black/60 rounded text-xs border border-[#ffaa00]">
+          <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | ${bDesc} | Pot ₦${pz} ${bf.locked ? '(LOCKED)' : ''}${bf.joinDeadline ? ' • deadline GW'+bf.joinDeadline : ''}</div>
+          <div>Status: ${bf.status} | Paid: ${pstr}</div>
+          ${canC ? `<button onclick="adminCancelBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-red-700 text-white text-[10px] rounded">CANCEL + REFUND</button> ${lockBtn}` : ''}
+        </div>`;
+      });
+    }
+    container.innerHTML = bh;
+  } catch(e){ console.warn('refresh admin beefs failed', e); }
 }
 
 async function adminLockBeef(beefId) {

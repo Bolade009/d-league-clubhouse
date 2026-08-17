@@ -1239,6 +1239,15 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
   writeAtomicCollection('beefs', s.beefs || []);
   writeAtomicCollection('settings', s.settings || {});
   await persistStore();
+
+  // Email notification for main league payments (not internal beef/sponsor/pot which have their own)
+  if (mailer && mgr && mgr.email && !payment.type) {
+    try {
+      await sendEmail(mgr.email, `D League ${ (competition || 'FPL').toUpperCase() } Payment Confirmed`, 
+        `Hi ${mgr.displayName},\n\nYour payment of ₦${amount} for ${(competition || 'season').toUpperCase()} has been confirmed (ref: ${reference}).\nYou are now fully eligible.\n\nView pots, propose beefs, etc at the Clubhouse.\n\nGood luck this season!`);
+    } catch(e){ console.warn('payment email failed', e.message); }
+  }
+
   return payment;
 }
 
@@ -2307,7 +2316,15 @@ function buildManagerView(mgr) {
 
 function getFullLeaderboard() {
   const s = getStore();
-  const managers = s.managers.map(m => buildManagerView(m));
+  // Never surface the pure admin/commissioner account in public leaderboards or normal manager lists.
+  // Admin has empty team ids and should not appear as a "manager" for regular users.
+  const allManagers = s.managers.filter(m => {
+    const isPureAdmin = m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com' &&
+      (!m.fpl || !m.fpl.teamId) && (!m.ucl || !m.ucl.teamId);
+    return !isPureAdmin;
+  }).map(m => buildManagerView(m));
+
+  const managers = allManagers;
   // Only show fully eligible in main tables? Show all but mark paid status. Leaderboards filter paid.
   const paidFpl = managers.filter(m => m.fplPaid).sort((a, b) => (b.fplTotal || 0) - (a.fplTotal || 0));
   const paidUcl = managers.filter(m => m.uclPaid).sort((a, b) => (b.uclTotal || 0) - (a.uclTotal || 0));
@@ -2864,6 +2881,28 @@ app.post("/api/admin/add-manager", async (req, res) => {
     await logEvent("manager_updated_by_admin", { id: existing.id, email, name, fplClubName, fplId });
     return res.json({ ok: true, manager: { id: existing.id, displayName: name, email, accessCode }, message: "Existing manager updated (details refreshed, paid status and history untouched)." });
   }
+});
+
+// Admin delete a manager (use with caution - history in ledger/payments/beefs stays for audit).
+// Removes from active managers list only.
+app.post("/api/admin/delete-manager", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
 
   // New manager - create only if not locked (lock check above)
   const id = generateId("mgr");
@@ -2912,6 +2951,41 @@ app.post("/api/admin/add-manager", async (req, res) => {
   }
 
   res.json({ ok: true, manager: { id, displayName: name, email, accessCode }, message: "Manager added. Share the accessCode with them." });
+});
+
+// Admin delete a manager (use with extreme caution before/during season - historical data in ledger, payments, beefs, events is preserved for audit and pots).
+app.post("/api/admin/delete-manager", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { managerId, email } = req.body || {};
+  const s = await loadStore();
+  let idx = -1;
+  if (managerId) idx = s.managers.findIndex(m => m.id === managerId);
+  if (idx < 0 && email) idx = s.managers.findIndex(m => m.email && m.email.toLowerCase() === email.toLowerCase());
+  if (idx < 0) return res.status(404).json({ error: "Manager not found" });
+  const toDel = s.managers[idx];
+  if (toDel.email && toDel.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+    return res.status(400).json({ error: "Cannot delete the admin commissioner account" });
+  }
+  s.managers.splice(idx, 1);
+  await persistStore();
+  await logEvent("manager_deleted_by_admin", { id: toDel.id, email: toDel.email, displayName: toDel.displayName });
+  res.json({ ok: true, message: `Manager ${toDel.displayName} removed from active managers list. History preserved in ledger/payments/beefs.`, deleted: toDel.id });
 });
 
 // Restore / reclaim a paid manager record by its original ID (from payments).
