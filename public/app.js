@@ -731,7 +731,11 @@ function renderActiveBeefs() {
   if (!container) return;
 
   const beefs = window.activeBeefs || [];
-  const active = beefs.filter(b => !['settled', 'declined', 'cancelled'].includes((b.status || '').toLowerCase()));
+  let active = beefs.filter(b => !['settled', 'declined', 'cancelled'].includes((b.status || '').toLowerCase()));
+  // Admin sees settled too, to have access to UNDO SETTLEMENT button
+  if (currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com') {
+    active = beefs;  // show all for admin, including settled for undo
+  }
 
   if (active.length === 0) {
     container.innerHTML = `
@@ -784,7 +788,7 @@ function renderActiveBeefs() {
           ${!b.locked && b.status === 'proposed' ? `<button onclick="respondToBeefLink('${b.id}', 'accept')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Accept</button>` : ''}
           ${!b.locked && b.status === 'accepted' && !isParticipant ? `<button onclick="requestToJoinBeef('${b.id}')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Request to Join</button>` : ''}
           ${showPayStake ? `<button onclick="payBeefStake('${b.id}', ${b.stake}); event.stopImmediatePropagation();" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">PAY ₦${b.stake} STAKE</button>` : ''}
-          ${currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com' ? `<button onclick="adminCancelBeef('${b.id}')" class="px-2 py-0.5 bg-red-700 text-white rounded">CANCEL (admin)</button>` : ''}
+          ${currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com' ? `<button onclick="adminCancelBeef('${b.id}')" class="px-2 py-0.5 bg-red-700 text-white rounded">${b.status === 'settled' ? 'UNDO SETTLEMENT (restore pot)' : 'CANCEL (admin)'}</button>` : ''}
           ${currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com' && !b.locked ? `<button onclick="adminLockBeef('${b.id}')" class="px-2 py-0.5 bg-orange-600 text-white rounded">LOCK (admin)</button>` : ''}
         </div>
       </div>
@@ -1089,38 +1093,10 @@ async function loadAdminOverview() {
       dash.appendChild(panel);
     }
 
-    // Beefs admin management - prominent for cancel, see payers, immediate cuts
-    (async () => {
-      try {
-        const bdata = await fetchJSON('/api/admin/beefs');
-        const bdiv = document.createElement('div');
-        bdiv.id = 'admin-beefs-list';
-        bdiv.className = 'mt-4 p-5 bg-[#111] border-2 border-[#ffaa00] rounded-3xl beef-admin-section';
-        let bh = `<div class="font-black text-lg mb-2 text-[#ffaa00]">⚔️ BEEFS — ADMIN: CANCEL / SEE PAYERS / REFUNDS (AUTO-SETTLE WIRED)</div>
-          <div class="text-[10px] text-[#888] mb-2">10% house cuts (paid) go immediately 60/40 to 1st/2nd runner-up pots. Beefs persist and never disappear.</div>`;
-        const bl = (bdata.beefs || []);
-        if (bl.length === 0) {
-          bh += `<div class="text-xs text-[#666]">No beefs found.</div>`;
-        } else {
-          bl.forEach(bf => {
-            const pstr = (bf.paidDetails || []).map(p=> `${p.displayName} ₦${p.amount}`).join(' • ') || 'no payments';
-            const pz = bf.currentPot || bf.prizePot || 0;
-            const canC = bf.status !== 'settled' && bf.status !== 'cancelled';
-            const presetB = (BEEF_PRESETS || []).find(p => p.id === bf.category);
-            const bDesc = presetB ? presetB.desc : bf.category;
-            const lockBtn = bf.locked ? '' : `<button onclick="adminLockBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-orange-600 text-white text-[10px] rounded">LOCK</button>`;
-            bh += `<div class="mb-2 p-2 bg-black/60 rounded text-xs border border-[#ffaa00]">
-              <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | ${bDesc} | Pot ₦${pz} ${bf.locked ? '(LOCKED)' : ''}${bf.joinDeadline ? ' • deadline GW'+bf.joinDeadline : ''}</div>
-              <div>Status: ${bf.status} | Paid: ${pstr}</div>
-              ${canC ? `<button onclick="adminCancelBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-red-700 text-white text-[10px] rounded">CANCEL + REFUND</button> ${lockBtn}` : ''}
-            </div>`;
-          });
-        }
-        bdiv.innerHTML = bh;
-        const dash = document.getElementById('dashboard');
-        if (dash) dash.appendChild(bdiv);
-      } catch(e){ console.warn('beef admin load', e); }
-    })();
+    // Beefs admin management - use the shared refresh function to avoid duplicates
+    if (typeof refreshAdminBeefsList === 'function') {
+      refreshAdminBeefsList();
+    }
 
     // === Persistence health box (solid way to check if data is correct after restarts) ===
     (async () => {
@@ -1298,6 +1274,11 @@ async function loadAdminOverview() {
     }
     pendingWrap.innerHTML = pendingHtml;
     panel.appendChild(pendingWrap);
+
+    // Refresh the admin beefs list (includes UNDO for settled)
+    if (typeof refreshAdminBeefsList === 'function') {
+      refreshAdminBeefsList();
+    }
 
     // Quick full export button
     const exportBtn = document.createElement('button');
@@ -3606,13 +3587,13 @@ async function respondToBeefLink(beefId, action) {
 }
 
 async function adminCancelBeef(beefId) {
-  if (!confirm('Cancel this beef? This will set status cancelled, fully refund all paid stakes to the payers\' wallets, and reverse the 10% cuts from the 1st/2nd runner-up pots.')) return;
+  if (!confirm('Cancel/Undo this beef? For wrong auto-settlement: reverts to active, reverses winner payout + cuts (no stake refund). For unpaid: full refund. Then admin can re-settle correct winner.')) return;
   try {
     await fetchJSON('/api/admin/cancel-beef', {
       method: 'POST',
       body: JSON.stringify({ beefId })
     });
-    alert('Beef cancelled + refunds processed. Runner-up pots reversed. Cancelled beefs now excluded from active views (refresh if needed).');
+    alert('Beef settlement undone (if settled): wrong credit deducted from manager, status back to active, pot restored for correct winner. House cuts not re-added. Refresh to see. For full unpaid cancel, stakes were refunded.');
     await loadAllData();
     // refresh admin if open
     if (typeof loadAdminOverview === 'function') loadAdminOverview();
@@ -3625,14 +3606,14 @@ async function adminCancelBeef(beefId) {
 
 async function refreshAdminBeefsList() {
   try {
-    let container = document.getElementById('admin-beefs-list');
-    if (!container) {
-      container = document.createElement('div');
-      container.id = 'admin-beefs-list';
-      container.className = 'mt-4 p-5 bg-[#111] border-2 border-[#ffaa00] rounded-3xl beef-admin-section';
-      const dash = document.getElementById('dashboard');
-      if (dash) dash.appendChild(container);
-    }
+    // Aggressively remove ALL previous admin beefs containers to prevent duplicates
+    document.querySelectorAll('#admin-beefs-list, .beef-admin-section').forEach(el => el.remove());
+
+    let container = document.createElement('div');
+    container.id = 'admin-beefs-list';
+    container.className = 'mt-4 p-5 bg-[#111] border-2 border-[#ffaa00] rounded-3xl beef-admin-section';
+    const dash = document.getElementById('dashboard');
+    if (dash) dash.appendChild(container);
     const bdata = await fetchJSON('/api/admin/beefs');
     let bh = `<div class="font-black text-lg mb-2 text-[#ffaa00]">⚔️ BEEFS — ADMIN: CANCEL / SEE PAYERS / REFUNDS (AUTO-SETTLE WIRED)</div>
       <div class="text-[10px] text-[#888] mb-2">10% house cuts (paid) go immediately 60/40 to 1st/2nd runner-up pots. Beefs persist and never disappear.</div>`;
@@ -3643,14 +3624,14 @@ async function refreshAdminBeefsList() {
       bl.forEach(bf => {
         const pstr = (bf.paidDetails || []).map(p=> `${p.displayName} ₦${p.amount}`).join(' • ') || 'no payments';
         const pz = bf.currentPot || bf.prizePot || 0;
-        const canC = bf.status !== 'settled' && bf.status !== 'cancelled';
+        const canC = bf.status !== 'cancelled';  // now supports cancelling settled to undo wrong auto-settlement
         const presetB = (BEEF_PRESETS || []).find(p => p.id === bf.category);
         const bDesc = presetB ? presetB.desc : bf.category;
         const lockBtn = bf.locked ? '' : `<button onclick="adminLockBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-orange-600 text-white text-[10px] rounded">LOCK</button>`;
         bh += `<div class="mb-2 p-2 bg-black/60 rounded text-xs border border-[#ffaa00]">
           <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | ${bDesc} | Pot ₦${pz} ${bf.locked ? '(LOCKED)' : ''}${bf.joinDeadline ? ' • deadline GW'+bf.joinDeadline : ''}</div>
           <div>Status: ${bf.status} | Paid: ${pstr}</div>
-          ${canC ? `<button onclick="adminCancelBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-red-700 text-white text-[10px] rounded">CANCEL + REFUND</button> ${lockBtn}` : ''}
+          ${canC ? `<button onclick="adminCancelBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-red-700 text-white text-[10px] rounded">${bf.status === 'settled' ? 'UNDO SETTLEMENT (restore pot)' : 'CANCEL + REFUND'}</button> ${lockBtn}` : ''}
         </div>`;
       });
     }

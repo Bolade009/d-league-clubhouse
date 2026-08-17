@@ -1510,14 +1510,21 @@ function computeBeefWinner(beef, round, s) {
       best = s.managers.find(mm => mm.id === pid);
     }
   }
-  return best;
+  // Only return a winner if there's a positive meaningful score (prevents auto-settle on zero/empty pre-season or bad data)
+  return (bestScore > 0) ? best : null;
 }
 
 async function autoSettleBeefs(round) {
   const s = await loadStore();
+  if (!round || round < 1) {
+    console.log(`[AUTO BEEF] Skipping auto-settle for pre-season/invalid round ${round} (season not started)`);
+    return;
+  }
   const toSettle = (s.beefs || []).filter(b =>
     b.status === 'accepted' &&
     (b.joinDeadline || 0) <= round &&
+    b.autoSettle === true &&
+    !b.locked &&
     !['settled', 'declined', 'cancelled'].includes(b.status)
   );
   if (!toSettle.length) return;
@@ -1525,6 +1532,16 @@ async function autoSettleBeefs(round) {
   console.log(`[AUTO BEEF] Checking ${toSettle.length} beefs for round ${round} auto-resolve using FPL picks data`);
   for (const beef of toSettle) {
     try {
+      // Only auto if final data exists for all participants (prevents wrong settlement on incomplete data)
+      const parts = [beef.proposerId, ...(beef.opponentIds || []), ...(beef.participants || [])].filter(Boolean);
+      const hasFinalData = parts.every(pid => {
+        const sc = (s.scores || []).find(sc => sc.managerId === pid && sc.competition === 'fpl' && sc.round === round && sc.isFinal);
+        return !!sc;
+      });
+      if (!hasFinalData) {
+        console.log(`[AUTO BEEF] Skipping ${beef.id} - not all final data for round ${round}`);
+        continue;
+      }
       const winner = computeBeefWinner(beef, round, s);
       if (winner) {
         const ok = await settleBeef(beef.id, winner.id);
@@ -1619,6 +1636,10 @@ async function settleEndOfSeasonH2HAndRunners() {
 
 async function settleSponsoredAwards(round) {
   const s = await loadStore();
+  if (!round || round < 1) {
+    console.log(`[SponsoredAwards] Skipping pre-season round ${round}`);
+    return;
+  }
   // Group sponsorships by target, sum pot
   const byTarget = {};
   (s.sponsorships || []).forEach(sp => {
@@ -1698,39 +1719,74 @@ async function settleBeef(beefId, winnerManagerId) {
 async function cancelBeef(beefId) {
   const s = await loadStore();
   const beef = (s.beefs || []).find(b => b.id === beefId);
-  if (!beef || ['settled', 'cancelled'].includes(beef.status)) return false;
+  if (!beef || beef.status === 'cancelled') return false;
+
+  const wasSettled = beef.status === 'settled';
 
   if (beef.paidBy) {
-    Object.entries(beef.paidBy).forEach(([pid, p]) => {
-      if (p.amount > 0) {
-        s.ledger.push({
-          id: generateId("ldg"),
-          type: "beef_refund",
-          managerId: pid,
-          amount: p.amount,
-          note: `Full refund for cancelled beef "${beef.category}" (stake returned to wallet)`,
-          at: nowISO()
-        });
-        // Reverse the house cut 60/40 since cancelled
-        const cut = Math.floor(p.amount * 0.1);
-        const rf = Math.floor(cut * 0.6);
-        const rs = cut - rf;
-        s.settings.firstRunnerUpPot = Math.max(0, (s.settings.firstRunnerUpPot || 0) - rf);
-        s.settings.secondRunnerUpPot = Math.max(0, (s.settings.secondRunnerUpPot || 0) - rs);
-        s.ledger.push({
-          id: generateId("ldg"),
-          type: "runner_up_fund",
-          managerId: "system",
-          amount: cut,
-          note: `Reversed house cut 60/40 on refund for cancelled beef "${beef.category}"`,
-          at: nowISO()
-        });
-      }
-    });
+    if (!wasSettled) {
+      // Full cancel of the bet (not yet settled): refund stakes to payers and reverse house cuts
+      Object.entries(beef.paidBy).forEach(([pid, p]) => {
+        if (p.amount > 0) {
+          s.ledger.push({
+            id: generateId("ldg"),
+            type: "beef_refund",
+            managerId: pid,
+            amount: p.amount,
+            note: `Full refund for cancelled beef "${beef.category}" (stake returned to wallet)`,
+            at: nowISO()
+          });
+          // Reverse the house cut 60/40 since cancelled
+          const cut = Math.floor(p.amount * 0.1);
+          const rf = Math.floor(cut * 0.6);
+          const rs = cut - rf;
+          s.settings.firstRunnerUpPot = Math.max(0, (s.settings.firstRunnerUpPot || 0) - rf);
+          s.settings.secondRunnerUpPot = Math.max(0, (s.settings.secondRunnerUpPot || 0) - rs);
+          s.ledger.push({
+            id: generateId("ldg"),
+            type: "runner_up_fund",
+            managerId: "system",
+            amount: cut,
+            note: `Reversed house cut 60/40 on refund for cancelled beef "${beef.category}"`,
+            at: nowISO()
+          });
+        }
+      });
+    } else {
+      // Undoing a wrong settlement only: do NOT touch stakes or house cuts again
+      // (cuts were taken at payment time; we only fix the distribution of the beef pot)
+    }
   }
 
-  beef.status = "cancelled";
-  beef.cancelledAt = nowISO();
+  // If it was already settled wrongly (e.g. auto before season), deduct from the wrongly credited manager
+  // by reversing the win. The pot (prizePot on the beef) remains available for correct settlement.
+  if (wasSettled && beef.winnerId) {
+    const winShare = beef.prizePot || 0;
+    if (winShare > 0) {
+      s.ledger.push({
+        id: generateId("ldg"),
+        type: "beef_win_reversal",
+        managerId: beef.winnerId,
+        amount: -winShare,
+        note: `Reversed wrong auto-settlement for beef "${beef.category}" (deducted from wrong winner, pot restored for correct settlement)`,
+        at: nowISO()
+      });
+    }
+    // clear winner info so it can be re-settled
+    beef.winner = null;
+    beef.winnerId = null;
+    beef.settledAt = null;
+  }
+
+  if (wasSettled) {
+    // For undoing wrong settlement (not full cancel of the beef itself), revert to accepted
+    // so the beef becomes active/visible again and can be correctly settled.
+    // No stake refund or cut re-add (as per above).
+    beef.status = "accepted";
+  } else {
+    beef.status = "cancelled";
+    beef.cancelledAt = nowISO();
+  }
 
   writeAtomicCollection('beefs', s.beefs || []);
   await persistStore();
@@ -1749,12 +1805,21 @@ async function autoSettleIfNeeded() {
   await settleWeeklyPot("ucl", curU - 1);
 
   // Auto award for presets using programmable logic (after GW ends via API)
-  await autoAwardPresets("fpl", curF - 1);
-  await settleSponsoredAwards(curF - 1);
+  if (curF > 1) {
+    await autoAwardPresets("fpl", curF - 1);
+    await settleSponsoredAwards(curF - 1);
+  } else {
+    console.log('[AUTO] Pre-season, skipping award auto-settles');
+  }
 
   // Auto settle preset beefs (using detailed per-team FPL picks data for the deadline round).
   // Only runs for finished GWs (see sync timing). Beefs auto-resolve if they match presets.
-  await autoSettleBeefs(curF - 1);
+  // Pre-season guard: only for round >=1
+  if (curF > 1) {
+    await autoSettleBeefs(curF - 1);
+  } else {
+    console.log('[AUTO] Season not started (curF=1), skipping beef auto-settle');
+  }
 
   if (curF >= 38) {
     await settleEndOfSeasonH2HAndRunners();
@@ -1763,6 +1828,10 @@ async function autoSettleIfNeeded() {
 
 async function autoAwardPresets(comp, round) {
   const s = await loadStore();
+  if (!round || round < 1) {
+    console.log(`[AutoAward] Skipping pre-season round ${round}`);
+    return;
+  }
   console.log(`[AutoAward] Checking presets/sponsored for ${comp} round ${round} using FPL data`);
   // Beefs auto via autoSettleBeefs using FPL picks + logic (cap/bench/pos etc per round data).
   // Sponsored/presets lightly auto if targets set.
@@ -4249,8 +4318,9 @@ app.post("/api/beef/propose", async (req, res) => {
     at: nowISO(),
     paidBy: {},
     locked: false,
-    joinDeadline: joinDeadline || currentGW,  // can be passed from client or default
-    lockedAt: null
+    joinDeadline: Math.max(1, joinDeadline || currentGW || 1),  // min 1, pre-season safe
+    lockedAt: null,
+    autoSettle: !!BEEF_LOGIC_MAP[category]  // only preset logic categories auto-settle; user custom categories stay manual to prevent wrong auto-settlement
   };
   if (paidFromWallet) {
     const paidAmt = Number(stake);
@@ -4613,9 +4683,9 @@ app.post("/api/admin/cancel-beef", async (req, res) => {
   if (!beefId) return res.status(400).json({ error: "beefId required" });
 
   const ok = await cancelBeef(beefId);
-  if (!ok) return res.status(400).json({ error: "Unable to cancel beef (already settled/cancelled or not found)" });
+  if (!ok) return res.status(400).json({ error: "Unable to cancel beef (already cancelled or not found)" });
 
-  res.json({ ok: true, message: "Beef cancelled. Paid stakes refunded to wallets (full amount), cuts reversed from house reserve." });
+  res.json({ ok: true, message: "Beef settlement undone if it was settled (reverted to accepted, winner payout reversed by deducting from wrong manager; pot available for correct settlement). House cuts untouched on settlement-undo (as they were taken at payment). For true cancel of an un-settled beef, full stake refunds + cut reversals. Re-settle correctly after via /api/admin/settle-beef if needed." });
 });
 
 // Admin lock beef (prevent new joins after deadline or manually). Prevents tricking after FPL GW deadline.
