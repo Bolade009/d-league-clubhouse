@@ -1,5 +1,19 @@
 // D League Clubhouse — Premium Frontend
 let currentManager = null;
+
+function normalizeAdmin(current) {
+  if (current && current.email && current.email.toLowerCase() === 'bolade.oladejo@gmail.com') {
+    current.displayName = 'Bolade Oladejo';
+    current.fpl = current.fpl || {};
+    current.fpl.teamId = '';
+    current.fpl.teamName = '';
+    current.ucl = current.ucl || {};
+    current.ucl.teamId = '';
+    current.ucl.teamName = '';
+    current.fplClubName = '';
+  }
+  return current;
+}
 let currentToken = null;
 let standingsData = null;
 let currentLeagueMode = 'fpl'; // 'fpl' or 'ucl'
@@ -165,7 +179,7 @@ async function performLogin() {
     });
 
     currentToken = data.token;
-    currentManager = data.manager;
+    currentManager = normalizeAdmin(data.manager);
 
     // Clear any previous session artifacts (prevents admin token from a prior session leaking into a new normal login)
     localStorage.removeItem('dl_activeBeefs');
@@ -204,7 +218,7 @@ async function tryAutoLogin() {
   try {
     const me = await fetchJSON(`/api/me?token=${token}`);
     currentToken = token;
-    currentManager = me.manager;
+    currentManager = normalizeAdmin(me.manager);
 
     // Safety: if we loaded the admin account via auto-login, make it very obvious.
     // Normal users should never see this unless they have the real admin code.
@@ -316,6 +330,39 @@ function showDashboard() {
     currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com';
   if (isComm) {
     loadAdminOverview();
+  }
+
+  // If we detect the admin email but the displayName is wrong (e.g. "Obed" after bad restore), force correct and show clear option
+  if (currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com') {
+    if (currentManager.displayName !== 'Bolade Oladejo') {
+      currentManager.displayName = 'Bolade Oladejo';
+      currentManager.fpl = currentManager.fpl || {};
+      currentManager.fpl.teamId = '';
+      currentManager.fpl.teamName = '';
+      currentManager.ucl = currentManager.ucl || {};
+      currentManager.ucl.teamId = '';
+      currentManager.ucl.teamName = '';
+      currentManager.fplClubName = '';
+      console.warn('Forced admin displayName to canonical after possible bad restore data');
+    }
+    // Inject a clear session button in the topbar area if not already there
+    const topRight = $('topbar-right');
+    if (topRight && !document.getElementById('clear-session-dashboard')) {
+      const clearLink = document.createElement('a');
+      clearLink.id = 'clear-session-dashboard';
+      clearLink.href = '#';
+      clearLink.style.cssText = 'font-size:10px; color:#ffaa00; margin-left:8px; text-decoration:underline;';
+      clearLink.textContent = ' [clear session / force re-login] ';
+      clearLink.onclick = (e) => {
+        e.preventDefault();
+        localStorage.removeItem('dl_token');
+        localStorage.removeItem('dl_manager_id');
+        localStorage.removeItem('dl_activeBeefs');
+        localStorage.removeItem('dl_playerChallenges');
+        location.reload();
+      };
+      topRight.appendChild(clearLink);
+    }
   }
 
   // Start in FPL separate flow
@@ -451,6 +498,24 @@ async function loadAllData() {
 
   // Handle direct WhatsApp deep link ?beef=ID for accept/decline
   handleBeefDeepLink();
+
+  // Always provide an easy way to clear session from dashboard (for post-restore wrong account issues)
+  const topRight = $('topbar-right');
+  if (topRight && !document.getElementById('global-clear-link')) {
+    const clearL = document.createElement('a');
+    clearL.id = 'global-clear-link';
+    clearL.href = location.pathname + '?clearSession=1';
+    clearL.style.cssText = 'font-size:10px; color:#ffaa00; margin-left:10px;';
+    clearL.textContent = '(clear session)';
+    topRight.appendChild(clearL);
+  }
+
+  // Double filter admin from any client-side lists if data slipped through
+  if (standingsData) {
+    if (standingsData.all) standingsData.all = standingsData.all.filter(m => !(m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com'));
+    if (standingsData.fpl) standingsData.fpl = standingsData.fpl.filter(m => !(m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com'));
+    if (standingsData.ucl) standingsData.ucl = standingsData.ucl.filter(m => !(m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com'));
+  }
 }
 
 function renderTopPotsAndActions() {
@@ -2337,7 +2402,9 @@ function boostPot(target) {
 
 function renderSpotlight() {
   if (!standingsData || !standingsData.all) return;
-  const sorted = [...standingsData.all].sort((a, b) => (b.combined || 0) - (a.combined || 0));
+  // Explicitly filter out admin/commissioner even if list wasn't perfectly filtered
+  const filtered = standingsData.all.filter(m => !(m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com'));
+  const sorted = [...filtered].sort((a, b) => (b.combined || 0) - (a.combined || 0));
   const top = sorted[0];
   if (!top) return;
 
@@ -2650,7 +2717,7 @@ async function requestPayout() {
     alert(res.message || `Requested ₦${amount}. Check your bank and ledger.`);
     // Refresh data
     const me = await fetchJSON('/api/me');
-    currentManager = me.manager;
+    currentManager = normalizeAdmin(me.manager);
     showDashboard();
   } catch (e) {
     alert('Payout request failed: ' + e.message);
@@ -2969,7 +3036,7 @@ async function simulatePaymentSuccess(reference) {
     closeModal();
     // Refresh everything
     const me = await fetchJSON('/api/me');
-    currentManager = me.manager;
+    currentManager = normalizeAdmin(me.manager);
     await loadAllData();
     renderPayAccess();
     alert('Payment confirmed via simulation. You are now eligible!');
@@ -3097,6 +3164,21 @@ function closeModal() {
 async function bootstrap() {
   initTailwind();
 
+  // Support ?clearSession=1 or ?clear=1 to force clear any stale tokens (useful after bad restores)
+  const params = new URLSearchParams(location.search);
+  if (params.get('clearSession') || params.get('clear')) {
+    localStorage.removeItem('dl_token');
+    localStorage.removeItem('dl_manager_id');
+    localStorage.removeItem('dl_activeBeefs');
+    localStorage.removeItem('dl_playerChallenges');
+    // reload without the param
+    const url = new URL(location.href);
+    url.searchParams.delete('clearSession');
+    url.searchParams.delete('clear');
+    location.replace(url.toString());
+    return;
+  }
+
   const warning = document.getElementById('server-warning');
 
   // Attach login button handler early (avoids issues if later code errors)
@@ -3136,17 +3218,35 @@ async function bootstrap() {
     showDashboard();
     loadAllData();
 
-    // Extra safety guard for the commissioner account leaking to other sessions on refresh
+    // Only show a subtle note if the admin record looks mangled (wrong name), otherwise no nagging for the commissioner
     if (currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com') {
-      // Show a persistent banner so it's impossible to miss you're in the admin session
-      const banner = document.createElement('div');
-      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#b45309;color:white;padding:6px 12px;font-size:12px;z-index:9999;text-align:center;';
-      banner.innerHTML = '⚠️ You are logged in as the COMMISSIONER / ADMIN account (bolade.oladejo@gmail.com). Use the Logout button to switch to a normal manager account. Hard refresh will re-load this account if its token is in your browser storage.';
-      document.body.appendChild(banner);
+      if (currentManager.displayName && currentManager.displayName !== 'Bolade Oladejo') {
+        const banner = document.createElement('div');
+        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#b45309;color:white;padding:4px 8px;font-size:11px;z-index:9999;text-align:center;';
+        banner.innerHTML = 'Note: Admin record appears non-canonical (possible post-restore data). <a href="?clearSession=1" style="color:white;text-decoration:underline;">Clear session</a> if needed.';
+        document.body.appendChild(banner);
+      }
     }
   } else {
     // Keep login screen visible
     $('login-screen').classList.remove('hidden');
+
+    // Add a "clear session" helper to recover from stale/wrong account tokens after bad restores or refreshes
+    const loginArea = document.querySelector('#login-screen .space-y-4');
+    if (loginArea && !document.getElementById('clear-session-btn')) {
+      const clearBtn = document.createElement('button');
+      clearBtn.id = 'clear-session-btn';
+      clearBtn.className = 'w-full py-2 mt-2 text-xs border border-[#444] text-[#888] rounded-2xl hover:bg-[#222]';
+      clearBtn.textContent = 'Clear stored session / force re-login (use if showing wrong account after restore or refresh)';
+      clearBtn.onclick = () => {
+        localStorage.removeItem('dl_token');
+        localStorage.removeItem('dl_manager_id');
+        localStorage.removeItem('dl_activeBeefs');
+        localStorage.removeItem('dl_playerChallenges');
+        location.reload();
+      };
+      loginArea.appendChild(clearBtn);
+    }
   }
 
   // If everything is good, make sure warning stays hidden

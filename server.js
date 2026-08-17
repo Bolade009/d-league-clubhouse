@@ -453,7 +453,28 @@ function initSQLite(retries = 2) {
 }
 
 async function loadStore() {
-  if (storeCache) return storeCache;
+  if (storeCache) {
+    // Even on cached/short-circuit return (common after restore sets storeCache directly),
+    // always sanitize the admin record. This ensures that no matter what mangled data came from a user JSON restore,
+    // the admin email entry always has canonical displayName "Bolade Oladejo", empty teams, correct code.
+    try {
+      const admins = (storeCache.managers || []).filter(m => m.email && m.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+      admins.forEach(a => {
+        a.displayName = "Bolade Oladejo";
+        a.accessCode = ADMIN_ACCESS_CODE;
+        a.fpl = { teamId: "", teamName: "" };
+        a.ucl = { teamId: "", teamName: "" };
+        a.fplClubName = "";
+        a.payoutDetails = a.payoutDetails || "";
+        a.isAdmin = true;
+      });
+      if (admins.length > 1) {
+        const keep = admins[0];
+        storeCache.managers = (storeCache.managers || []).filter(m => m === keep || !(m.email && m.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()));
+      }
+    } catch (e) {}
+    return storeCache;
+  }
 
   const defaults = createEmptyStore();
   const dbPath = path.join(DATA_DIR, "dleague.db");
@@ -732,6 +753,51 @@ async function loadStore() {
     // Ensure runner up pots are consistent with payments (solid for restores)
     try { reconcileRunnerUpPots(storeCache); } catch (e) {}
 
+    // Always heal the admin record by email after any load/merge. Prevents "admin shows as Obed" or team attached after restores or bad merges.
+    try {
+      const admins = (storeCache.managers || []).filter(m => m.email && m.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+      admins.forEach(a => {
+        a.displayName = "Bolade Oladejo";
+        a.accessCode = ADMIN_ACCESS_CODE;
+        a.fpl = { teamId: "", teamName: "" };
+        a.ucl = { teamId: "", teamName: "" };
+        a.fplClubName = "";
+        a.payoutDetails = a.payoutDetails || "";
+        a.isAdmin = true;
+      });
+      if (admins.length === 0) {
+        // create if completely missing
+        storeCache.managers = storeCache.managers || [];
+        storeCache.managers.push({
+          id: generateId("mgr"),
+          displayName: "Bolade Oladejo",
+          email: ADMIN_EMAIL,
+          accessCode: ADMIN_ACCESS_CODE,
+          fpl: { teamId: "", teamName: "" },
+          ucl: { teamId: "", teamName: "" },
+          payoutDetails: "",
+          fplClubName: "",
+          createdAt: nowISO(),
+          isAdmin: true
+        });
+      }
+      if (admins.length > 1) {
+        // keep only one, prefer the one that was already there or first
+        console.warn("[load] Multiple admin email records found after merge — deduping");
+        // keep the first, remove others (rare)
+        const keep = admins[0];
+        storeCache.managers = (storeCache.managers || []).filter(m => m === keep || !(m.email && m.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()));
+        storeCache.managers.push(keep); // ensure
+      }
+    } catch (e) { console.warn("admin heal in loadStore failed", e.message); }
+
+    // Force the healed admin record to disk atomics immediately (so even bad exports/restores don't stick mangled data forever)
+    try {
+      writeAtomicCollection('managers', storeCache.managers || []);
+      // schedule a full persist without blocking return
+      setTimeout(() => { persistStore().catch(() => {}); }, 5);
+    } catch (e) {}
+
     return storeCache;
   } catch (e) {
     console.warn(`[store] SQLite load failed after recovery attempts: ${e.message}. Trying sidecar + best-backup...`);
@@ -889,6 +955,21 @@ function getStore() {
       return createEmptyStore();
     }
   }
+
+  // Heal admin on any getStore access too (defensive for direct calls after restores)
+  try {
+    const admins = (storeCache.managers || []).filter(m => m.email && m.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+    admins.forEach(a => {
+      a.displayName = "Bolade Oladejo";
+      a.accessCode = ADMIN_ACCESS_CODE;
+      a.fpl = { teamId: "", teamName: "" };
+      a.ucl = { teamId: "", teamName: "" };
+      a.fplClubName = "";
+      a.payoutDetails = a.payoutDetails || "";
+      a.isAdmin = true;
+    });
+  } catch (e) {}
+
   return storeCache;
 }
 
@@ -2261,6 +2342,18 @@ async function getProjectedPayouts() {
 
 function buildManagerView(mgr) {
   const s = getStore();
+
+  // Hard force for admin by email: always return canonical data (prevents "admin shows as Obed" even if the record in DB/JSON is mangled)
+  if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+    mgr.displayName = "Bolade Oladejo";
+    mgr.accessCode = ADMIN_ACCESS_CODE;
+    mgr.fpl = { teamId: "", teamName: "" };
+    mgr.ucl = { teamId: "", teamName: "" };
+    mgr.fplClubName = "";
+    mgr.payoutDetails = mgr.payoutDetails || "";
+    mgr.isAdmin = true;
+  }
+
   const fplPaid = isFullyPaidFor(mgr, "fpl");
   const uclPaid = isFullyPaidFor(mgr, "ucl");
 
@@ -2316,13 +2409,10 @@ function buildManagerView(mgr) {
 
 function getFullLeaderboard() {
   const s = getStore();
-  // Never surface the pure admin/commissioner account in public leaderboards or normal manager lists.
-  // Admin has empty team ids and should not appear as a "manager" for regular users.
-  const allManagers = s.managers.filter(m => {
-    const isPureAdmin = m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com' &&
-      (!m.fpl || !m.fpl.teamId) && (!m.ucl || !m.ucl.teamId);
-    return !isPureAdmin;
-  }).map(m => buildManagerView(m));
+  // Never surface the commissioner/admin account in public lists (spotlight, leaderboards, selects etc.).
+  // Keyed by email so it never appears even if data is temporarily mangled after restore.
+  const allManagers = s.managers.filter(m => !(m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com'))
+    .map(m => buildManagerView(m));
 
   const managers = allManagers;
   // Only show fully eligible in main tables? Show all but mark paid status. Leaderboards filter paid.
@@ -2594,11 +2684,14 @@ async function ensureAdminManager() {
   const existing = s.managers.find(m => m.email && m.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
   if (existing) {
     // ALWAYS ensure admin has NO team / club. Admin is only commissioner, not a competing manager.
+    // Also force canonical displayName in case previous bad data/restore set it to something else (e.g. "Obed").
     let changed = false;
+    if (existing.displayName !== "Bolade Oladejo") { existing.displayName = "Bolade Oladejo"; changed = true; }
     if (existing.fplClubName) { existing.fplClubName = ""; changed = true; }
     if (existing.fpl && (existing.fpl.teamId || existing.fpl.teamName)) { existing.fpl = { teamId: "", teamName: "" }; changed = true; }
     if (existing.ucl && (existing.ucl.teamId || existing.ucl.teamName)) { existing.ucl = { teamId: "", teamName: "" }; changed = true; }
     if (existing.accessCode !== ADMIN_ACCESS_CODE) { existing.accessCode = ADMIN_ACCESS_CODE; changed = true; }
+    if (!existing.isAdmin) { existing.isAdmin = true; changed = true; }
     if (changed) await persistStore();
     return;
   }
@@ -2881,28 +2974,6 @@ app.post("/api/admin/add-manager", async (req, res) => {
     await logEvent("manager_updated_by_admin", { id: existing.id, email, name, fplClubName, fplId });
     return res.json({ ok: true, manager: { id: existing.id, displayName: name, email, accessCode }, message: "Existing manager updated (details refreshed, paid status and history untouched)." });
   }
-});
-
-// Admin delete a manager (use with caution - history in ledger/payments/beefs stays for audit).
-// Removes from active managers list only.
-app.post("/api/admin/delete-manager", async (req, res) => {
-  if (!DEMO_MODE) {
-    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
-    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
-    if (!allowed) {
-      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
-      if (bearer) {
-        const decoded = verifyToken(bearer);
-        if (decoded && decoded.managerId) {
-          const mgr = getManagerById(decoded.managerId);
-          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
-            allowed = true;
-          }
-        }
-      }
-    }
-    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
-  }
 
   // New manager - create only if not locked (lock check above)
   const id = generateId("mgr");
@@ -2982,10 +3053,15 @@ app.post("/api/admin/delete-manager", async (req, res) => {
   if (toDel.email && toDel.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
     return res.status(400).json({ error: "Cannot delete the admin commissioner account" });
   }
-  s.managers.splice(idx, 1);
-  await persistStore();
-  await logEvent("manager_deleted_by_admin", { id: toDel.id, email: toDel.email, displayName: toDel.displayName });
-  res.json({ ok: true, message: `Manager ${toDel.displayName} removed from active managers list. History preserved in ledger/payments/beefs.`, deleted: toDel.id });
+  try {
+    s.managers.splice(idx, 1);
+    await persistStore();
+    await logEvent("manager_deleted_by_admin", { id: toDel.id, email: toDel.email, displayName: toDel.displayName });
+    res.json({ ok: true, message: `Manager ${toDel.displayName} removed from active managers list. History preserved in ledger/payments/beefs.`, deleted: toDel.id });
+  } catch (e) {
+    console.error("delete-manager failed", e);
+    return res.status(500).json({ error: "Failed to delete manager: " + (e.message || e) });
+  }
 });
 
 // Restore / reclaim a paid manager record by its original ID (from payments).
@@ -3174,7 +3250,26 @@ app.post("/api/admin/restore-from-best-backup", async (req, res) => {
   try { reconstructBeefsFromPayments(storeCache); } catch (e) {}
   writeAtomicCollection('beefs', storeCache.beefs || []);
 
+  // Also sanitize admin here, in case the best backup had mangled admin record
+  try {
+    let adminIdx = (storeCache.managers || []).findIndex(m => m.email && m.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+    if (adminIdx >= 0) {
+      const a = storeCache.managers[adminIdx];
+      a.displayName = "Bolade Oladejo";
+      a.accessCode = ADMIN_ACCESS_CODE;
+      a.fpl = { teamId: "", teamName: "" };
+      a.ucl = { teamId: "", teamName: "" };
+      a.fplClubName = "";
+      a.payoutDetails = a.payoutDetails || "";
+      a.isAdmin = true;
+    }
+  } catch (e) {}
+
   await persistStore();
+
+  // Force admin heal after restore (in case the best backup had bad admin data)
+  await ensureAdminManager();
+
   const after = (getStore().managers || []).length;
 
   await logEvent("forced_restore_from_best_backup", { before, after, source: "admin" });
@@ -3217,23 +3312,82 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
 
   const before = (getStore().managers || []).length;
 
-  // Promote this as the new truth - write rich atomics for best recovery on next boots
+  // Safety: if the export JSON has no beefs (e.g. old snapshot) but we currently have paid beefs,
+  // preserve them + their paidBy so we don't lose data during restore (especially after 502s or partial writes).
+  const previousBeefs = (getStore().beefs || []).slice();
+  const previousPayments = (getStore().payments || []).slice();
+
+  // Promote this as the new truth - write rich atomics for best recovery on next boots.
+  // To avoid Bad Gateway / timeout on large restores (Render free), we write critical collections sync.
+  // Non-critical (sponsorships, challenges, etc.) will be reconstructed on next loadStore.
   writeAtomicSidecar(data);
   writeAtomicCollection('managers', data.managers || []);
   writeAtomicCollection('payments', data.payments || []);
   writeAtomicCollection('ledger', data.ledger || []);
   writeAtomicCollection('beefs', data.beefs || []);
-  writeAtomicCollection('sponsorships', data.sponsorships || []);
-  writeAtomicCollection('challenges', data.challenges || []);
-  writeAtomicCollection('potBoosts', data.potBoosts || []);
-  writeAtomicCollection('complaints', data.complaints || []);
   writeAtomicCollection('scores', data.scores || []);
-  writeAtomicCollection('h2h', data.h2h || []);
   writeAtomicCollection('events', data.events || []);
-  if (data.cup) writeAtomicCollection('cup', data.cup);
   if (data.settings) writeAtomicCollection('settings', data.settings);
+  if (data.cup) writeAtomicCollection('cup', data.cup);
+
+  // Defer the rest to not block the response and cause 502
+  setTimeout(() => {
+    try {
+      writeAtomicCollection('sponsorships', data.sponsorships || []);
+      writeAtomicCollection('challenges', data.challenges || []);
+      writeAtomicCollection('potBoosts', data.potBoosts || []);
+      writeAtomicCollection('complaints', data.complaints || []);
+      writeAtomicCollection('h2h', data.h2h || []);
+    } catch (e) {}
+  }, 10);
 
   storeCache = data;
+  if ((!Array.isArray(storeCache.beefs) || storeCache.beefs.length === 0) && previousBeefs.length > 0) {
+    console.warn('[restore] Export had no beefs but server had some — preserving previous beefs to avoid data loss from old export or partial restore');
+    storeCache.beefs = previousBeefs;
+  }
+  if ((!Array.isArray(storeCache.payments) || storeCache.payments.length === 0) && previousPayments.length > 0) {
+    // only merge payments if missing, to not lose history
+    storeCache.payments = previousPayments;
+  }
+
+  // CRITICAL: After blind import from user-provided JSON (which may contain mangled admin record from old bad state),
+  // always sanitize the admin by email: force correct displayName, empty teams, correct code.
+  // This prevents "admin shows as Obed" (or any other name) after restore, even if the exported JSON had the admin email entry corrupted.
+  // User theory about "first in list" is possible if merge or some UI picked [0], but root is mangled record on the admin email.
+  try {
+    let adminIdx = (storeCache.managers || []).findIndex(m => m.email && m.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+    if (adminIdx >= 0) {
+      const a = storeCache.managers[adminIdx];
+      a.displayName = "Bolade Oladejo";
+      a.accessCode = ADMIN_ACCESS_CODE;
+      a.fpl = { teamId: "", teamName: "" };
+      a.ucl = { teamId: "", teamName: "" };
+      a.fplClubName = "";
+      a.payoutDetails = a.payoutDetails || "";
+      a.isAdmin = true;
+    } else {
+      // ensure it exists
+      storeCache.managers = storeCache.managers || [];
+      storeCache.managers.push({
+        id: generateId("mgr"),
+        displayName: "Bolade Oladejo",
+        email: ADMIN_EMAIL,
+        accessCode: ADMIN_ACCESS_CODE,
+        fpl: { teamId: "", teamName: "" },
+        ucl: { teamId: "", teamName: "" },
+        payoutDetails: "",
+        fplClubName: "",
+        createdAt: nowISO(),
+        isAdmin: true
+      });
+    }
+  } catch (e) { console.warn("admin sanitize after import failed", e.message); }
+
+  // Re-write managers atomic with the sanitized admin (so the fix sticks to disk even if export was bad)
+  writeAtomicCollection('managers', storeCache.managers || []);
+  writeAtomicCollection('settings', storeCache.settings || {});
+
   // Ensure beef paidBy is restored + run full reconstruction (payments in export can recover any missing beef records)
   try { reconstructBeefsFromPayments(storeCache); } catch (e) {}
   if (Array.isArray(storeCache.beefs) && Array.isArray(storeCache.payments)) {
@@ -3254,6 +3408,9 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
   writeAtomicCollection('beefs', storeCache.beefs || []);
   writeAtomicCollection('settings', storeCache.settings || {});
   await persistStore();
+
+  // Force admin heal after restore from export — this is critical to prevent the admin record from being left as a different manager's data (e.g. "Obed" with team) just because the imported JSON was bad.
+  await ensureAdminManager();
 
   const after = (getStore().managers || []).length;
 
