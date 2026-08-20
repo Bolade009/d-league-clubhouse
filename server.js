@@ -4808,7 +4808,11 @@ app.get("/api/standings", async (req, res) => {
         managerName: m ? m.displayName : 'Manager',
         clubName: (m && m.fplClubName) || ''
       };
-    })
+    }),
+    // Expose GW win history for public "GW Winners Roll" leaderboard (only weekly wins)
+    history: {
+      weekly: (s.settings.history && s.settings.history.weekly) || []
+    }
   });
 });
 

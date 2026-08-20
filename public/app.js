@@ -1438,8 +1438,8 @@ async function submitManualDeduct() {
 async function previewAutoSettle() {
   if (!window.standingsData) await loadStandings();
   const round = (window.standingsData.currentRound && window.standingsData.currentRound.fpl || 2) - 1;
-  const winners = (window.standingsData.fpl || []).slice(0,3).map((m,i) => `${i+1}. ${m.displayName} (~${m.fplTotal||'?'} total)`).join('\n');
-  alert(`Preview Auto Settle for GW${round} (based on current data):\n\nTop projected:\n${winners}\n\nBeefs will auto-resolve via picks data if preset. Run settle to confirm.`);
+  const winners = (window.standingsData.fpl || []).slice(0,3).map((m,i) => `${i+1}. ${m.displayName} (~${(m.currentFpl != null ? m.currentFpl : (m.fplTotal || '?'))} GW pts)`).join('\n');
+  alert(`Preview Auto Settle for GW${round} (based on current data):\n\nTop projected (current GW):\n${winners}\n\nBeefs will auto-resolve via picks data if preset. Run settle to confirm. Note: Settles on FINAL only.`);
 }
 
 async function forceSpecificRoundSettle() {
@@ -1809,6 +1809,13 @@ async function previewBeefAutoSettle() {
 
 async function loadStandings() {
   standingsData = await fetchJSON('/api/standings');
+  // Attach H2H for per-player display in lists (purely for UI rendering)
+  try {
+    const h2hRes = await fetchJSON('/api/h2h');
+    standingsData.h2h = h2hRes.h2h || [];
+  } catch (e) {
+    standingsData.h2h = standingsData.h2h || [];
+  }
   // Legacy combined/old race + table renders removed (their containers no longer exist after separate FPL/UCL UI cleanup).
   // standingsData.fpl / .ucl / .all are still used by renderFplTailored, renderUclTailored, lineup viewer, etc.
   // Auto switch to current mode after load
@@ -1861,14 +1868,19 @@ function renderFPLRace() {
   list.slice(0, 6).forEach((m, i) => {
     const el = document.createElement('div');
     el.className = `flex justify-between items-center px-3 py-1.5 rounded-xl ${m.id === currentManager.id ? 'bg-[#0d2a1f]' : 'hover:bg-[#1c1c1c]'}`;
+    const gwBadge = (m.currentFplSource === 'live-projection')
+      ? '<span class="text-[8px] bg-blue-900 text-blue-300 px-1 rounded ml-0.5">LIVE</span>'
+      : (m.currentFplSource === 'official-fpl' ? '<span class="text-[8px] bg-[#003322] text-[#00ff85] px-1 rounded ml-0.5">FINAL</span>' : '');
     el.innerHTML = `
       <div class="flex gap-2 items-center">
         <span class="font-mono text-xs w-4 text-[#888]">${i+1}</span>
-        <span class="font-medium">${m.displayName}</span>
+        <span class="font-medium">${withBadge(m.displayName, m.id)}</span>
       </div>
-      <div class="flex items-center gap-2">
-        <span class="score-value font-bold tabular-nums">${m.fplTotal ?? '—'}</span>
-        <span class="source-label">${m.currentFplSource || ''}</span>
+      <div class="flex items-center gap-2 text-right">
+        <div>
+          <div class="score-value font-bold tabular-nums">${m.fplTotal ?? '—'} <span class="text-[9px] text-[#666]">ovr</span></div>
+          <div class="text-xs tabular-nums">GW: ${m.currentFpl ?? '—'} ${gwBadge}</div>
+        </div>
       </div>
     `;
     wrap.appendChild(el);
@@ -1921,14 +1933,36 @@ function renderFullTable() {
     const fplPaidBadge = m.fplPaid ? '<span class="text-[10px] px-1.5 py-px border border-[#00ff85]/30 text-[#00ff85] rounded">FPL</span>' : '';
     const uclPaidBadge = m.uclPaid ? '<span class="text-[10px] px-1.5 py-px border border-[#444] text-[#aaa] rounded">UCL</span>' : '';
 
+    const gwBadge = (m.currentFplSource === 'live-projection')
+      ? '<span class="text-[8px] bg-blue-900 text-blue-300 px-1 rounded ml-0.5">LIVE</span>'
+      : (m.currentFplSource === 'official-fpl' ? '<span class="text-[8px] bg-[#003322] text-[#00ff85] px-1 rounded ml-0.5">FINAL</span>' : '');
+    // H2H opponent + standing for this player
+    const h2hMatches = standingsData.h2h || [];
+    const myH2h = h2hMatches.find(h => h.managerA === m.id || h.managerB === m.id);
+    let h2hCell = '<span class="text-[#888]">—</span>';
+    if (myH2h) {
+      const isA = myH2h.managerA === m.id;
+      const oppId = isA ? myH2h.managerB : myH2h.managerA;
+      const opp = all.find(x => x.id === oppId);
+      const oppName = opp ? opp.displayName : 'Opp';
+      let scoreStr = '';
+      if (typeof myH2h.pointsA === 'number' && typeof myH2h.pointsB === 'number') {
+        const myPts = isA ? myH2h.pointsA : myH2h.pointsB;
+        const oPts = isA ? myH2h.pointsB : myH2h.pointsA;
+        scoreStr = ` (${myPts}-${oPts})`;
+      }
+      h2hCell = `vs ${oppName}${scoreStr}`;
+    }
+
     tr.innerHTML = `
       <td class="py-2 pr-4">
-        <div class="font-semibold">${m.displayName} ${m.id === currentManager.id ? '<span class="text-[#00ff85] text-xs ml-1">(YOU)</span>' : ''}</div>
+        <div class="font-semibold">${withBadge(m.displayName, m.id)} ${m.id === currentManager.id ? '<span class="text-[#00ff85] text-xs ml-1">(YOU)</span>' : ''}</div>
         <div class="text-[10px] text-[#888]">${m.fplTeam.teamName || ''} • ${m.uclTeam.teamName || ''}</div>
       </td>
       <td class="py-2 px-3 tabular-nums">
-        <div class="font-bold">${m.fplTotal ?? '—'}</div>
+        <div class="font-bold">${m.fplTotal ?? '—'} <span class="text-[9px] text-[#666]">total</span></div>
         <div class="text-[10px] text-[#00ff85]">${m.fplPaid ? 'PAID' : '—'}</div>
+        <div class="text-xs mt-0.5">GW: ${m.currentFpl ?? '—'} ${gwBadge}</div>
       </td>
       <td class="py-2 px-3 tabular-nums">
         <div class="font-bold">${m.uclTotal ?? '—'}</div>
@@ -1940,6 +1974,7 @@ function renderFullTable() {
       <td class="py-2 px-3 text-xs">
         <div>FPL ${m.currentFpl ?? '—'} ${m.recentCaptainName ? '(' + m.recentCaptainName + ')' : (m.recentCaptain ? '(C#' + m.recentCaptain + ')' : '')}</div>
         <div>UCL ${m.currentUcl ?? '—'} ${m.recentChip ? ' [' + m.recentChip + ']' : ''}</div>
+        <div class="text-[9px] text-[#888] mt-0.5">H2H: ${h2hCell}</div>
       </td>
       <td class="py-2 px-3">
         <span class="text-[#888]">—</span>
@@ -1983,7 +2018,7 @@ async function showManagerProfile(managerId) {
         <div class="text-xs text-[#888] mt-0.5">${data.fplTeam.teamName || ''} • ${data.uclTeam.teamName || ''}</div>
         
         <div class="mt-4 grid grid-cols-3 gap-3 text-sm">
-          <div class="bg-[#111] rounded-2xl p-3"><div class="text-xs">FPL TOTAL</div><div class="font-black text-2xl tabular-nums">${data.fplTotal || 0}</div></div>
+          <div class="bg-[#111] rounded-2xl p-3"><div class="text-xs">FPL TOTAL</div><div class="font-black text-2xl tabular-nums">${data.fplTotal || 0}</div><div class="text-[10px] text-[#00ff85]">GW: ${data.currentFpl ?? '—'} ${(data.currentFplSource==='live-projection'?'LIVE':(data.currentFplSource==='official-fpl'?'FINAL':''))}</div></div>
           <div class="bg-[#111] rounded-2xl p-3"><div class="text-xs">UCL TOTAL</div><div class="font-black text-2xl tabular-nums">${data.uclTotal || 0}</div></div>
           <div class="bg-[#111] rounded-2xl p-3"><div class="text-xs">COMBINED</div><div class="font-black text-2xl tabular-nums">${data.combined || 0}</div></div>
         </div>
@@ -1993,6 +2028,7 @@ async function showManagerProfile(managerId) {
 
         <div class="mt-4 text-xs">
           <div class="flex justify-between"><span>Wallet</span><span class="font-semibold tabular-nums">₦${data.wallet || 0}</span></div>
+          ${data.h2h && data.h2h.length ? (() => { const h = data.h2h[0]; const isA = h.managerA === managerId; const opp = isA ? h.managerB : h.managerA; return `<div class="mt-1 text-[10px] text-[#888]">This week H2H vs ${opp}${h.winner ? ' (settled)' : ''}</div>`; })() : ''}
           <div class="flex justify-between"><span>Transaction history</span><span class="font-semibold">See ledger</span></div>
         </div>
 
@@ -3319,18 +3355,52 @@ function renderFplTailored() {
   const gw = standingsData.currentRound?.fpl || '?';
   if ($('fpl-gw-num2')) $('fpl-gw-num2').textContent = gw;
 
-  // Managers list with current points (FPL like)
+  // Managers list with side-by-side overall + current GW (persistent display)
   const list = $('fpl-managers-list');
   if (list) {
     list.innerHTML = '';
+    // Small note for clarity (badge + note style, no dedicated section)
+    if (!list.dataset.noteAdded) {
+      const note = document.createElement('div');
+      note.className = 'text-[9px] text-[#666] mb-1';
+      note.textContent = 'Ranked by season total • GW = current gameweek (LIVE = FPL live projection, resolves to FINAL on official sync)';
+      list.parentNode.insertBefore(note, list);
+      list.dataset.noteAdded = 'true';
+    }
     const fplList = [...(standingsData.fpl || [])].sort((a,b) => (b.fplTotal||0) - (a.fplTotal||0));
     fplList.forEach(m => {
       const isMe = m.id === currentManager?.id;
       const row = document.createElement('div');
       row.className = `flex justify-between items-center px-3 py-1.5 rounded-xl cursor-pointer ${isMe ? 'bg-[#0d2a1f]' : 'hover:bg-[#111]'}`;
+      const gwBadge = (m.currentFplSource === 'live-projection')
+        ? '<span class="text-[8px] bg-blue-900 text-blue-300 px-1 rounded ml-0.5 align-super">LIVE</span>'
+        : (m.currentFplSource === 'official-fpl' ? '<span class="text-[8px] bg-[#003322] text-[#00ff85] px-1 rounded ml-0.5 align-super">FINAL</span>' : '');
+      // H2H for this player this week
+      const h2hMatches = standingsData.h2h || [];
+      const myH2h = h2hMatches.find(h => h.managerA === m.id || h.managerB === m.id);
+      let h2hHtml = '';
+      if (myH2h) {
+        const isA = myH2h.managerA === m.id;
+        const oppId = isA ? myH2h.managerB : myH2h.managerA;
+        const opp = (standingsData.all || []).find(x => x.id === oppId);
+        const oppName = opp ? opp.displayName : 'Opp';
+        let scoreStr = '';
+        if (typeof myH2h.pointsA === 'number' && typeof myH2h.pointsB === 'number') {
+          const myPts = isA ? myH2h.pointsA : myH2h.pointsB;
+          const oPts = isA ? myH2h.pointsB : myH2h.pointsA;
+          scoreStr = ` (${myPts}-${oPts})`;
+        }
+        h2hHtml = `<div class="text-[9px] text-[#888] mt-0.5">H2H vs ${oppName}${scoreStr}</div>`;
+      }
       row.innerHTML = `
-        <div>${m.displayName} ${m.fplClubName ? `(${m.fplClubName})` : ''} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
-        <div class="font-mono font-bold">${m.fplTotal ?? '—'} pts</div>
+        <div>
+          <div>${withBadge(m.displayName, m.id)} ${m.fplClubName ? `(${m.fplClubName})` : ''} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
+          ${h2hHtml}
+        </div>
+        <div class="font-mono text-right">
+          <div class="font-bold tabular-nums">${m.fplTotal ?? '—'} <span class="text-[9px] text-[#666]">ovr</span></div>
+          <div class="text-xs tabular-nums">GW: ${m.currentFpl ?? '—'} ${gwBadge}</div>
+        </div>
       `;
       row.onclick = () => showManagerSquadWithInsight(m.id);
       list.appendChild(row);
@@ -3375,6 +3445,162 @@ function renderFplTailored() {
   // Ensure lineup viewer populated
   if (typeof renderLineupViewer === 'function') setTimeout(renderLineupViewer, 100);
 
+  // === GW Winners Roll: horizontal per-manager view of GWs won (only winners) ===
+  // Uses existing history.weekly (populated on settleWeeklyPot). Pure display.
+  renderGWWinLeaders();
+
+  // Badge / icon chooser (predefined only - see below)
+  renderBadgeChooser();
+}
+
+function renderGWWinLeaders() {
+  const container = $('fpl-tailored');
+  if (!container || !standingsData) return;
+
+  // Remove old if exists
+  const old = $('gw-winners-roll');
+  if (old) old.remove();
+
+  const weekly = (standingsData.history && standingsData.history.weekly) || [];
+  const fplWins = weekly.filter(w => w.comp === 'fpl' && w.winners && w.winners.length);
+
+  if (!fplWins.length) {
+    // Don't show empty section early season
+    return;
+  }
+
+  // Group by manager: only those with at least 1 win
+  const managerWins = {};
+  fplWins.forEach(win => {
+    win.winners.forEach(w => {
+      if (!managerWins[w.id]) managerWins[w.id] = { id: w.id, rounds: [], name: null };
+      managerWins[w.id].rounds.push(win.round);
+    });
+  });
+
+  // Resolve names from standings
+  const allMgrs = standingsData.all || standingsData.fpl || [];
+  Object.keys(managerWins).forEach(id => {
+    const m = allMgrs.find(x => x.id === id);
+    managerWins[id].name = m ? m.displayName : 'Manager';
+  });
+
+  // Filter to only those with wins, sort by #wins desc then name
+  let winnersList = Object.values(managerWins)
+    .filter(m => m.rounds.length > 0)
+    .sort((a, b) => b.rounds.length - a.rounds.length || a.name.localeCompare(b.name));
+
+  if (!winnersList.length) return;
+
+  const section = document.createElement('div');
+  section.id = 'gw-winners-roll';
+  section.className = 'mt-6 p-4 bg-[#1a1a1a] border border-[#333] rounded-2xl';
+  section.innerHTML = `
+    <div class="flex items-center justify-between mb-2">
+      <div>
+        <div class="font-semibold text-sm">GW Winners Roll</div>
+        <div class="text-[10px] text-[#666]">Only managers who have won at least one weekly pot. GWs listed horizontally.</div>
+      </div>
+      <div class="text-[10px] text-[#00ff85]">${winnersList.length} champion${winnersList.length > 1 ? 's' : ''}</div>
+    </div>
+    <div class="space-y-2 overflow-x-auto">
+      ${winnersList.map(mgr => {
+        const gwBadges = mgr.rounds.sort((a,b)=>a-b).map(r => 
+          `<span class="inline-block px-1.5 py-0.5 mr-1 mb-1 text-[10px] bg-[#003322] text-[#00ff85] rounded font-mono">GW${r}</span>`
+        ).join('');
+        return `
+          <div class="flex items-center gap-3 py-1 border-b border-[#222] last:border-0">
+            <div class="font-medium min-w-[140px]">${mgr.name}</div>
+            <div class="flex-1 flex flex-wrap">${gwBadges}</div>
+            <div class="text-xs text-[#888] tabular-nums">${mgr.rounds.length} win${mgr.rounds.length>1?'s':''}</div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+  // Append near bottom of fpl section, before or after challenges
+  const challenges = $('fpl-challenge-week');
+  if (challenges && challenges.parentNode) {
+    challenges.parentNode.insertBefore(section, challenges.nextSibling);
+  } else {
+    container.appendChild(section);
+  }
+}
+
+// Predefined badges/icons - no uploads, no bandwidth cost.
+// Store choice in localStorage per manager. Displayed next to names where possible.
+const PREDEFINED_BADGES = [
+  { id: 'trophy-gold', label: 'Gold Trophy', emoji: '🏆' },
+  { id: 'trophy-silver', label: 'Silver', emoji: '🥈' },
+  { id: 'star', label: 'Star Captain', emoji: '⭐' },
+  { id: 'fire', label: 'Hot Streak', emoji: '🔥' },
+  { id: 'ball', label: 'Match Ball', emoji: '⚽' },
+  { id: 'shield', label: 'Defender', emoji: '🛡️' },
+  { id: 'rocket', label: 'Rocket', emoji: '🚀' },
+  { id: 'crown', label: 'Crown', emoji: '👑' },
+  { id: 'medal', label: 'Medal', emoji: '🎖️' },
+  { id: 'target', label: 'On Target', emoji: '🎯' }
+];
+
+function getBadgeForManager(managerId) {
+  if (!managerId) return '';
+  try {
+    const choice = localStorage.getItem(`dl_badge_${managerId}`);
+    const found = PREDEFINED_BADGES.find(b => b.id === choice);
+    return found ? found.emoji : '';
+  } catch { return ''; }
+}
+
+function renderBadgeChooser() {
+  if (!currentManager || !standingsData) return;
+  const container = $('fpl-tailored');
+  if (!container) return;
+
+  const old = $('badge-chooser');
+  if (old) old.remove();
+
+  const currentBadge = getBadgeForManager(currentManager.id);
+
+  const chooser = document.createElement('div');
+  chooser.id = 'badge-chooser';
+  chooser.className = 'mt-4 p-3 bg-[#111] border border-[#333] rounded-xl text-xs';
+  chooser.innerHTML = `
+    <div class="mb-1 font-semibold">Choose your display badge (pre-defined only)</div>
+    <div class="flex flex-wrap gap-1 mb-1">
+      ${PREDEFINED_BADGES.map(b => `
+        <button data-badge="${b.id}" class="px-2 py-1 border border-[#444] rounded hover:bg-[#222] ${getBadgeForManager(currentManager.id) === b.emoji ? 'bg-[#003322] border-[#00ff85]' : ''}">
+          ${b.emoji} ${b.label}
+        </button>
+      `).join('')}
+    </div>
+    <div class="text-[10px] text-[#666]">Current: ${currentBadge || 'None'}. Choice saved locally for this browser (no upload, zero extra bandwidth).</div>
+  `;
+
+  // Place it nicely
+  const roll = $('gw-winners-roll');
+  if (roll) {
+    roll.parentNode.insertBefore(chooser, roll.nextSibling);
+  } else {
+    container.appendChild(chooser);
+  }
+
+  // Wire clicks
+  chooser.querySelectorAll('button[data-badge]').forEach(btn => {
+    btn.onclick = () => {
+      const id = btn.dataset.badge;
+      try { localStorage.setItem(`dl_badge_${currentManager.id}`, id); } catch {}
+      // Refresh relevant displays
+      renderFplTailored();
+      renderBadgeChooser();
+    };
+  });
+}
+
+// Helper to enhance name displays with badge (call where names are rendered)
+// For now injected in key places via renderFplTailored update below if needed.
+function withBadge(name, managerId) {
+  const b = getBadgeForManager(managerId);
+  return b ? `${b} ${name}` : name;
 }
 
 function renderUclTailored() {
