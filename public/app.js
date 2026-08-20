@@ -1960,9 +1960,17 @@ function renderFullTable() {
         <div class="text-[10px] text-[#888]">${m.fplTeam.teamName || ''} • ${m.uclTeam.teamName || ''}</div>
       </td>
       <td class="py-2 px-3 tabular-nums">
-        <div class="font-bold">${m.fplTotal ?? '—'} <span class="text-[9px] text-[#666]">total</span></div>
-        <div class="text-[10px] text-[#00ff85]">${m.fplPaid ? 'PAID' : '—'}</div>
-        <div class="text-xs mt-0.5">GW: ${m.currentFpl ?? '—'} ${gwBadge}</div>
+        <div class="flex items-center gap-3">
+          <div>
+            <div class="text-[9px] text-[#666] tracking-widest">SEASON</div>
+            <div class="font-bold tabular-nums text-base">${m.fplTotal ?? '—'}</div>
+          </div>
+          <div class="w-px h-5 bg-[#333]"></div>
+          <div class="text-right">
+            <div class="text-[9px] text-[#666] tracking-widest">GW</div>
+            <div class="flex items-center gap-1 justify-end font-bold tabular-nums text-base">${m.currentFpl ?? '—'} ${gwBadge}</div>
+          </div>
+        </div>
       </td>
       <td class="py-2 px-3 tabular-nums">
         <div class="font-bold">${m.uclTotal ?? '—'}</div>
@@ -1972,8 +1980,6 @@ function renderFullTable() {
         <div class="font-black text-xl tabular-nums tracking-tighter">${m.combined}</div>
       </td>
       <td class="py-2 px-3 text-xs">
-        <div>FPL ${m.currentFpl ?? '—'} ${m.recentCaptainName ? '(' + m.recentCaptainName + ')' : (m.recentCaptain ? '(C#' + m.recentCaptain + ')' : '')}</div>
-        <div>UCL ${m.currentUcl ?? '—'} ${m.recentChip ? ' [' + m.recentChip + ']' : ''}</div>
         <div class="text-[9px] text-[#888] mt-0.5">H2H: ${h2hCell}</div>
       </td>
       <td class="py-2 px-3">
@@ -2096,19 +2102,18 @@ async function loadH2H() {
 
   h2h.forEach(match => {
     const div = document.createElement('div');
-    div.className = 'h2h-card';
+    div.className = 'h2h-card border border-[#333] p-2 rounded mb-1 text-sm';
     const youA = match.managerA === currentManager.id;
     const youB = match.managerB === currentManager.id;
+    const oppA = youA ? 'YOU' : (standingsData.all || []).find(x=>x.id===match.managerA)?.displayName || 'A';
+    const oppB = youB ? 'YOU' : (standingsData.all || []).find(x=>x.id===match.managerB)?.displayName || 'B';
     div.innerHTML = `
-      <div class="flex justify-between text-xs mb-1">
-        <div class="text-[#888]">${match.round} • H2H match (season pot)</div>
-        <div class="${match.status === 'settled' ? 'text-[#00ff85]' : 'text-[#aaa]'}">${match.status.toUpperCase()}</div>
+      <div class="flex justify-between text-xs mb-1 text-[#888]">
+        <div>GW${match.round} • H2H (pot)</div>
+        <div class="${match.status === 'settled' ? 'text-[#00ff85]' : ''}">${(match.status || 'open').toUpperCase()}</div>
       </div>
-      <div class="font-medium">
-        ${youA || youB ? '<span class="text-[#00ff85]">YOU vs </span>' : ''}${match.managerA === currentManager.id ? 'Opponent' : 'Manager'} 
-        vs ${match.managerB === currentManager.id ? 'YOU' : 'Opponent'}
-      </div>
-      ${match.winner ? `<div class="text-[10px] mt-1">Winner: <span class="font-semibold">${match.winner === currentManager.id ? 'YOU' : 'OPPONENT'}</span></div>` : ''}
+      <div class="font-medium">${oppA} vs ${oppB}</div>
+      ${match.winner ? `<div class="text-[10px] mt-0.5 text-[#00ff85]">Winner: ${match.winner === currentManager.id ? 'YOU' : 'OPP'}</div>` : ''}
     `;
     wrap.appendChild(div);
   });
@@ -3359,11 +3364,11 @@ function renderFplTailored() {
   const list = $('fpl-managers-list');
   if (list) {
     list.innerHTML = '';
-    // Small note for clarity (badge + note style, no dedicated section)
+    // Small professional note
     if (!list.dataset.noteAdded) {
       const note = document.createElement('div');
-      note.className = 'text-[9px] text-[#666] mb-1';
-      note.textContent = 'Ranked by season total • GW = current gameweek (LIVE = FPL live projection, resolves to FINAL on official sync)';
+      note.className = 'text-[10px] text-[#888] mb-2 pl-1 border-l-2 border-[#333]';
+      note.innerHTML = `Ranked by <span class="text-[#ccc]">season total</span>. <span class="text-[#00ff85]">GW</span> column = current gameweek (LIVE projections update to FINAL on official FPL sync)`;
       list.parentNode.insertBefore(note, list);
       list.dataset.noteAdded = 'true';
     }
@@ -3371,11 +3376,11 @@ function renderFplTailored() {
     fplList.forEach(m => {
       const isMe = m.id === currentManager?.id;
       const row = document.createElement('div');
-      row.className = `flex justify-between items-center px-3 py-1.5 rounded-xl cursor-pointer ${isMe ? 'bg-[#0d2a1f]' : 'hover:bg-[#111]'}`;
+      row.className = `flex justify-between items-center px-3 py-2 rounded-xl cursor-pointer ${isMe ? 'bg-[#0d2a1f]' : 'hover:bg-[#111]'} gap-4`;
       const gwBadge = (m.currentFplSource === 'live-projection')
-        ? '<span class="text-[8px] bg-blue-900 text-blue-300 px-1 rounded ml-0.5 align-super">LIVE</span>'
-        : (m.currentFplSource === 'official-fpl' ? '<span class="text-[8px] bg-[#003322] text-[#00ff85] px-1 rounded ml-0.5 align-super">FINAL</span>' : '');
-      // H2H for this player this week
+        ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-900 text-blue-300 font-mono">LIVE</span>'
+        : (m.currentFplSource === 'official-fpl' ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-[#003322] text-[#00ff85] font-mono">FINAL</span>' : '');
+      // H2H for this player this week - professional
       const h2hMatches = standingsData.h2h || [];
       const myH2h = h2hMatches.find(h => h.managerA === m.id || h.managerB === m.id);
       let h2hHtml = '';
@@ -3388,18 +3393,28 @@ function renderFplTailored() {
         if (typeof myH2h.pointsA === 'number' && typeof myH2h.pointsB === 'number') {
           const myPts = isA ? myH2h.pointsA : myH2h.pointsB;
           const oPts = isA ? myH2h.pointsB : myH2h.pointsA;
-          scoreStr = ` (${myPts}-${oPts})`;
+          scoreStr = ` <span class="font-mono">(${myPts}-${oPts})</span>`;
         }
-        h2hHtml = `<div class="text-[9px] text-[#888] mt-0.5">H2H vs ${oppName}${scoreStr}</div>`;
+        h2hHtml = `<div class="text-[10px] text-[#00ff85] mt-0.5">⚔️ H2H vs ${oppName}${scoreStr}</div>`;
       }
       row.innerHTML = `
-        <div>
-          <div>${withBadge(m.displayName, m.id)} ${m.fplClubName ? `(${m.fplClubName})` : ''} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
+        <div class="min-w-0">
+          <div class="font-semibold truncate">${withBadge(m.displayName, m.id)} ${m.fplClubName ? `<span class="text-[#888] text-xs">(${m.fplClubName})</span>` : ''} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
           ${h2hHtml}
         </div>
-        <div class="font-mono text-right">
-          <div class="font-bold tabular-nums">${m.fplTotal ?? '—'} <span class="text-[9px] text-[#666]">ovr</span></div>
-          <div class="text-xs tabular-nums">GW: ${m.currentFpl ?? '—'} ${gwBadge}</div>
+        <div class="flex items-center gap-3 text-right font-mono flex-shrink-0">
+          <div>
+            <div class="text-[10px] text-[#666] tracking-widest">SEASON</div>
+            <div class="font-bold tabular-nums text-lg leading-none">${m.fplTotal ?? '—'}</div>
+          </div>
+          <div class="w-px h-6 bg-[#333]"></div>
+          <div>
+            <div class="text-[10px] text-[#666] tracking-widest">THIS GW</div>
+            <div class="flex items-center gap-1 justify-end">
+              <span class="font-bold tabular-nums text-lg leading-none">${m.currentFpl ?? '—'}</span>
+              ${gwBadge}
+            </div>
+          </div>
         </div>
       `;
       row.onclick = () => showManagerSquadWithInsight(m.id);
@@ -3407,12 +3422,20 @@ function renderFplTailored() {
     });
   }
 
-  // H2H this/next
+  // H2H this/next - improved display + note on wiring
   if ($('fpl-h2h-this')) {
     const h2h = (standingsData.h2h || []).find(h => h.managerA === currentManager?.id || h.managerB === currentManager?.id);
-    $('fpl-h2h-this').innerHTML = h2h ? `vs ${h2h.managerA === currentManager.id ? 'Opponent' : 'You'}` : 'No H2H this week yet';
+    let html = h2h 
+      ? `vs <span class="font-medium">${h2h.managerA === currentManager.id ? 'Opponent' : (h2h.managerB === currentManager.id ? 'YOU' : 'Opp')}</span>`
+      : '<span class="text-[#888]">No active H2H fixture yet</span>';
+    $('fpl-h2h-this').innerHTML = html;
   }
-  if ($('fpl-h2h-next')) $('fpl-h2h-next').textContent = 'TBD (auto from FPL league)';
+  if ($('fpl-h2h-next')) {
+    const lids = standingsData.leagueIds || {};
+    $('fpl-h2h-next').innerHTML = lids.fplH2h 
+      ? `Pulled from FPL H2H league <span class="font-mono text-[#00ff85]">${lids.fplH2h}</span>` 
+      : 'Set fplH2h league ID in admin for automatic fixtures';
+  }
 
   // Cup info
   if ($('fpl-cup-info')) {
@@ -3496,23 +3519,23 @@ function renderGWWinLeaders() {
   section.id = 'gw-winners-roll';
   section.className = 'mt-6 p-4 bg-[#1a1a1a] border border-[#333] rounded-2xl';
   section.innerHTML = `
-    <div class="flex items-center justify-between mb-2">
+    <div class="flex items-baseline justify-between mb-3">
       <div>
-        <div class="font-semibold text-sm">GW Winners Roll</div>
-        <div class="text-[10px] text-[#666]">Only managers who have won at least one weekly pot. GWs listed horizontally.</div>
+        <div class="font-semibold text-base tracking-tight">GW Winners Roll</div>
+        <div class="text-[10px] text-[#888]">Managers who have won a weekly pot this season</div>
       </div>
-      <div class="text-[10px] text-[#00ff85]">${winnersList.length} champion${winnersList.length > 1 ? 's' : ''}</div>
+      <div class="text-xs px-2 py-0.5 bg-[#003322] text-[#00ff85] rounded font-mono">${winnersList.length} CHAMP${winnersList.length > 1 ? 'S' : ''}</div>
     </div>
-    <div class="space-y-2 overflow-x-auto">
+    <div class="divide-y divide-[#222]">
       ${winnersList.map(mgr => {
         const gwBadges = mgr.rounds.sort((a,b)=>a-b).map(r => 
-          `<span class="inline-block px-1.5 py-0.5 mr-1 mb-1 text-[10px] bg-[#003322] text-[#00ff85] rounded font-mono">GW${r}</span>`
+          `<span class="inline-flex items-center justify-center min-w-[2.25rem] h-5 px-1 text-[10px] bg-[#0a2a1f] text-[#00ff85] rounded font-mono tracking-tighter border border-[#003322]">GW${r}</span>`
         ).join('');
         return `
-          <div class="flex items-center gap-3 py-1 border-b border-[#222] last:border-0">
-            <div class="font-medium min-w-[140px]">${mgr.name}</div>
-            <div class="flex-1 flex flex-wrap">${gwBadges}</div>
-            <div class="text-xs text-[#888] tabular-nums">${mgr.rounds.length} win${mgr.rounds.length>1?'s':''}</div>
+          <div class="flex items-center justify-between py-2 text-sm">
+            <div class="font-medium">${withBadge ? withBadge(mgr.name, mgr.id) : mgr.name}</div>
+            <div class="flex flex-wrap gap-1 justify-end">${gwBadges}</div>
+            <div class="ml-2 text-xs text-[#888] tabular-nums w-8 text-right">${mgr.rounds.length}<span class="opacity-60">×</span></div>
           </div>
         `;
       }).join('')}
@@ -3565,15 +3588,18 @@ function renderBadgeChooser() {
   chooser.id = 'badge-chooser';
   chooser.className = 'mt-4 p-3 bg-[#111] border border-[#333] rounded-xl text-xs';
   chooser.innerHTML = `
-    <div class="mb-1 font-semibold">Choose your display badge (pre-defined only)</div>
-    <div class="flex flex-wrap gap-1 mb-1">
+    <div class="mb-1.5 flex items-center gap-2">
+      <span class="font-semibold">Your badge</span>
+      <span class="text-[10px] text-[#888]">(pre-defined, no uploads)</span>
+    </div>
+    <div class="flex flex-wrap gap-1.5 mb-1.5">
       ${PREDEFINED_BADGES.map(b => `
-        <button data-badge="${b.id}" class="px-2 py-1 border border-[#444] rounded hover:bg-[#222] ${getBadgeForManager(currentManager.id) === b.emoji ? 'bg-[#003322] border-[#00ff85]' : ''}">
+        <button data-badge="${b.id}" class="px-2 py-1 border border-[#444] rounded hover:bg-[#222] text-sm leading-none ${getBadgeForManager(currentManager.id) === b.emoji ? 'bg-[#003322] border-[#00ff85]' : ''}">
           ${b.emoji} ${b.label}
         </button>
       `).join('')}
     </div>
-    <div class="text-[10px] text-[#666]">Current: ${currentBadge || 'None'}. Choice saved locally for this browser (no upload, zero extra bandwidth).</div>
+    <div class="text-[10px] text-[#888]">Current: ${currentBadge || 'None'} • Saved in this browser</div>
   `;
 
   // Place it nicely
