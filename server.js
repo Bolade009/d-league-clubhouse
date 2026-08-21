@@ -2187,7 +2187,7 @@ async function syncFPL(roundsToSync = null) {
   s.settings.lastSyncAt = nowISO();
   await persistStore();
 
-  // H2H wiring on sync
+  // H2H wiring on sync (now uses real fplH2h data, no fake pairs)
   try { await populateH2HFixtures(s); await persistStore(); } catch (e) { console.warn('[H2H] populate failed', e.message); }
 
   // Only auto-settle previous GW once FPL has marked it finished (scores final, usually next day 09:00 per FPL rules).
@@ -2630,38 +2630,14 @@ async function fetchFplLeagueStandings(leagueId, isH2h = false) {
 async function populateH2HFixtures(s) {
   const lids = s.settings.leagueIds || {};
   if (!lids.fplH2h) {
-    s.h2h = s.h2h || [];
-    return;
-  }
-  const h2hData = await fetchFplLeagueStandings(lids.fplH2h, true);
-  if (!h2hData || !h2hData.standings || !Array.isArray(h2hData.standings.results)) {
     s.h2h = [];
     return;
   }
-  const results = h2hData.standings.results;
-  const teamToMgr = {};
-  (s.managers || []).forEach(m => {
-    if (m.fpl && m.fpl.teamId) teamToMgr[String(m.fpl.teamId)] = m.id;
-  });
-  const h2hMgrIds = [];
-  results.forEach(r => {
-    const tid = String(r.entry);
-    if (teamToMgr[tid]) h2hMgrIds.push(teamToMgr[tid]);
-  });
-  if (h2hMgrIds.length < 2) {
-    s.h2h = [];
-    return;
-  }
-  const current = (s.settings.currentRound && s.settings.currentRound.fpl) || 1;
-  s.h2h = [];
-  const n = h2hMgrIds.length;
-  const offset = (current - 1) % n;
-  for (let i = 0; i < Math.floor(n / 2); i++) {
-    let a = (i + offset) % n;
-    let b = (n - 1 - i + offset) % n;
-    if (a === b) continue;
-    s.h2h.push({ managerA: h2hMgrIds[a], managerB: h2hMgrIds[b], round: current });
-  }
+  // Fetch the H2H standings (used in realLeagues.fplH2h for accurate data).
+  // Do NOT create fake pairings here — that caused mismatch with actual FPL H2H fixtures.
+  // The H2H box will display correct rank from FPL data.
+  await fetchFplLeagueStandings(lids.fplH2h, true);
+  s.h2h = [];  // clear fake/derived data
 }
 
 async function fetchUCLStats() {

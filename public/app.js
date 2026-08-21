@@ -1948,23 +1948,7 @@ function renderFullTable() {
     const gwBadge = (m.currentFplSource === 'live-projection')
       ? '<span class="text-[8px] bg-blue-900 text-blue-300 px-1 rounded ml-0.5">LIVE</span>'
       : (m.currentFplSource === 'official-fpl' ? '<span class="text-[8px] bg-[#003322] text-[#00ff85] px-1 rounded ml-0.5">FINAL</span>' : '');
-    // H2H opponent + standing for this player
-    const h2hMatches = standingsData.h2h || [];
-    const myH2h = h2hMatches.find(h => h.managerA === m.id || h.managerB === m.id);
-    let h2hCell = '<span class="text-[#888]">—</span>';
-    if (myH2h) {
-      const isA = myH2h.managerA === m.id;
-      const oppId = isA ? myH2h.managerB : myH2h.managerA;
-      const opp = all.find(x => x.id === oppId);
-      const oppName = opp ? opp.displayName : 'Opp';
-      let scoreStr = '';
-      if (typeof myH2h.pointsA === 'number' && typeof myH2h.pointsB === 'number') {
-        const myPts = isA ? myH2h.pointsA : myH2h.pointsB;
-        const oPts = isA ? myH2h.pointsB : myH2h.pointsA;
-        scoreStr = ` (${myPts}-${oPts})`;
-      }
-      h2hCell = `vs ${oppName}${scoreStr}`;
-    }
+    // H2H per-player display removed from main standings (use dedicated H2H box with fplH2h)
 
     tr.innerHTML = `
       <td class="py-2 pr-4">
@@ -2046,7 +2030,7 @@ async function showManagerProfile(managerId) {
 
         <div class="mt-4 text-xs">
           <div class="flex justify-between"><span>Wallet</span><span class="font-semibold tabular-nums">₦${data.wallet || 0}</span></div>
-          ${data.h2h && data.h2h.length ? (() => { const h = data.h2h[0]; const isA = h.managerA === managerId; const opp = isA ? h.managerB : h.managerA; return `<div class="mt-1 text-[10px] text-[#888]">This week H2H vs ${opp}${h.winner ? ' (settled)' : ''}</div>`; })() : ''}
+          <!-- H2H vs removed from profile (use dedicated box + FPL app for actual opponent) -->
           <div class="flex justify-between"><span>Transaction history</span><span class="font-semibold">See ledger</span></div>
         </div>
 
@@ -2105,6 +2089,7 @@ async function loadTicker() {
 async function loadH2H() {
   const { h2h } = await fetchJSON('/api/h2h');
   const wrap = $('h2h-list');
+  if (!wrap) return;
   wrap.innerHTML = '';
 
   if (!h2h || !h2h.length) {
@@ -3393,27 +3378,10 @@ function renderFplTailored() {
       const gwBadge = (m.currentFplSource === 'live-projection')
         ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-900 text-blue-300 font-mono">LIVE</span>'
         : (m.currentFplSource === 'official-fpl' ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-[#003322] text-[#00ff85] font-mono">FINAL</span>' : '');
-      // H2H for this player this week - professional
-      const h2hMatches = standingsData.h2h || [];
-      const myH2h = h2hMatches.find(h => h.managerA === m.id || h.managerB === m.id);
-      let h2hHtml = '';
-      if (myH2h) {
-        const isA = myH2h.managerA === m.id;
-        const oppId = isA ? myH2h.managerB : myH2h.managerA;
-        const opp = (standingsData.all || []).find(x => x.id === oppId);
-        const oppName = opp ? opp.displayName : 'Opp';
-        let scoreStr = '';
-        if (typeof myH2h.pointsA === 'number' && typeof myH2h.pointsB === 'number') {
-          const myPts = isA ? myH2h.pointsA : myH2h.pointsB;
-          const oPts = isA ? myH2h.pointsB : myH2h.pointsA;
-          scoreStr = ` <span class="font-mono">(${myPts}-${oPts})</span>`;
-        }
-        h2hHtml = `<div class="text-[10px] text-[#00ff85] mt-0.5">⚔️ H2H vs ${oppName}${scoreStr}</div>`;
-      }
+      // H2H per-player removed from main league standings list (now handled in dedicated H2H box using fplH2h ID)
       row.innerHTML = `
         <div class="min-w-0">
           <div class="font-semibold truncate">${withBadge(m.displayName, m.id)} ${m.fplClubName ? `<span class="text-[#888] text-xs">(${m.fplClubName})</span>` : ''} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
-          ${h2hHtml}
         </div>
         <div class="flex items-center gap-3 text-right font-mono flex-shrink-0">
           <div>
@@ -3435,19 +3403,27 @@ function renderFplTailored() {
     });
   }
 
-  // H2H this/next - improved display + note on wiring
+  // H2H box — now wired to use fplH2h league ID for accurate data from FPL
   if ($('fpl-h2h-this')) {
-    const h2h = (standingsData.h2h || []).find(h => h.managerA === currentManager?.id || h.managerB === currentManager?.id);
-    let html = h2h 
-      ? `vs <span class="font-medium">${h2h.managerA === currentManager.id ? 'Opponent' : (h2h.managerB === currentManager.id ? 'YOU' : 'Opp')}</span>`
-      : '<span class="text-[#888]">No active H2H fixture yet</span>';
-    $('fpl-h2h-this').innerHTML = html;
-  }
-  if ($('fpl-h2h-next')) {
     const lids = standingsData.leagueIds || {};
-    $('fpl-h2h-next').innerHTML = lids.fplH2h 
-      ? `Pulled from FPL H2H league <span class="font-mono text-[#00ff85]">${lids.fplH2h}</span>` 
-      : 'Set fplH2h league ID in admin for automatic fixtures';
+    let html = '<span class="text-[#888]">Set fplH2h ID in admin</span>';
+    if (lids.fplH2h) {
+      const h2hData = standingsData.realLeagues && standingsData.realLeagues.fplH2h;
+      if (h2hData && h2hData.standings && h2hData.standings.results && currentManager && currentManager.fpl && currentManager.fpl.teamId) {
+        const userTid = String(currentManager.fpl.teamId);
+        const userRes = h2hData.standings.results.find(r => String(r.entry) === userTid);
+        if (userRes) {
+          html = `H2H Rank: <span class="font-bold text-[#00ff85]">${userRes.rank}</span>`;
+          html += `<div class="text-[9px] text-[#888] mt-0.5">in your H2H league (ID: ${lids.fplH2h})</div>`;
+          html += `<div class="text-[9px] text-[#888]">This week's opponent: check FPL app (Leagues → H2H league)</div>`;
+        } else {
+          html = 'Not participating in the configured H2H league yet.';
+        }
+      } else {
+        html = `H2H league ID set (${lids.fplH2h}) — data loading...`;
+      }
+    }
+    $('fpl-h2h-this').innerHTML = html;
   }
 
   // Cup info
