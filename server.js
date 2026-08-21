@@ -1457,7 +1457,8 @@ const BEEF_LOGIC_MAP = {
   'fwd-fury': 'forwardPoints',
   'chip-wizard': 'chipPerformance',
   'transfer-king': 'transferImpact',
-  'underdog': 'biggestSurprise'
+  'underdog': 'biggestSurprise',
+  'top-scorer': 'highestTotal'
 };
 
 function getManagerRoundData(managerId, round, s) {
@@ -1475,7 +1476,7 @@ function computeBeefWinner(beef, round, s) {
   const parts = [beef.proposerId, ...(beef.opponentIds || []), ...(beef.participants || [])].filter(Boolean);
   if (!parts.length) return null;
 
-  let best = null;
+  let bests = [];
   let bestScore = -Infinity;
 
   for (const pid of parts) {
@@ -1501,17 +1502,22 @@ function computeBeefWinner(beef, round, s) {
     } else if (logic === 'biggestSurprise') {
       const avg = (s.settings.roundAverages && s.settings.roundAverages.fpl) || 65;
       score = data.total > avg * 1.6 ? data.total : 0;
+    } else if (logic === 'highestTotal') {
+      score = data.total;
     } else {
       score = data.total;
     }
 
     if (score > bestScore) {
       bestScore = score;
-      best = s.managers.find(mm => mm.id === pid);
+      bests = [s.managers.find(mm => mm.id === pid)];
+    } else if (score === bestScore && score > 0) {
+      const mgr = s.managers.find(mm => mm.id === pid);
+      if (mgr && !bests.some(b => b.id === mgr.id)) bests.push(mgr);
     }
   }
-  // Only return a winner if there's a positive meaningful score (prevents auto-settle on zero/empty pre-season or bad data)
-  return (bestScore > 0) ? best : null;
+  // Only return winners if positive score. Handle ties by returning array.
+  return (bestScore > 0) ? bests : null;
 }
 
 async function autoSettleBeefs(round) {
@@ -1542,11 +1548,18 @@ async function autoSettleBeefs(round) {
         console.log(`[AUTO BEEF] Skipping ${beef.id} - not all final data for round ${round}`);
         continue;
       }
-      const winner = computeBeefWinner(beef, round, s);
-      if (winner) {
-        const ok = await settleBeef(beef.id, winner.id);
-        if (ok) {
-          await logEvent('beef_auto_settled', { beefId: beef.id, winner: winner.id, round, category: beef.category });
+      const winners = computeBeefWinner(beef, round, s);
+      if (winners && winners.length > 0) {
+        if (winners.length === 1) {
+          const ok = await settleBeef(beef.id, winners[0].id);
+          if (ok) {
+            await logEvent('beef_auto_settled', { beefId: beef.id, winner: winners[0].id, round, category: beef.category });
+          }
+        } else {
+          const ok = await settleBeefTied(beef.id, winners.map(w => w.id));
+          if (ok) {
+            await logEvent('beef_auto_settled', { beefId: beef.id, winners: winners.map(w => w.id), round, category: beef.category, tie: true });
+          }
         }
       }
     } catch (e) {
@@ -1713,6 +1726,46 @@ async function settleBeef(beefId, winnerManagerId) {
   writeAtomicCollection('beefs', s.beefs || []);
   await persistStore();
   await logEvent("beef_settled", { beefId, winner: winner.id, winnerShare });
+  return true;
+}
+
+async function settleBeefTied(beefId, winnerIds) {
+  const s = await loadStore();
+  const beef = (s.beefs || []).find(b => b.id === beefId);
+  if (!beef || ['settled', 'declined'].includes(beef.status)) return false;
+  if (!winnerIds || winnerIds.length === 0) return false;
+
+  const winnerShare = beef.prizePot || 0;
+  const num = winnerIds.length;
+  const baseShare = Math.floor(winnerShare / num);
+
+  winnerIds.forEach((wid, idx) => {
+    const w = s.managers.find(m => m.id === wid);
+    if (!w) return;
+    const amt = (idx === num - 1) ? (winnerShare - baseShare * (num - 1)) : baseShare;
+    s.ledger.push({
+      id: generateId("ldg"),
+      type: "beef_win",
+      managerId: w.id,
+      competition: "fpl",
+      round: (s.settings.currentRound && s.settings.currentRound.fpl) || 0,
+      amount: amt,
+      note: `Won beef "${beef.category}" (tied split of 90% pot, house cut already taken)`,
+      at: nowISO()
+    });
+  });
+
+  beef.status = "settled";
+  beef.winner = winnerIds.map(id => {
+    const m = s.managers.find(mm => mm.id === id);
+    return m ? m.displayName : id;
+  }).join(' & ');
+  beef.winnerIds = winnerIds;
+  beef.settledAt = nowISO();
+
+  writeAtomicCollection('beefs', s.beefs || []);
+  await persistStore();
+  await logEvent("beef_settled", { beefId, winners: winnerIds, winnerShare, tie: true });
   return true;
 }
 
@@ -2133,6 +2186,9 @@ async function syncFPL(roundsToSync = null) {
 
   s.settings.lastSyncAt = nowISO();
   await persistStore();
+
+  // H2H wiring on sync
+  try { await populateH2HFixtures(s); await persistStore(); } catch (e) { console.warn('[H2H] populate failed', e.message); }
 
   // Only auto-settle previous GW once FPL has marked it finished (scores final, usually next day 09:00 per FPL rules).
   // This prevents settling on projections or before lockdown. Reduces need for admin intervention.
@@ -2567,6 +2623,44 @@ async function fetchFplLeagueStandings(leagueId, isH2h = false) {
   } catch (e) {
     console.warn("[FPL League] Failed to fetch standings:", e.message);
     return null;
+  }
+}
+
+// H2H wiring (from previous): on sync/load fetch using fplH2h, map by teamId, derive pairings, store in s.h2h
+async function populateH2HFixtures(s) {
+  const lids = s.settings.leagueIds || {};
+  if (!lids.fplH2h) {
+    s.h2h = s.h2h || [];
+    return;
+  }
+  const h2hData = await fetchFplLeagueStandings(lids.fplH2h, true);
+  if (!h2hData || !h2hData.standings || !Array.isArray(h2hData.standings.results)) {
+    s.h2h = [];
+    return;
+  }
+  const results = h2hData.standings.results;
+  const teamToMgr = {};
+  (s.managers || []).forEach(m => {
+    if (m.fpl && m.fpl.teamId) teamToMgr[String(m.fpl.teamId)] = m.id;
+  });
+  const h2hMgrIds = [];
+  results.forEach(r => {
+    const tid = String(r.entry);
+    if (teamToMgr[tid]) h2hMgrIds.push(teamToMgr[tid]);
+  });
+  if (h2hMgrIds.length < 2) {
+    s.h2h = [];
+    return;
+  }
+  const current = (s.settings.currentRound && s.settings.currentRound.fpl) || 1;
+  s.h2h = [];
+  const n = h2hMgrIds.length;
+  const offset = (current - 1) % n;
+  for (let i = 0; i < Math.floor(n / 2); i++) {
+    let a = (i + offset) % n;
+    let b = (n - 1 - i + offset) % n;
+    if (a === b) continue;
+    s.h2h.push({ managerA: h2hMgrIds[a], managerB: h2hMgrIds[b], round: current });
   }
 }
 
@@ -4039,6 +4133,7 @@ app.post("/api/admin/set-leagues", async (req, res) => {
   writeAtomicSidecar(s);
   writeAtomicCollection('settings', s.settings);
   await persistStore();
+  try { await populateH2HFixtures(s); await persistStore(); } catch (e) {}
   await logEvent("leagues_configured", { fplClassic, fplH2h, ucl });
   res.json({ ok: true, leagueIds: s.settings.leagueIds, message: "League IDs saved. Standings will use real FPL data where possible." });
 });
@@ -4493,7 +4588,8 @@ app.post("/api/beef/respond-join", async (req, res) => {
   if (!beef) return res.status(404).json({ error: "Beef not found" });
 
   const currentParts = beef.participants || [beef.proposerId, ...(beef.opponentIds || [])];
-  if (!currentParts.includes(mgr.id)) {
+  const isAdmin = mgr.email && mgr.email.toLowerCase() === 'bolade.oladejo@gmail.com';
+  if (!currentParts.includes(mgr.id) && !isAdmin) {
     return res.status(403).json({ error: "Not a current participant" });
   }
 
@@ -4501,22 +4597,29 @@ app.post("/api/beef/respond-join", async (req, res) => {
   if (!beef.joinApprovals[requesterId]) beef.joinApprovals[requesterId] = [];
 
   if (approve) {
-    if (!beef.joinApprovals[requesterId].includes(mgr.id)) {
-      beef.joinApprovals[requesterId].push(mgr.id);
-    }
-    // If all current participants have approved
-    if (beef.joinApprovals[requesterId].length >= currentParts.length) {
+    if (isAdmin) {
+      // Admin can directly approve (bypasses participant count)
       if (!beef.participants) beef.participants = currentParts;
       if (!beef.participants.includes(requesterId)) beef.participants.push(requesterId);
       beef.joinRequests = (beef.joinRequests || []).filter(id => id !== requesterId);
-      // keep approvals for history or clear
-      await logEvent("beef_join_approved", { beefId, requester: requesterId, approver: mgr.email });
+      await logEvent("beef_join_approved", { beefId, requester: requesterId, approver: mgr.email, byAdmin: true });
+    } else {
+      if (!beef.joinApprovals[requesterId].includes(mgr.id)) {
+        beef.joinApprovals[requesterId].push(mgr.id);
+      }
+      // Only ONE participant approval needed now (reduced stress)
+      if (beef.joinApprovals[requesterId].length >= 1) {
+        if (!beef.participants) beef.participants = currentParts;
+        if (!beef.participants.includes(requesterId)) beef.participants.push(requesterId);
+        beef.joinRequests = (beef.joinRequests || []).filter(id => id !== requesterId);
+        await logEvent("beef_join_approved", { beefId, requester: requesterId, approver: mgr.email });
+      }
     }
   } else {
-    // Decline rejects the join
+    // Decline rejects the join (admin or participant can decline)
     beef.joinRequests = (beef.joinRequests || []).filter(id => id !== requesterId);
     delete beef.joinApprovals[requesterId];
-    await logEvent("beef_join_declined", { beefId, requester: requesterId, decliner: mgr.email });
+    await logEvent("beef_join_declined", { beefId, requester: requesterId, decliner: mgr.email, byAdmin: isAdmin });
   }
 
   writeAtomicCollection('beefs', s.beefs || []);
@@ -4777,6 +4880,8 @@ app.get("/api/standings", async (req, res) => {
   if (DEMO_MODE) await seedDemoData();
   const lb = getFullLeaderboard();
   const s = getStore();
+  // H2H on load
+  try { await populateH2HFixtures(s); } catch (e) {}
   const projections = await getProjectedPayouts();
 
   // If admin has configured real league IDs, fetch and attach for accurate tracking
@@ -5158,6 +5263,7 @@ app.get("/api/community", async (req, res) => {
 // H2H, Cup, Challenges endpoints (read mostly)
 app.get("/api/h2h", async (req, res) => {
   const s = await loadStore();
+  try { await populateH2HFixtures(s); } catch (e) {}
   res.json({ h2h: s.h2h });
 });
 

@@ -772,6 +772,17 @@ function renderActiveBeefs() {
     const isParticipant = !!myId && parts.includes(myId);
     const alreadyPaid = paidDetails.some(p => p.managerId === myId);
     const showPayStake = isParticipant && !alreadyPaid && !b.locked;
+    const isAdmin = currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com';
+    const nameMap = {};
+    if (standingsData && standingsData.all) standingsData.all.forEach(m => { nameMap[m.id] = m.displayName; });
+    let pendingHtml = '';
+    if ((isParticipant || isAdmin) && b.joinRequests && b.joinRequests.length > 0) {
+      const reqs = b.joinRequests.map(rid => {
+        const nm = nameMap[rid] || rid;
+        return `${nm} <button onclick="respondToJoin('${b.id}','${rid}',true);event.stopImmediatePropagation()" class="bg-[#00ff85] text-black px-1 rounded text-[8px]">Approve</button><button onclick="respondToJoin('${b.id}','${rid}',false);event.stopImmediatePropagation()" class="bg-red-600 text-white px-1 rounded text-[8px]">Decline</button>`;
+      }).join(' ');
+      pendingHtml = `<div class="mt-1 text-[9px] text-yellow-400">Pending joins: ${reqs}</div>`;
+    }
 
     html += `
       <div class="bg-black p-3 rounded-2xl border border-[#ffaa00]">
@@ -791,6 +802,7 @@ function renderActiveBeefs() {
           ${currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com' ? `<button onclick="adminCancelBeef('${b.id}')" class="px-2 py-0.5 bg-red-700 text-white rounded">${b.status === 'settled' ? 'UNDO SETTLEMENT (restore pot)' : 'CANCEL (admin)'}</button>` : ''}
           ${currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com' && !b.locked ? `<button onclick="adminLockBeef('${b.id}')" class="px-2 py-0.5 bg-orange-600 text-white rounded">LOCK (admin)</button>` : ''}
         </div>
+        ${pendingHtml}
       </div>
     `;
   });
@@ -3350,7 +3362,8 @@ const BEEF_PRESETS = [
   { id: 'fwd-fury', name: "Forward Fury", logic: 'forwardPoints', desc: "Top forward returns" },
   { id: 'chip-wizard', name: "Chip Wizard", logic: 'chipPerformance', desc: "Best chip performance" },
   { id: 'transfer-king', name: "Transfer King", logic: 'transferImpact', desc: "Best transfer impact" },
-  { id: 'underdog', name: "Underdog Hero", logic: 'biggestSurprise', desc: "Biggest surprise points haul" }
+  { id: 'underdog', name: "Underdog Hero", logic: 'biggestSurprise', desc: "Biggest surprise points haul" },
+  { id: 'top-scorer', name: "Top Scorer", logic: 'highestTotal', desc: "Most points this gameweek" }
 ];
 
 function renderFplTailored() {
