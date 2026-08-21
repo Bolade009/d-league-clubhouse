@@ -3414,8 +3414,12 @@ function renderFplTailored() {
         const userRes = h2hData.standings.results.find(r => String(r.entry) === userTid);
         if (userRes) {
           html = `H2H Rank: <span class="font-bold text-[#00ff85]">${userRes.rank}</span>`;
-          html += `<div class="text-[9px] text-[#888] mt-0.5">in your H2H league (ID: ${lids.fplH2h})</div>`;
-          html += `<div class="text-[9px] text-[#888]">This week's opponent: check FPL app (Leagues → H2H league)</div>`;
+          if (userRes.matches_won !== undefined) {
+            html += ` <span class="text-xs">(${userRes.matches_won}W-${userRes.matches_drawn || 0}D-${userRes.matches_lost || 0}L)</span>`;
+          }
+          html += `<div class="text-[9px] mt-1">For: ${userRes.points_for || 0} • Against: ${userRes.points_against || 0}</div>`;
+          html += `<div class="text-[9px] text-[#888]">Weekly opponent (by MW/GW) shown in FPL app under Leagues → your H2H league.</div>`;
+          html += `<div class="text-[8px] text-[#666]">API gives table/rank; exact this-week match not in public standings JSON.</div>`;
         } else {
           html = 'Not participating in the configured H2H league yet.';
         }
