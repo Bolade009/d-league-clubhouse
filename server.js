@@ -2112,10 +2112,23 @@ async function syncFPL(roundsToSync = null) {
       try {
         const picksData = await safeFetchJSON(picksUrl);
         if (picksData) {
+          const ev = eventMap[r];
+          const eventFinished = !!(ev && ev.finished);
           if (picksData.entry_history && typeof picksData.entry_history.points === "number") {
             points = picksData.entry_history.points;
-            isFinal = true;
             source = "official-fpl";
+            isFinal = eventFinished;
+            if (!eventFinished) {
+              // GW just started or still ongoing — do not flip to FINAL yet.
+              // Use live projection for badge/display, even if FPL gives a running total.
+              source = "live-projection";
+              isFinal = false;
+              const live = await safeFetchJSON(`${FPL_BASE}/event/${r}/live/`);
+              if (live && picksData.picks) {
+                const livePoints = computeLivePointsFromPicks(picksData.picks, live);
+                if (livePoints != null) points = livePoints;
+              }
+            }
           } else if (r === current) {
             const live = await safeFetchJSON(`${FPL_BASE}/event/${r}/live/`);
             if (live && picksData.picks) {
@@ -2168,7 +2181,7 @@ async function syncFPL(roundsToSync = null) {
           if (entry && entry.current_event === r && typeof entry.summary_event_points === "number") {
             points = entry.summary_event_points;
             source = "official-fpl";
-            isFinal = true;
+            isFinal = !!(eventMap[r] && eventMap[r].finished);
           }
         }
       } catch (e) {
