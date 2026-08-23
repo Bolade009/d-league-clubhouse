@@ -1479,8 +1479,6 @@ const BEEF_LOGIC_MAP = {
   'mid-maestro': 'midfieldPoints',
   'fwd-fury': 'forwardPoints',
   'chip-wizard': 'chipPerformance',
-  'transfer-king': 'transferImpact',
-  'underdog': 'biggestSurprise',
   'top-scorer': 'highestTotal'
 };
 
@@ -1511,7 +1509,8 @@ function computeBeefWinner(beef, round, s) {
       const cap = picks.find(p => p.multiplier > 1);
       score = cap ? (cap.points || 0) : 0;
     } else if (logic === 'highestBench') {
-      score = picks.filter(p => (p.multiplier === 0 || p.multiplier == null)).reduce((sum, p) => sum + (p.points || 0), 0);
+      // Bench points independent of bench boost chip: look at bench players (position > 11)
+      score = picks.filter(p => (p.position || 0) > 11).reduce((sum, p) => sum + (p.points || 0), 0);
     } else if (logic === 'defencePoints') {
       score = picks.filter(p => p.type === 2).reduce((sum, p) => sum + (p.points || 0), 0);
     } else if (logic === 'midfieldPoints') {
@@ -1520,11 +1519,6 @@ function computeBeefWinner(beef, round, s) {
       score = picks.filter(p => p.type === 4).reduce((sum, p) => sum + (p.points || 0), 0);
     } else if (logic === 'chipPerformance') {
       score = data.chip ? (data.total * 1.4) : data.total; // slight boost for chip use
-    } else if (logic === 'transferImpact') {
-      score = data.total; // could enhance with transfer count if stored
-    } else if (logic === 'biggestSurprise') {
-      const avg = (s.settings.roundAverages && s.settings.roundAverages.fpl) || 65;
-      score = data.total > avg * 1.6 ? data.total : 0;
     } else if (logic === 'highestTotal') {
       score = data.total;
     } else {

@@ -685,23 +685,89 @@ function showLiveProjection() {
       const liveRes = await fetch(`https://fantasy.premierleague.com/api/event/${gw}/live/`);
       const liveData = await liveRes.json();
 
+      // Build player name map from bootstrap
+      const playerMap = {};
+      (bs.elements || []).forEach(el => {
+        playerMap[el.id] = {
+          name: el.web_name,
+          team: (bs.teams || []).find(t => t.id === el.team)?.short_name || 'UNK'
+        };
+      });
+
       let total = 0;
+      const playerRows = [];
+
       if (picksData && picksData.picks && liveData && liveData.elements) {
         for (const p of picksData.picks) {
           const el = liveData.elements.find(e => e.id === p.element);
           if (el && el.stats) {
-            total += (el.stats.total_points || 0) * (p.multiplier || 1);
+            const pts = (el.stats.total_points || 0) * (p.multiplier || 1);
+            total += pts;
+            const info = playerMap[p.element] || {};
+            const isCap = (p.multiplier || 1) > 1;
+            const bps = el.stats.bps || 0;
+            const bonus = el.stats.bonus || 0;
+
+            playerRows.push({
+              name: info.name || `Player ${p.element}`,
+              team: info.team || '',
+              livePts: pts,
+              bps,
+              bonus,
+              multiplier: p.multiplier,
+              isStarting: (p.position || 0) <= 11
+            });
           }
         }
       }
 
-      const msg = `Fresh Live GW${gw} Projection (from FPL API right now for YOU): ${Math.round(total)} pts\n\nThis is computed from your squad's current picks + live player points.\n\n"Simulate next game week" uses a variance model for what you MAY get.\n\nOpening lineup for details...`;
-      alert(msg);
+      // Sort: starters first, then by livePts
+      playerRows.sort((a, b) => {
+        if (a.isStarting !== b.isStarting) return b.isStarting - a.isStarting;
+        return b.livePts - a.livePts;
+      });
 
-      const viewer = $('lineup-viewer');
-      if (viewer && typeof loadAndRenderLineup === 'function') {
-        loadAndRenderLineup(currentManager.id, viewer);
-      }
+      const modal = $('modal');
+      const c = $('modal-content');
+
+      let rowsHtml = playerRows.map(r => `
+        <tr class="border-b border-[#333] text-sm">
+          <td class="p-1 font-medium">${r.name} ${r.team ? `(${r.team})` : ''}</td>
+          <td class="p-1 text-right font-mono">${r.livePts}</td>
+          <td class="p-1 text-right text-xs text-[#888]">${r.bps} bps${r.bonus > 0 ? ` +${r.bonus}b` : ''}</td>
+          <td class="p-1 text-center text-xs">${r.multiplier > 1 ? (r.multiplier === 2 ? 'C' : 'TC') : (r.multiplier === 0 ? 'Bench' : '')}</td>
+        </tr>
+      `).join('');
+
+      c.innerHTML = `
+        <div>
+          <div class="font-bold text-xl mb-2 text-[#00ff85]">Live GW${gw} — like livefpl.net</div>
+          <div class="text-sm mb-3">Fresh from FPL live API. Total projected right now: <span class="font-bold text-lg">${Math.round(total)}</span> pts</div>
+          <table class="w-full text-xs mb-4">
+            <thead>
+              <tr class="text-[#888] text-left border-b border-[#444]">
+                <th class="p-1">Player</th>
+                <th class="p-1 text-right">Live Pts</th>
+                <th class="p-1 text-right">BPS / Bonus</th>
+                <th class="p-1 text-center">Mult</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml || '<tr><td colspan="4" class="p-2 text-[#888]">No live data yet</td></tr>'}
+            </tbody>
+          </table>
+          <div class="text-[10px] text-[#888] mb-2">
+            BPS = Bonus Point System. livefpl.net uses this + xG models for even better estimates.<br>
+            Here we show raw FPL live + bps. Open lineup viewer for more.
+          </div>
+          <button onclick="if (typeof loadAndRenderLineup === 'function') loadAndRenderLineup(currentManager.id, $('lineup-viewer')); closeModal();" 
+                  class="w-full py-2 bg-[#00ff85] text-black font-bold rounded-xl text-sm">View Full Lineup</button>
+        </div>
+      `;
+
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+
     } catch (e) {
       alert('Fresh fetch failed: ' + (e.message || e) + '. Falling back to cached.');
       const proj = currentManager.currentFpl != null ? currentManager.currentFpl : '—';
@@ -3326,16 +3392,11 @@ const UCL_CHALLENGES = [
 const SPONSORED_AWARDS = [
   { id: 'cap-clutch', name: "Captain Clutch Award", sponsor: "Local Legend FC", desc: "Highest captain score this week" },
   { id: 'bench-bandit', name: "Bench Bandit", sponsor: "Mystery Manager", desc: "Most bench points" },
-  { id: 'rags-riches', name: "Rags to Riches", sponsor: "DLeague Bank", desc: "Biggest points climb this GW" },
   { id: 'chip-wizard', name: "Chip Wizard", sponsor: "Fantasy Guru", desc: "Best chip performance" },
-  { id: 'transfer-king', name: "Transfer King", sponsor: "Scout Pro", desc: "Best transfer impact" },
-  { id: 'underdog', name: "Underdog Hero", sponsor: "Underdog FC", desc: "Biggest surprise points haul" },
   { id: 'clean-king', name: "Clean Sheet King", sponsor: "Defence United", desc: "Most clean sheets + points from defence" },
   { id: 'mid-maestro', name: "Midfield Maestro", sponsor: "Pass Masters", desc: "Highest points from midfielders" },
   { id: 'fwd-fury', name: "Forward Fury", sponsor: "Striker Syndicate", desc: "Top attacking returns from forwards" },
-  { id: 'sub-star', name: "Super Sub", sponsor: "Bench Boosters", desc: "Highest points from a sub this week" },
-  { id: 'rank-rise', name: "Rank Riser", sponsor: "Climb Club", desc: "Biggest rank improvement in D League this GW" },
-  { id: 'value-viking', name: "Value Viking", sponsor: "Budget Ballers", desc: "Best points per million spent this week" }
+  { id: 'top-scorer', name: "Top Scorer", sponsor: "Goal Getters", desc: "Most points this gameweek" }
 ];
 
 // Preset options for personal beef / challenges with programmable logic (auto determine winner after GW/MD)
@@ -3346,8 +3407,6 @@ const BEEF_PRESETS = [
   { id: 'mid-maestro', name: "Midfield Maestro", logic: 'midfieldPoints', desc: "Highest midfield points" },
   { id: 'fwd-fury', name: "Forward Fury", logic: 'forwardPoints', desc: "Top forward returns" },
   { id: 'chip-wizard', name: "Chip Wizard", logic: 'chipPerformance', desc: "Best chip performance" },
-  { id: 'transfer-king', name: "Transfer King", logic: 'transferImpact', desc: "Best transfer impact" },
-  { id: 'underdog', name: "Underdog Hero", logic: 'biggestSurprise', desc: "Biggest surprise points haul" },
   { id: 'top-scorer', name: "Top Scorer", logic: 'highestTotal', desc: "Most points this gameweek" }
 ];
 
@@ -3973,7 +4032,8 @@ function computeWinnerForLogic(logic, roundData = {}) {
       const cap = picks.find(p => p.multiplier > 1);
       score = cap ? (cap.points || 0) : 0;
     } else if (logic === 'highestBench') {
-      score = picks.filter(p => p.multiplier === 0).reduce((sum, p) => sum + (p.points || 0), 0);
+      // Bench points independent of bench boost chip: look at bench players (position > 11)
+      score = picks.filter(p => (p.position || 0) > 11).reduce((sum, p) => sum + (p.points || 0), 0);
     } else if (logic === 'defencePoints') {
       score = picks.filter(p => p.type === 2).reduce((sum, p) => sum + (p.points || 0), 0);
     } else if (logic === 'midfieldPoints') {
@@ -3982,10 +4042,8 @@ function computeWinnerForLogic(logic, roundData = {}) {
       score = picks.filter(p => p.type === 4).reduce((sum, p) => sum + (p.points || 0), 0);
     } else if (logic === 'chipPerformance') {
       score = m.recentChip ? recent * 1.5 : recent; // simple boost if chipped
-    } else if (logic === 'transferImpact') {
-      score = (m.recentTransfers || 0) > 0 ? recent : 0;
-    } else if (logic === 'biggestSurprise') {
-      score = recent > (standingsData.roundAverages?.fpl || 60) * 1.5 ? recent : 0;
+    } else if (logic === 'highestTotal') {
+      score = recent;
     } else {
       score = recent; // default
     }
