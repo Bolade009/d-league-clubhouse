@@ -1359,11 +1359,34 @@ async function settleWeeklyPot(comp, round) {
   if (paidCount === 0) return 0;
 
   const pot = calculateRoundPot(comp, round, paidCount);
-  // Find top scorer
-  const scores = s.scores.filter(sc => sc.competition === comp && sc.round === round && typeof sc.points === 'number' && sc.isFinal);
+
+  // Fetch fresh points from FPL /picks/ for this round to guarantee settlement uses exact FPL final points.
+  // This ensures no disparity from stored/live data affects who wins the pot.
+  let scores = [];
+  const managersWithTeam = eligible.filter(m => isFullyPaidFor(m, comp) && m.fpl && m.fpl.teamId);
+  for (const mgr of managersWithTeam) {
+    try {
+      const pUrl = `${FPL_BASE}/entry/${mgr.fpl.teamId}/event/${round}/picks/`;
+      const pData = await safeFetchJSON(pUrl);
+      if (pData && pData.entry_history && typeof pData.entry_history.points === 'number') {
+        scores.push({ managerId: mgr.id, points: pData.entry_history.points });
+      }
+    } catch (e) {
+      console.warn(`[SETTLE] could not fetch fresh FPL points for mgr ${mgr.id} round ${round}: ${e.message}`);
+    }
+  }
+  if (scores.length === 0) {
+    // Fallback to stored final scores if fetch failed for all
+    scores = s.scores.filter(sc => sc.competition === comp && sc.round === round && typeof sc.points === 'number' && sc.isFinal);
+  }
   if (!scores.length) return 0;
   scores.sort((a, b) => b.points - a.points);
   const winner = scores[0];
+
+  // Ensure the store reflects the fresh official FPL points for this round (isFinal)
+  scores.forEach(sc => {
+    upsertScore(s, sc.managerId, comp, round, sc.points, 'official-fpl', true, {});
+  });
 
   // Credit winner(s) - split pot equally if tie
   const maxPoints = Math.max(...scores.map(sc => sc.points));
@@ -2108,29 +2131,23 @@ async function syncFPL(roundsToSync = null) {
       let source = "pending";
       let isFinal = false;
       let extra = {};
+      let live = null;
 
       try {
         const picksData = await safeFetchJSON(picksUrl);
         if (picksData) {
           const ev = eventMap[r];
           const eventFinished = !!(ev && ev.finished);
+
+          // Always fetch live data for per-player breakdown (stats, bps etc). This is cheap and used for lineup viewer.
+          live = await safeFetchJSON(`${FPL_BASE}/event/${r}/live/`);
+
           if (picksData.entry_history && typeof picksData.entry_history.points === "number") {
+            // Prefer FPL's reported points from entry_history (what the official FPL site/app shows for the GW points)
             points = picksData.entry_history.points;
-            source = "official-fpl";
+            source = eventFinished ? "official-fpl" : "live-projection";
             isFinal = eventFinished;
-            if (!eventFinished) {
-              // GW just started or still ongoing — do not flip to FINAL yet.
-              // Use live projection for badge/display, even if FPL gives a running total.
-              source = "live-projection";
-              isFinal = false;
-              const live = await safeFetchJSON(`${FPL_BASE}/event/${r}/live/`);
-              if (live && picksData.picks) {
-                const livePoints = computeLivePointsFromPicks(picksData.picks, live);
-                if (livePoints != null) points = livePoints;
-              }
-            }
           } else if (r === current) {
-            const live = await safeFetchJSON(`${FPL_BASE}/event/${r}/live/`);
             if (live && picksData.picks) {
               points = computeLivePointsFromPicks(picksData.picks, live);
               source = "live-projection";
@@ -2138,7 +2155,7 @@ async function syncFPL(roundsToSync = null) {
             }
           }
 
-          // Build per-player points map for lineup (projected or actual)
+          // Build per-player points map for lineup using live data
           let pickPoints = {};
           if (picksData.picks && live && live.elements) {
             for (const p of picksData.picks) {
