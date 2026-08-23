@@ -1887,13 +1887,8 @@ async function previewBeefAutoSettle() {
 
 async function loadStandings() {
   standingsData = await fetchJSON('/api/standings');
-  // Attach H2H for per-player display in lists (purely for UI rendering)
-  try {
-    const h2hRes = await fetchJSON('/api/h2h');
-    standingsData.h2h = h2hRes.h2h || [];
-  } catch (e) {
-    standingsData.h2h = standingsData.h2h || [];
-  }
+  // H2H league data is now in standingsData.realLeagues.fplH2h (from configured fplH2h ID)
+  // Old internal h2h (fake pairings) cleared - we use real FPL H2H standings.
   // Legacy combined/old race + table renders removed (their containers no longer exist after separate FPL/UCL UI cleanup).
   // standingsData.fpl / .ucl / .all are still used by renderFplTailored, renderUclTailored, lineup viewer, etc.
   // Auto switch to current mode after load
@@ -2153,33 +2148,11 @@ async function loadTicker() {
 }
 
 async function loadH2H() {
-  const { h2h } = await fetchJSON('/api/h2h');
+  // Deprecated - we now use real FPL H2H league standings via fplH2h ID (see renderFplTailored and H2H box).
+  // Old internal derived matches removed. Real H2H rank/data is enriched from /api/standings realLeagues.fplH2h.
   const wrap = $('h2h-list');
   if (!wrap) return;
-  wrap.innerHTML = '';
-
-  if (!h2h || !h2h.length) {
-    wrap.innerHTML = `<div class="text-xs text-[#888]">No active H2H matches this round.</div>`;
-    return;
-  }
-
-  h2h.forEach(match => {
-    const div = document.createElement('div');
-    div.className = 'h2h-card border border-[#333] p-2 rounded mb-1 text-sm';
-    const youA = match.managerA === currentManager.id;
-    const youB = match.managerB === currentManager.id;
-    const oppA = youA ? 'YOU' : (standingsData.all || []).find(x=>x.id===match.managerA)?.displayName || 'A';
-    const oppB = youB ? 'YOU' : (standingsData.all || []).find(x=>x.id===match.managerB)?.displayName || 'B';
-    div.innerHTML = `
-      <div class="flex justify-between text-xs mb-1 text-[#888]">
-        <div>GW${match.round} • H2H (pot)</div>
-        <div class="${match.status === 'settled' ? 'text-[#00ff85]' : ''}">${(match.status || 'open').toUpperCase()}</div>
-      </div>
-      <div class="font-medium">${oppA} vs ${oppB}</div>
-      ${match.winner ? `<div class="text-[10px] mt-0.5 text-[#00ff85]">Winner: ${match.winner === currentManager.id ? 'YOU' : 'OPP'}</div>` : ''}
-    `;
-    wrap.appendChild(div);
-  });
+  wrap.innerHTML = `<div class="text-xs text-[#888]">H2H league data now shown in main FPL list + H2H box (real standings from your fplH2h ID).</div>`;
 }
 
 
@@ -3437,10 +3410,19 @@ function renderFplTailored() {
       const gwBadge = (m.currentFplSource === 'live-projection')
         ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-900 text-blue-300 font-mono">LIVE</span>'
         : (m.currentFplSource === 'official-fpl' ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-[#003322] text-[#00ff85] font-mono">FINAL</span>' : '');
-      // H2H per-player removed from main league standings list (now handled in dedicated H2H box using fplH2h ID)
+      // H2H league data from fplH2h (real FPL H2H standings, mapped by teamId)
+      let h2hHtml = '';
+      const h2hResults = (standingsData.realLeagues && standingsData.realLeagues.fplH2h && standingsData.realLeagues.fplH2h.standings && standingsData.realLeagues.fplH2h.standings.results) || [];
+      if (h2hResults.length && m.fpl && m.fpl.teamId) {
+        const h2hRes = h2hResults.find(r => String(r.entry) === String(m.fpl.teamId));
+        if (h2hRes) {
+          h2hHtml = `<div class="text-[9px] text-[#00ff85] mt-0.5">H2H Rank: ${h2hRes.rank} (P: ${h2hRes.points_for || 0}/${h2hRes.points_against || 0})</div>`;
+        }
+      }
       row.innerHTML = `
         <div class="min-w-0">
           <div class="font-semibold truncate">${withBadge(m.displayName, m.id)} ${m.fplClubName ? `<span class="text-[#888] text-xs">(${m.fplClubName})</span>` : ''} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
+          ${h2hHtml}
         </div>
         <div class="flex items-center gap-3 text-right font-mono flex-shrink-0">
           <div>
@@ -3462,28 +3444,44 @@ function renderFplTailored() {
     });
   }
 
-  // H2H box — now wired to use fplH2h league ID for accurate data from FPL
+  // H2H box — real data from fplH2h league standings (not derived/fake)
   if ($('fpl-h2h-this')) {
     const lids = standingsData.leagueIds || {};
     let html = '<span class="text-[#888]">Set fplH2h ID in admin</span>';
     if (lids.fplH2h) {
       const h2hData = standingsData.realLeagues && standingsData.realLeagues.fplH2h;
-      if (h2hData && h2hData.standings && h2hData.standings.results && currentManager && currentManager.fpl && currentManager.fpl.teamId) {
-        const userTid = String(currentManager.fpl.teamId);
-        const userRes = h2hData.standings.results.find(r => String(r.entry) === userTid);
-        if (userRes) {
-          html = `H2H Rank: <span class="font-bold text-[#00ff85]">${userRes.rank}</span>`;
-          if (userRes.matches_won !== undefined) {
-            html += ` <span class="text-xs">(${userRes.matches_won}W-${userRes.matches_drawn || 0}D-${userRes.matches_lost || 0}L)</span>`;
+      if (h2hData && h2hData.standings && h2hData.standings.results) {
+        const results = h2hData.standings.results;
+        // Find D-League participants in H2H league
+        const dleagueInH2H = (standingsData.fpl || []).map(m => {
+          const res = results.find(r => String(r.entry) === String(m.fpl && m.fpl.teamId || ''));
+          return res ? { ...m, h2hRes: res } : null;
+        }).filter(Boolean).sort((a,b) => (a.h2hRes.rank || 999) - (b.h2hRes.rank || 999));
+
+        if (currentManager && currentManager.fpl && currentManager.fpl.teamId) {
+          const userTid = String(currentManager.fpl.teamId);
+          const userRes = results.find(r => String(r.entry) === userTid);
+          if (userRes) {
+            html = `Your H2H Rank: <span class="font-bold text-[#00ff85]">${userRes.rank}</span>`;
+            if (userRes.matches_won !== undefined) {
+              html += ` <span class="text-xs">(${userRes.matches_won}W-${userRes.matches_drawn || 0}D-${userRes.matches_lost || 0}L)</span>`;
+            }
+            html += `<div class="text-[9px] mt-1">For: ${userRes.points_for || 0} • Against: ${userRes.points_against || 0}</div>`;
           }
-          html += `<div class="text-[9px] mt-1">For: ${userRes.points_for || 0} • Against: ${userRes.points_against || 0}</div>`;
-          html += `<div class="text-[9px] text-[#888]">Weekly opponent (by MW/GW) shown in FPL app under Leagues → your H2H league.</div>`;
-          html += `<div class="text-[8px] text-[#666]">API gives table/rank; exact this-week match not in public standings JSON.</div>`;
-        } else {
-          html = 'Not participating in the configured H2H league yet.';
         }
+
+        if (dleagueInH2H.length) {
+          html += `<div class="text-[10px] mt-2 font-semibold">D-League in H2H:</div>`;
+          html += dleagueInH2H.slice(0, 5).map(item => {
+            const r = item.h2hRes;
+            return `<div class="text-[9px]">${r.rank}. ${item.displayName} (P:${r.points_for||0}/${r.points_against||0})</div>`;
+          }).join('');
+          if (dleagueInH2H.length > 5) html += `<div class="text-[8px] text-[#888]">... +${dleagueInH2H.length-5} more</div>`;
+        }
+
+        html += `<div class="text-[9px] text-[#888] mt-1">Weekly opponent shown in FPL app (Leagues → H2H). API provides the H2H table/rank accurately.</div>`;
       } else {
-        html = `H2H league ID set (${lids.fplH2h}) — data loading...`;
+        html = `H2H league ID set (${lids.fplH2h}) — loading data...`;
       }
     }
     $('fpl-h2h-this').innerHTML = html;
