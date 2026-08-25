@@ -4020,25 +4020,38 @@ async function refreshAdminBeefsList() {
         const presetB = (BEEF_PRESETS || []).find(p => p.id === bf.category);
         const bDesc = presetB ? presetB.desc : bf.category;
         const lockBtn = bf.locked ? '' : `<button onclick="adminLockBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-orange-600 text-white text-[10px] rounded">LOCK</button>`;
-        let winPreview = '';
-        let settleBtn = '';
         const isSettled = ['settled', 'declined', 'cancelled'].includes((bf.status || '').toLowerCase());
-        if (!isSettled && bf.winnerPreview && bf.winnerPreview.length) {
-          const nms = bf.winnerPreview.map(w => w.displayName).join(' / ');
-          winPreview = `<div class="text-[10px] text-[#00ff85] mt-0.5">Winner preview (based on data for deadline/prev GW): ${nms}</div>`;
-          if (bf.winnerPreview.length === 1) {
-            settleBtn = `<button onclick="confirmAndSettleBeef('${bf.id}', '${bf.winnerPreview[0].id}')" class="mt-1 px-2 py-0.5 bg-green-700 text-white text-[10px] rounded">SETTLE (use preview winner)</button>`;
+        // Build list of participants for dropdown (unique)
+        const beefParts = [];
+        const seenP = new Set();
+        const addPart = (id, nm) => { if (id && !seenP.has(id)) { seenP.add(id); beefParts.push({id, name: nm || id}); } };
+        if (bf.proposerId) addPart(bf.proposerId, bf.proposerName);
+        (bf.opponentIds || []).forEach((id, i) => addPart(id, (bf.opponentNames||[])[i]));
+        (bf.participants || []).forEach((id, i) => addPart(id, (bf.participantNames||[])[i]));
+        let winPreview = '';
+        let settleUI = '';
+        if (!isSettled) {
+          if (bf.winnerPreview && bf.winnerPreview.length) {
+            const nms = bf.winnerPreview.map(w => w.displayName).join(' / ');
+            winPreview = `<div class="text-[10px] text-[#00ff85] mt-0.5">Preview winner (from final data): ${nms}</div>`;
           }
-        }
-        if (!isSettled && !settleBtn) {
-          settleBtn = `<button onclick="confirmAndSettleBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-green-600 text-white text-[10px] rounded">SETTLE MANUALLY</button>`;
+          // Always dropdown of the actual beef participants + settle button
+          const selId = `beef-sel-${bf.id}`;
+          let sel = `<select id="${selId}" class="text-[10px] bg-[#111] border border-[#444] p-0.5 mr-1 align-middle">`;
+          const preId = (bf.winnerPreview && bf.winnerPreview[0] && bf.winnerPreview[0].id) || '';
+          beefParts.forEach(p => {
+            const selAttr = (p.id === preId) ? 'selected' : '';
+            sel += `<option value="${p.id}" ${selAttr}>${p.name}</option>`;
+          });
+          sel += `</select>`;
+          settleUI = sel + `<button onclick="settleBeefWithSelected('${bf.id}', '${selId}')" class="mt-1 px-2 py-0.5 bg-green-700 text-white text-[10px] rounded">SETTLE SELECTED</button>`;
         }
         bh += `<div class="mb-2 p-2 bg-black/60 rounded text-xs border border-[#ffaa00]">
           <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | ${bDesc} | Pot ₦${pz} ${bf.locked ? '(LOCKED)' : ''}${bf.joinDeadline ? ' • deadline GW'+bf.joinDeadline : ''}</div>
           <div>Status: ${bf.status} | Paid: ${pstr}</div>
           ${winPreview}
           ${canC ? `<button onclick="adminCancelBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-red-700 text-white text-[10px] rounded">${bf.status === 'settled' ? 'UNDO SETTLEMENT (restore pot)' : 'CANCEL + REFUND'}</button> ${lockBtn}` : ''}
-          ${settleBtn}
+          ${settleUI}
         </div>`;
       });
     }
@@ -4046,13 +4059,33 @@ async function refreshAdminBeefsList() {
   } catch(e){ console.warn('refresh admin beefs failed', e); }
 }
 
+async function settleBeefWithSelected(beefId, selectElId) {
+  const sel = document.getElementById(selectElId);
+  if (!sel || !sel.value) return alert('Select a winner from the dropdown');
+  const winnerId = sel.value;
+  if (!confirm(`Settle this beef to winner ${winnerId}?\n\n90% of pot to winner, 10% house cut to runner-up pots. This is final.`)) return;
+  try {
+    const res = await fetchJSON('/api/admin/settle-beef', {
+      method: 'POST',
+      body: JSON.stringify({ beefId, winnerManagerId: winnerId })
+    });
+    alert(res.message || 'Beef settled.');
+    await refreshAdminBeefsList();
+    await loadAllData();
+    if (typeof loadAdminOverview === 'function') loadAdminOverview();
+  } catch (e) {
+    alert('Settle failed: ' + (e.message || e));
+  }
+}
+
+// Keep for any legacy calls (prompt fallback minimal)
 async function confirmAndSettleBeef(beefId, prechosenWinnerId) {
   let winnerId = prechosenWinnerId;
   if (!winnerId) {
-    winnerId = prompt('Enter winner manager ID (check ID MAPPINGS AUDIT or admin manager list for the exact ID):');
+    winnerId = prompt('Enter winner manager ID:');
     if (!winnerId) return;
   }
-  if (!confirm(`Settle this beef to manager ID ${winnerId}?\n\n90% of pot goes to the winner, 10% house cut applied. Cannot easily undo.`)) return;
+  if (!confirm(`Settle this beef to ${winnerId}?`)) return;
   try {
     const res = await fetchJSON('/api/admin/settle-beef', {
       method: 'POST',

@@ -1385,7 +1385,8 @@ async function settleWeeklyPot(comp, round) {
 
   // Ensure the store reflects the fresh official FPL points for this round (isFinal)
   scores.forEach(sc => {
-    upsertScore(s, sc.managerId, comp, round, sc.points, 'official-fpl', true, {});
+    // Only update points/source/isFinal; preserve existing picks/extra data needed for beef compute etc.
+    upsertScore(s, sc.managerId, comp, round, sc.points, 'official-fpl', true, null);
   });
 
   // Credit winner(s) - split pot equally if tie
@@ -1484,10 +1485,14 @@ const BEEF_LOGIC_MAP = {
 
 function getManagerRoundData(managerId, round, s) {
   const sc = (s.scores || []).find(sc => sc.managerId === managerId && sc.competition === 'fpl' && sc.round === round && sc.isFinal);
+  if (!sc) return { total: 0, picks: [], chip: null };
+  // Support both flat (from sync) and nested extra
+  const picks = (sc.picks || (sc.extra && sc.extra.picks)) || [];
+  const chip = (sc.activeChip || (sc.extra && sc.extra.activeChip)) || null;
   return {
-    total: sc && typeof sc.points === 'number' ? sc.points : 0,
-    picks: (sc && sc.extra && sc.extra.picks) || [],
-    chip: sc && sc.extra ? sc.extra.activeChip : null
+    total: typeof sc.points === 'number' ? sc.points : 0,
+    picks,
+    chip
   };
 }
 
@@ -2259,11 +2264,21 @@ function upsertScore(store, managerId, comp, round, points, source, isFinal, ext
     points: val,
     source,
     isFinal: !!isFinal,
-    updatedAt: nowISO(),
-    ...extra
+    updatedAt: nowISO()
   };
+  // Only spread extra if actually provided (non-null, non-empty) — this preserves picks/extra for beef preview etc.
+  if (extra && typeof extra === 'object' && Object.keys(extra).length > 0) {
+    Object.assign(newData, extra);
+  }
   if (existing) {
-    Object.assign(existing, newData);
+    // always update core fields
+    existing.points = newData.points;
+    existing.source = newData.source;
+    existing.isFinal = newData.isFinal;
+    existing.updatedAt = newData.updatedAt;
+    if (extra && typeof extra === 'object' && Object.keys(extra).length > 0) {
+      Object.assign(existing, extra);
+    }
   } else {
     store.scores.push({
       id: generateId("sc"),
@@ -4757,17 +4772,29 @@ app.get("/api/admin/beefs", async (req, res) => {
     }
     const potSize = b.prizePot || Math.floor(paidTotal * 0.9);
 
-    // Preview winner for admin (using compute on deadline or previous round) - minimal addition for manual settle
+    // Preview winner for admin - try target round then recent final rounds so preview shows when data is final
     let winnerPreview = null;
     if (!['settled', 'declined', 'cancelled'].includes((b.status || '').toLowerCase())) {
-      const r = b.joinDeadline || ((s.settings.currentRound && s.settings.currentRound.fpl) || 1) - 1;
-      const safeR = Math.max(1, r);
-      try {
-        const ws = computeBeefWinner(b, safeR, s);
-        if (ws && ws.length > 0) {
-          winnerPreview = ws.map(w => ({ id: w.id, displayName: w.displayName }));
-        }
-      } catch (e) {}
+      const cur = (s.settings.currentRound && s.settings.currentRound.fpl) || 1;
+      const candidates = [];
+      const target = b.joinDeadline || (cur - 1);
+      candidates.push(Math.max(1, target));
+      if (cur > 1) candidates.push(cur - 1);
+      candidates.push(cur);
+      // dedup and limit
+      const tried = [];
+      for (const rr of candidates) {
+        if (tried.includes(rr)) continue;
+        tried.push(rr);
+        try {
+          const ws = computeBeefWinner(b, rr, s);
+          if (ws && ws.length > 0) {
+            winnerPreview = ws.map(w => ({ id: w.id, displayName: w.displayName }));
+            break;
+          }
+        } catch (e) {}
+        if (tried.length > 5) break;
+      }
     }
 
     return {
