@@ -2579,9 +2579,13 @@ function getH2HForManager(managerId) {
 
 // ============ SAFE FETCH ============
 
-function safeFetchJSON(url, timeoutMs = 8000) {
+function safeFetchJSON(url, timeoutMs = 8000, extraHeaders = null) {
   return new Promise((resolve) => {
-    const req = https.get(url, { headers: { "User-Agent": "DLeagueClubhouse/1.0" } }, (res) => {
+    const headers = {
+      "User-Agent": "DLeagueClubhouse/1.0 (compatible; +https://d-league-clubhouse)"
+    };
+    if (extraHeaders) Object.assign(headers, extraHeaders);
+    const req = https.get(url, { headers }, (res) => {
       let data = "";
       res.on("data", c => data += c);
       res.on("end", () => {
@@ -2642,7 +2646,11 @@ async function fetchFplLeagueStandings(leagueId, isH2h = false) {
   try {
     const path = isH2h ? "leagues-h2h" : "leagues-classic";
     const url = `${FPL_BASE}/${path}/${leagueId}/standings/`;
-    const data = await safeFetchJSON(url);
+    // Use a browser-like UA — FPL can be strict on plain node requests for league data
+    const data = await safeFetchJSON(url, 10000, {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'application/json'
+    });
     return data;
   } catch (e) {
     console.warn("[FPL League] Failed to fetch standings:", e.message);
@@ -4135,7 +4143,7 @@ app.post("/api/admin/set-leagues", async (req, res) => {
   await persistStore();
   try { await populateH2HFixtures(s); await persistStore(); } catch (e) {}
   await logEvent("leagues_configured", { fplClassic, fplH2h, ucl });
-  res.json({ ok: true, leagueIds: s.settings.leagueIds, message: "League IDs saved. Standings will use real FPL data where possible." });
+  res.json({ ok: true, leagueIds: s.settings.leagueIds, message: "League IDs saved. If fplH2h set, real H2H ranks/records will show in FPL list + H2H box (map uses manager fplTeam.teamId == FPL entry id)." });
 });
 
 // Admin toggles league lock (simple manual control, no date logic)
@@ -4748,6 +4756,20 @@ app.get("/api/admin/beefs", async (req, res) => {
       });
     }
     const potSize = b.prizePot || Math.floor(paidTotal * 0.9);
+
+    // Preview winner for admin (using compute on deadline or previous round) - minimal addition for manual settle
+    let winnerPreview = null;
+    if (!['settled', 'declined', 'cancelled'].includes((b.status || '').toLowerCase())) {
+      const r = b.joinDeadline || ((s.settings.currentRound && s.settings.currentRound.fpl) || 1) - 1;
+      const safeR = Math.max(1, r);
+      try {
+        const ws = computeBeefWinner(b, safeR, s);
+        if (ws && ws.length > 0) {
+          winnerPreview = ws.map(w => ({ id: w.id, displayName: w.displayName }));
+        }
+      } catch (e) {}
+    }
+
     return {
       ...b,
       proposerName: proposer ? proposer.displayName : (b.proposerName || 'Unknown'),
@@ -4756,7 +4778,8 @@ app.get("/api/admin/beefs", async (req, res) => {
       paidDetails,
       currentPot: potSize,
       locked: !!b.locked,
-      joinDeadline: b.joinDeadline || null
+      joinDeadline: b.joinDeadline || null,
+      winnerPreview
     };
   });
   res.json({ beefs: allBeefs });

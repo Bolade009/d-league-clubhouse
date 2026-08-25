@@ -109,7 +109,7 @@ const STATIC_NIGERIAN_BANKS = [
   { name: "VFD Microfinance Bank Limited", code: "566" },
   { name: "Wema Bank", code: "035" },
   { name: "Zenith Bank", code: "057" },
-  { name: "OPay", code: "100004" }
+  { name: "OPay Digital Services Limited (OPay)", code: "100004" }
 ];
 
 function populateLocalBankSelect() {
@@ -1277,9 +1277,9 @@ async function loadAdminOverview() {
     const lids = data.leagueIds || {};
     let leagueHtml = `<div class="font-bold text-[#ffaa00] mb-1">LEAGUE IDs (used for auto standings, H2H, runner-ups, beef resolution)</div>`;
     leagueHtml += `<div>FPL Classic: <span class="font-mono bg-black px-1">${lids.fplClassic || 'NOT SET — set via admin for accurate D-League rankings'}</span></div>`;
-    leagueHtml += `<div>FPL H2H: <span class="font-mono bg-black px-1">${lids.fplH2h || 'NOT SET — required for end-of-season H2H pot'}</span></div>`;
+    leagueHtml += `<div>FPL H2H: <span class="font-mono bg-black px-1">${lids.fplH2h || 'NOT SET — set this for per-manager H2H ranks + D-League H2H box (real FPL data)'}</span></div>`;
     leagueHtml += `<div>UCL: <span class="font-mono bg-black px-1">${lids.ucl || 'not set'}</span></div>`;
-    leagueHtml += `<div class="text-[10px] mt-1 text-[#888]">These + each manager's FPL/UCL Team ID below must match exactly what you use in FPL. Beefs/awards/H2H use them to auto-resolve via API data.</div>`;
+    leagueHtml += `<div class="text-[10px] mt-1 text-[#888]">These + each manager's FPL/UCL Team ID below must match exactly what you use in FPL. Beefs/awards/H2H use them to auto-resolve via API data. After setting fplH2h, use ↻ refresh in main FPL H2H box or reload.</div>`;
     leagueWrap.innerHTML = leagueHtml;
     panel.appendChild(leagueWrap);
 
@@ -1649,7 +1649,7 @@ async function promptAddManager() {
 async function promptSetLeagues() {
   const current = (window.lastAdminData && window.lastAdminData.leagueIds) || {};
   const fplClassic = prompt('FPL Classic League ID (for standings):', current.fplClassic || '') || '';
-  const fplH2h = prompt('FPL H2H League ID:', current.fplH2h || '') || '';
+  const fplH2h = prompt('FPL H2H League ID (for real ranks + H2H box):', current.fplH2h || '') || '';
   const ucl = prompt('UCL League/Identifier (if available):', current.ucl || '') || '';
 
   try {
@@ -1657,8 +1657,15 @@ async function promptSetLeagues() {
       method: 'POST',
       body: JSON.stringify({ fplClassic, fplH2h, ucl })
     });
-    alert(res.message || 'League IDs updated. Real standings will be used.');
+    alert((res.message || 'League IDs updated.') + ' H2H data should now appear in FPL list (under names) + dedicated H2H box. Refresh the H2H box or reload after.');
     loadAdminOverview();
+    // Refresh main FPL view so H2H league data (real from fplh2h) appears in list and box
+    if (typeof loadStandings === 'function' && typeof renderFplTailored === 'function') {
+      loadStandings().then(() => {
+        if (typeof switchLeague === 'function') switchLeague('fpl');
+        if (typeof renderFplTailored === 'function') renderFplTailored();
+      });
+    }
   } catch (e) {
     alert('Failed to set leagues: ' + e.message);
   }
@@ -1893,6 +1900,50 @@ async function loadStandings() {
   // standingsData.fpl / .ucl / .all are still used by renderFplTailored, renderUclTailored, lineup viewer, etc.
   // Auto switch to current mode after load
   if (currentLeagueMode) switchLeague(currentLeagueMode);
+
+  // Kick client-side H2H fetch for cases where server /api/standings didn't deliver the standings (private league, fetch hiccup on server, etc.)
+  const l = standingsData && standingsData.leagueIds;
+  if (l && l.fplH2h) {
+    setTimeout(loadClientH2HIfNeeded, 50);
+  }
+}
+
+function refreshStandingsForH2H() {
+  // Helper to force re-fetch so H2H ranks + box update after setting fplH2h ID or for fresh data
+  clientH2HData = null; // force fresh client attempt too
+  if (typeof loadStandings === 'function' && typeof renderFplTailored === 'function') {
+    loadStandings().then(() => {
+      if (typeof renderFplTailored === 'function') renderFplTailored();
+    }).catch(e => console.warn('H2H refresh failed', e));
+  } else {
+    location.reload();
+  }
+}
+
+let clientH2HData = null;
+async function loadClientH2HIfNeeded() {
+  if (!standingsData) return null;
+  const lids = standingsData.leagueIds || {};
+  const id = lids.fplH2h;
+  if (!id) return null;
+  if (clientH2HData && clientH2HData.standings) return clientH2HData;
+  try {
+    const r = await fetch(`https://fantasy.premierleague.com/api/leagues-h2h/${encodeURIComponent(id)}/standings/`);
+    if (r.ok) {
+      const data = await r.json();
+      if (data && data.standings && data.standings.results) {
+        clientH2HData = data;
+        // Re-render so the list + box pick up the client-fetched H2H data immediately
+        setTimeout(() => {
+          if (typeof renderFplTailored === 'function') renderFplTailored();
+        }, 10);
+        return clientH2HData;
+      }
+    }
+  } catch (e) {
+    console.warn('[H2H] client-side fetch failed (may still work via server data)', e);
+  }
+  return clientH2HData;
 }
 
 function renderCombinedRace() {
@@ -3386,6 +3437,15 @@ const BEEF_PRESETS = [
 function renderFplTailored() {
   if (!standingsData) return;
 
+  // If fplH2h is configured but we don't have good server data yet, kick off a direct browser fetch (more reliable for some private leagues or Render fetch limits)
+  const lidsForTrigger = standingsData.leagueIds || {};
+  if (lidsForTrigger.fplH2h) {
+    const serverHas = standingsData.realLeagues && standingsData.realLeagues.fplH2h && standingsData.realLeagues.fplH2h.standings && standingsData.realLeagues.fplH2h.standings.results;
+    if (!serverHas) {
+      loadClientH2HIfNeeded();
+    }
+  }
+
   // GW
   const gw = standingsData.currentRound?.fpl || '?';
   if ($('fpl-gw-num2')) $('fpl-gw-num2').textContent = gw;
@@ -3394,14 +3454,20 @@ function renderFplTailored() {
   const list = $('fpl-managers-list');
   if (list) {
     list.innerHTML = '';
-    // Small professional note
-    if (!list.dataset.noteAdded) {
-      const note = document.createElement('div');
-      note.className = 'text-[10px] text-[#888] mb-2 pl-1 border-l-2 border-[#333]';
-      note.innerHTML = `Ranked by <span class="text-[#ccc]">season total</span>. <span class="text-[#00ff85]">GW</span> column = current gameweek (LIVE projections update to FINAL on official FPL sync)`;
-      list.parentNode.insertBefore(note, list);
-      list.dataset.noteAdded = 'true';
+    // Small professional note (refresh on data change)
+    let existingNote = list.previousElementSibling;
+    while (existingNote && (existingNote.classList.contains('note-h2h') || (existingNote.textContent || '').includes('Ranked by'))) {
+      const toRemove = existingNote;
+      existingNote = existingNote.previousElementSibling;
+      toRemove.remove();
     }
+    const note = document.createElement('div');
+    note.className = 'text-[10px] text-[#888] mb-2 pl-1 border-l-2 border-[#333] note-h2h';
+    const h2hNote = (standingsData.leagueIds && standingsData.leagueIds.fplH2h)
+      ? ` • H2H Rank shown under names (from fplH2h league)`
+      : '';
+    note.innerHTML = `Ranked by <span class="text-[#ccc]">season total</span>. <span class="text-[#00ff85]">GW</span> column = current gameweek (LIVE projections update to FINAL on official FPL sync)${h2hNote}`;
+    list.parentNode.insertBefore(note, list);
     const fplList = [...(standingsData.fpl || [])].sort((a,b) => (b.fplTotal||0) - (a.fplTotal||0));
     fplList.forEach(m => {
       const isMe = m.id === currentManager?.id;
@@ -3412,12 +3478,20 @@ function renderFplTailored() {
         : (m.currentFplSource === 'official-fpl' ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-[#003322] text-[#00ff85] font-mono">FINAL</span>' : '');
       // H2H league data from fplH2h (real FPL H2H standings, mapped by teamId)
       let h2hHtml = '';
-      const h2hResults = (standingsData.realLeagues && standingsData.realLeagues.fplH2h && standingsData.realLeagues.fplH2h.standings && standingsData.realLeagues.fplH2h.standings.results) || [];
-      if (h2hResults.length && m.fpl && m.fpl.teamId) {
-        const h2hRes = h2hResults.find(r => String(r.entry) === String(m.fpl.teamId));
+      const serverH2h = standingsData.realLeagues && standingsData.realLeagues.fplH2h;
+      const h2hDataForList = (serverH2h && serverH2h.standings && serverH2h.standings.results) ? serverH2h : (clientH2HData || null);
+      const h2hResults = (h2hDataForList && h2hDataForList.standings && h2hDataForList.standings.results) || [];
+      const mgrTeamId = (m.fplTeam && m.fplTeam.teamId) || (m.fpl && m.fpl.teamId) || '';
+      const h2hConfigured = !!(standingsData.leagueIds && standingsData.leagueIds.fplH2h);
+      if (h2hConfigured && mgrTeamId) {
+        const h2hRes = h2hResults.find(r => String(r.entry) === String(mgrTeamId));
         if (h2hRes) {
           h2hHtml = `<div class="text-[9px] text-[#00ff85] mt-0.5">H2H Rank: ${h2hRes.rank} (P: ${h2hRes.points_for || 0}/${h2hRes.points_against || 0})</div>`;
+        } else {
+          h2hHtml = `<div class="text-[9px] text-[#666] mt-0.5">H2H: not matched in league (your teamId=${mgrTeamId})</div>`;
         }
+      } else if (h2hConfigured) {
+        h2hHtml = `<div class="text-[9px] text-[#666] mt-0.5">H2H: no team ID set</div>`;
       }
       row.innerHTML = `
         <div class="min-w-0">
@@ -3447,45 +3521,61 @@ function renderFplTailored() {
   // H2H box — real data from fplH2h league standings (not derived/fake)
   if ($('fpl-h2h-this')) {
     const lids = standingsData.leagueIds || {};
-    let html = '<span class="text-[#888]">Set fplH2h ID in admin</span>';
+    let html = '<span class="text-[#888]">Set fplH2h ID in admin (Leagues → set fplH2h)</span>';
     if (lids.fplH2h) {
-      const h2hData = standingsData.realLeagues && standingsData.realLeagues.fplH2h;
+      const serverH = standingsData.realLeagues && standingsData.realLeagues.fplH2h;
+      const h2hData = (serverH && serverH.standings && serverH.standings.results) ? serverH : (clientH2HData || serverH || null);
+      const source = (serverH && serverH.standings && serverH.standings.results) ? 'server' : (clientH2HData ? 'client-direct' : 'none');
       if (h2hData && h2hData.standings && h2hData.standings.results) {
         const results = h2hData.standings.results;
         // Find D-League participants in H2H league
         const dleagueInH2H = (standingsData.fpl || []).map(m => {
-          const res = results.find(r => String(r.entry) === String(m.fpl && m.fpl.teamId || ''));
+          const mgrTid = (m.fplTeam && m.fplTeam.teamId) || (m.fpl && m.fpl.teamId) || '';
+          const res = results.find(r => String(r.entry) === String(mgrTid));
           return res ? { ...m, h2hRes: res } : null;
         }).filter(Boolean).sort((a,b) => (a.h2hRes.rank || 999) - (b.h2hRes.rank || 999));
 
-        if (currentManager && currentManager.fpl && currentManager.fpl.teamId) {
-          const userTid = String(currentManager.fpl.teamId);
-          const userRes = results.find(r => String(r.entry) === userTid);
+        const userTid = (currentManager && ((currentManager.fplTeam && currentManager.fplTeam.teamId) || (currentManager.fpl && currentManager.fpl.teamId)) || '');
+        let content = '';
+        if (userTid) {
+          const userRes = results.find(r => String(r.entry) === String(userTid));
           if (userRes) {
-            html = `Your H2H Rank: <span class="font-bold text-[#00ff85]">${userRes.rank}</span>`;
+            content = `Your H2H Rank: <span class="font-bold text-[#00ff85]">${userRes.rank}</span>`;
             if (userRes.matches_won !== undefined) {
-              html += ` <span class="text-xs">(${userRes.matches_won}W-${userRes.matches_drawn || 0}D-${userRes.matches_lost || 0}L)</span>`;
+              content += ` <span class="text-xs">(${userRes.matches_won}W-${userRes.matches_drawn || 0}D-${userRes.matches_lost || 0}L)</span>`;
             }
-            html += `<div class="text-[9px] mt-1">For: ${userRes.points_for || 0} • Against: ${userRes.points_against || 0}</div>`;
+            content += `<div class="text-[9px] mt-1">For: ${userRes.points_for || 0} • Against: ${userRes.points_against || 0}</div>`;
+          } else {
+            content = `<div>You (FPL team ${userTid}) not found in this H2H league's standings.</div>`;
           }
         }
 
         if (dleagueInH2H.length) {
-          html += `<div class="text-[10px] mt-2 font-semibold">D-League in H2H:</div>`;
-          html += dleagueInH2H.slice(0, 5).map(item => {
+          content += `<div class="text-[10px] mt-2 font-semibold">D-League in H2H:</div>`;
+          content += dleagueInH2H.slice(0, 5).map(item => {
             const r = item.h2hRes;
             return `<div class="text-[9px]">${r.rank}. ${item.displayName} (P:${r.points_for||0}/${r.points_against||0})</div>`;
           }).join('');
-          if (dleagueInH2H.length > 5) html += `<div class="text-[8px] text-[#888]">... +${dleagueInH2H.length-5} more</div>`;
+          if (dleagueInH2H.length > 5) content += `<div class="text-[8px] text-[#888]">... +${dleagueInH2H.length-5} more</div>`;
+        } else {
+          content += `<div class="text-[10px] mt-1 text-[#888]">No D-League managers matched in H2H results (check manager FPL Team IDs in admin audit match the league entries).</div>`;
         }
 
-        html += `<div class="text-[9px] text-[#888] mt-1">Weekly opponent shown in FPL app (Leagues → H2H). API provides the H2H table/rank accurately.</div>`;
+        html = content || `H2H league ID set (${lids.fplH2h}).`;
+        const leagueName = (h2hData.league && h2hData.league.name) ? ` — ${h2hData.league.name}` : '';
+        html += `<div class="text-[9px] text-[#888] mt-1">League${leagueName}. Source: ${source}. <a href="https://fantasy.premierleague.com/leagues/${lids.fplH2h}/standings" target="_blank" class="underline">View on FPL</a></div>`;
+        // Debug info so you can see exactly what's happening
+        const sampleFplEntries = results.slice(0,3).map(r => r.entry).join(', ');
+        const sampleDTeamIds = (standingsData.fpl || []).slice(0,3).map(m => (m.fplTeam && m.fplTeam.teamId) || (m.fpl && m.fpl.teamId) || '?').join(', ');
+        html += `<div class="text-[8px] text-[#555] mt-1">DEBUG: FPL results=${results.length} | D-matches=${dleagueInH2H.length} | sample FPL entries: ${sampleFplEntries} | sample D teamIds: ${sampleDTeamIds}</div>`;
       } else {
-        html = `H2H league ID set (${lids.fplH2h}) — loading data...`;
+        const detail = (h2hData && h2hData.detail) ? ` — ${h2hData.detail}` : '';
+        html = `H2H league ID set (${lids.fplH2h})${detail}. Could not load standings (verify ID, ensure it's a H2H not classic league, or refresh). <a href="https://fantasy.premierleague.com/leagues/${lids.fplH2h}/standings" target="_blank" class="underline">Open league on FPL</a>`;
       }
     }
     $('fpl-h2h-this').innerHTML = html;
   }
+  if ($('fpl-h2h-next')) $('fpl-h2h-next').textContent = 'End of season settlement';
 
   // Cup info
   if ($('fpl-cup-info')) {
@@ -3917,8 +4007,8 @@ async function refreshAdminBeefsList() {
     const dash = document.getElementById('dashboard');
     if (dash) dash.appendChild(container);
     const bdata = await fetchJSON('/api/admin/beefs');
-    let bh = `<div class="font-black text-lg mb-2 text-[#ffaa00]">⚔️ BEEFS — ADMIN: CANCEL / SEE PAYERS / REFUNDS (AUTO-SETTLE WIRED)</div>
-      <div class="text-[10px] text-[#888] mb-2">10% house cuts (paid) go immediately 60/40 to 1st/2nd runner-up pots. Beefs persist and never disappear.</div>`;
+    let bh = `<div class="font-black text-lg mb-2 text-[#ffaa00]">⚔️ BEEFS — ADMIN (manual settle + preview)</div>
+      <div class="text-[10px] text-[#888] mb-2">Use SETTLE button (shows computed winner if data available for the round). 10% house cuts (paid) go immediately 60/40 to 1st/2nd runner-up pots. Beefs persist.</div>`;
     const bl = (bdata.beefs || []);
     if (bl.length === 0) {
       bh += `<div class="text-xs text-[#666]">No beefs found.</div>`;
@@ -3930,15 +4020,51 @@ async function refreshAdminBeefsList() {
         const presetB = (BEEF_PRESETS || []).find(p => p.id === bf.category);
         const bDesc = presetB ? presetB.desc : bf.category;
         const lockBtn = bf.locked ? '' : `<button onclick="adminLockBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-orange-600 text-white text-[10px] rounded">LOCK</button>`;
+        let winPreview = '';
+        let settleBtn = '';
+        const isSettled = ['settled', 'declined', 'cancelled'].includes((bf.status || '').toLowerCase());
+        if (!isSettled && bf.winnerPreview && bf.winnerPreview.length) {
+          const nms = bf.winnerPreview.map(w => w.displayName).join(' / ');
+          winPreview = `<div class="text-[10px] text-[#00ff85] mt-0.5">Winner preview (based on data for deadline/prev GW): ${nms}</div>`;
+          if (bf.winnerPreview.length === 1) {
+            settleBtn = `<button onclick="confirmAndSettleBeef('${bf.id}', '${bf.winnerPreview[0].id}')" class="mt-1 px-2 py-0.5 bg-green-700 text-white text-[10px] rounded">SETTLE (use preview winner)</button>`;
+          }
+        }
+        if (!isSettled && !settleBtn) {
+          settleBtn = `<button onclick="confirmAndSettleBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-green-600 text-white text-[10px] rounded">SETTLE MANUALLY</button>`;
+        }
         bh += `<div class="mb-2 p-2 bg-black/60 rounded text-xs border border-[#ffaa00]">
           <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | ${bDesc} | Pot ₦${pz} ${bf.locked ? '(LOCKED)' : ''}${bf.joinDeadline ? ' • deadline GW'+bf.joinDeadline : ''}</div>
           <div>Status: ${bf.status} | Paid: ${pstr}</div>
+          ${winPreview}
           ${canC ? `<button onclick="adminCancelBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-red-700 text-white text-[10px] rounded">${bf.status === 'settled' ? 'UNDO SETTLEMENT (restore pot)' : 'CANCEL + REFUND'}</button> ${lockBtn}` : ''}
+          ${settleBtn}
         </div>`;
       });
     }
     container.innerHTML = bh;
   } catch(e){ console.warn('refresh admin beefs failed', e); }
+}
+
+async function confirmAndSettleBeef(beefId, prechosenWinnerId) {
+  let winnerId = prechosenWinnerId;
+  if (!winnerId) {
+    winnerId = prompt('Enter winner manager ID (check ID MAPPINGS AUDIT or admin manager list for the exact ID):');
+    if (!winnerId) return;
+  }
+  if (!confirm(`Settle this beef to manager ID ${winnerId}?\n\n90% of pot goes to the winner, 10% house cut applied. Cannot easily undo.`)) return;
+  try {
+    const res = await fetchJSON('/api/admin/settle-beef', {
+      method: 'POST',
+      body: JSON.stringify({ beefId, winnerManagerId: winnerId })
+    });
+    alert(res.message || 'Beef settled.');
+    await refreshAdminBeefsList();
+    await loadAllData();
+    if (typeof loadAdminOverview === 'function') loadAdminOverview();
+  } catch (e) {
+    alert('Settle failed: ' + (e.message || e));
+  }
 }
 
 async function adminLockBeef(beefId) {

@@ -257,7 +257,10 @@
       <!-- H2H -->
       <div class="grid md:grid-cols-2 gap-4 mb-4">
         <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
-          <div class="font-semibold mb-2">YOUR H2H FIXTURE THIS WEEK</div>
+          <div class="font-semibold mb-2 flex items-center justify-between gap-2">
+            <span>H2H LEAGUE (real FPL data from fplH2h)</span>
+            <button onclick="refreshStandingsForH2H()" class="text-[10px] px-2 py-0.5 border border-[#444] rounded hover:border-[#00ff85]">↻ refresh</button>
+          </div>
           <div id="fpl-h2h-this" class="text-sm"></div>
           <div class="mt-2 text-xs text-[#888]">Season H2H pot at end (10% from FPL weekly pots accumulates). Next: <span id="fpl-h2h-next"></span></div>
           <button onclick="showH2HStandings()" class="mt-2 text-xs underline text-[#00ff85]">Expand full H2H standings (FPL style)</button>
