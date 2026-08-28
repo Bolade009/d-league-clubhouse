@@ -4237,14 +4237,14 @@ app.post("/api/admin/set-league-lock", async (req, res) => {
 
 // Manager requests payout from wallet to their bank (Paystack transfer)
 app.post("/api/wallet/request-payout", async (req, res) => {
-  const { amount } = req.body || {};
+  const { amount, fee: clientFee } = req.body || {};
   const mgr = getAuthenticatedManager(req);
   if (!mgr) return res.status(401).json({ error: "Login required" });
 
   const balance = getWalletBalance(mgr.id);
   const amountToBank = Math.min(Number(amount) || 0, balance);
   if (amountToBank <= 0) return res.status(400).json({ error: "Invalid amount or insufficient balance" });
-  const fee = amountToBank >= 5000 ? 150 : 50;
+  const fee = clientFee || (amountToBank >= 5000 ? 150 : 50);
   const totalDebit = amountToBank + fee;
   if (totalDebit > balance) return res.status(400).json({ error: `Insufficient balance for ₦${amountToBank} + ₦${fee} fee` });
   if (!mgr.payoutDetails) return res.status(400).json({ error: "No bank details saved. Update profile first." });

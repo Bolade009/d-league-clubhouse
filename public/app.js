@@ -2816,21 +2816,25 @@ async function requestPayout() {
   }
   const amt = prompt(`Enter amount to withdraw (max ₦${balance}):`, balance);
   if (!amt) return;
-  const amount = parseFloat(amt);
-  if (amount <= 0 || amount > balance) {
+  const gross = parseFloat(amt);
+  if (gross <= 0 || gross > balance) {
     alert('Invalid amount.');
     return;
   }
-  const fee = amount >= 5000 ? 150 : 50;
-  const net = amount; // amount is what to bank, fee extra from wallet
-  if (!confirm(`Request ₦${amount} to bank? Fee ₦${fee} will be deducted from wallet (you pay ₦${amount + fee} total, receive ₦${net}). Auto Paystack if possible.`)) return;
+  const fee = gross >= 5000 ? 150 : 50;
+  const net = gross - fee;
+  if (net <= 0) {
+    alert('Amount too small after fee.');
+    return;
+  }
+  if (!confirm(`Withdraw ₦${gross} from wallet? You will receive ₦${net} in bank (₦${fee} fee deducted). ₦${net} will be sent to Paystack. Confirm?`)) return;
 
   try {
     const res = await fetchJSON('/api/wallet/request-payout', {
       method: 'POST',
-      body: JSON.stringify({ amount })
+      body: JSON.stringify({ amount: net, fee })
     });
-    alert(res.message || `Requested ₦${amount} (net to bank after fee). Check your bank and ledger.`);
+    alert(res.message || `Requested. You receive ₦${net} (net after fee). Check your bank and ledger.`);
     // Refresh data
     const me = await fetchJSON('/api/me');
     currentManager = normalizeAdmin(me.manager);
@@ -3537,15 +3541,15 @@ function renderFplTailored() {
         const nextGw = ((standingsData.currentRound && standingsData.currentRound.fpl) || 1) + 1;
         const fixtures = (standingsData.h2hFixtures && standingsData.h2hFixtures[nextGw]) || {};
         // Build table for all
-        let table = `<div class="text-xs font-semibold mb-1">H2H League Standings (GW${nextGw} fixtures)</div>`;
-        table += `<div class="overflow-x-auto"><table class="w-full text-[10px] border-collapse"><thead><tr class="text-[#888] border-b border-[#333]"><th class="text-left py-1">Rank</th><th class="text-left py-1">Team</th><th class="py-1">W</th><th class="py-1">D</th><th class="py-1">L</th><th class="py-1">Total</th><th class="text-left py-1">Next Fixture (pts)</th></tr></thead><tbody>`;
+        let htmlList = `<div class="text-xs font-semibold mb-1">H2H League Standings (GW${nextGw} fixtures)</div>`;
+        htmlList += `<div class="space-y-1">`;
         results.forEach(r => {
           const isD = (standingsData.fpl || []).some(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId)) === String(r.entry));
           const mainPts = isD ? (standingsData.fpl || []).find(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId))===String(r.entry)) : null;
           const totalPts = (r.matches_won || 0) * 3 + (r.matches_drawn || 0);
           const name = r.entry_name || r.player_name || 'Unknown';
           const club = isD && mainPts ? ` (${mainPts.fplClubName || ''})` : '';
-          let nextFix = '-';
+          let nextFix = 'TBD';
           const myKey = String(r.entry);
           const oppKey = fixtures[myKey];
           if (oppKey) {
@@ -3554,13 +3558,22 @@ function renderFplTailored() {
               const oppIsD = (standingsData.fpl || []).some(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId)) === String(oppR.entry));
               const oppMain = oppIsD ? (standingsData.fpl || []).find(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId))===String(oppR.entry)) : null;
               const oppForm = oppMain ? oppMain.currentFpl ?? '—' : '-';
-              nextFix = `${oppR.entry_name || oppR.player_name || oppKey} <br> pts: ${oppForm}`;
+              nextFix = `${oppR.entry_name || oppR.player_name || oppKey} <span class="text-[9px]">pts:${oppForm}</span>`;
             }
           }
-          table += `<tr class="border-b border-[#222]"><td class="py-0.5">${r.rank}</td><td class="py-0.5 font-medium">${name}${club}</td><td class="py-0.5 text-center">${r.matches_won||0}</td><td class="py-0.5 text-center">${r.matches_drawn||0}</td><td class="py-0.5 text-center">${r.matches_lost||0}</td><td class="py-0.5 text-center font-bold">${totalPts}</td><td class="py-0.5 text-left">${nextFix}</td></tr>`;
+          htmlList += `<div class="flex justify-between items-center px-3 py-1 rounded-xl hover:bg-[#111] gap-4 text-xs">
+            <div class="min-w-0">
+              <div class="font-semibold truncate">${r.rank}. ${name}${club}</div>
+            </div>
+            <div class="flex items-center gap-3 text-right font-mono flex-shrink-0">
+              <div class="text-[10px]">W${r.matches_won||0} D${r.matches_drawn||0} L${r.matches_lost||0}</div>
+              <div class="font-bold tabular-nums">${totalPts}</div>
+              <div class="text-[10px] text-[#666]">${nextFix}</div>
+            </div>
+          </div>`;
         });
-        table += `</tbody></table></div><div class="text-[9px] text-[#888] mt-1">Next fixture & opponents set via admin (manual select per GW). Form uses main league points for D-League members.</div>`;
-        html = table;
+        htmlList += `</div><div class="text-[9px] text-[#888] mt-1">Next fixture & opponents set via admin (manual select per GW). Total = 3*W + D. Form uses main league current GW points.</div>`;
+        html = htmlList;
       } else {
         html = `H2H ID set (${lids.fplH2h}) — loading data...`;
       }
@@ -3661,9 +3674,10 @@ function renderGWWinLeaders() {
   `;
 
   // Share width by appending inside ledger col if present (as per request)
-  const ledgerCol = document.getElementById('ledger-col');
-  if (ledgerCol) {
-    ledgerCol.appendChild(section);
+  const winnersCol = document.getElementById('gw-winners-col');
+  if (winnersCol) {
+    winnersCol.innerHTML = ''; // clear
+    winnersCol.appendChild(section);
   } else {
     container.appendChild(section);
   }
