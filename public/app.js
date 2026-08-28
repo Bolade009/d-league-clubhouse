@@ -1033,8 +1033,16 @@ async function loadAdminOverview() {
           <button onclick="triggerSettle()" class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl">SETTLE &amp; PAYOUTS</button>
           <button onclick="promptSetLeagues()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">SET LEAGUE IDs</button>
           <button onclick="emergencySync()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">FORCE SYNC</button>
-          <button onclick="adminManageH2HFixtures()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">MANAGE H2H FIXTURES (per GW)</button>
+          <button onclick="adminManageH2HFixtures()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">H2H FIXTURES (enter matchups)</button>
         </div>
+      </div>
+
+      <!-- EXPLICIT H2H FIXTURES ENTRY - prominent so admin can easily enter fixture details -->
+      <div class="mb-4 p-4 bg-[#0a1a12] border-2 border-[#00ff85] rounded-3xl">
+        <div class="font-black text-[#00ff85] text-base mb-1 tracking-[-0.3px]">H2H FIXTURES — ENTER MATCHUP DETAILS</div>
+        <div class="text-xs text-[#ccc] mb-2">Controls the "NEXT FIXTURE" column + opponents shown in the main H2H Standings box (the beautiful one on the dashboard). For each GW, pick the opponent for every manager using the dropdowns. GW1 is concluded. Saves immediately and appears after refresh.</div>
+        <button onclick="adminManageH2HFixtures()" class="px-5 py-2 bg-[#00ff85] hover:bg-white text-black font-bold rounded-2xl text-sm active:scale-[0.985]">OPEN FIXTURE SELECTOR — PICK OPPONENTS FOR A GW</button>
+        <div class="text-[10px] mt-1.5 text-[#666]">Also available as "MANAGE H2H FIXTURES (per GW)" in the top button row, and directly in the H2H box header.</div>
       </div>
 
       <!-- League Lock Control - separate for FPL and UCL -->
@@ -3529,7 +3537,7 @@ function renderFplTailored() {
     });
   }
 
-  // H2H box — beautiful full-width like main FPL list. Manager (Club), W/D/L + total, next fixture + pts below. No commentary.
+  // H2H box — beautiful like main FPL list. Separate W | D | L columns, Manager (Club), TOTAL, NEXT with pts below. No extra commentary. Admin entry explicit in cockpit + header.
   if ($('fpl-h2h-this')) {
     const lids = standingsData.leagueIds || {};
     let html = '<span class="text-[#888]">Set fplH2h ID in admin</span>';
@@ -3587,9 +3595,20 @@ function renderFplTailored() {
               <div class="font-semibold truncate">${r.rank}. ${displayName}${clubPart}</div>
             </div>
             <div class="flex items-center gap-4 text-right font-mono flex-shrink-0">
-              <div>
-                <div class="text-[10px] text-[#666] tracking-widest">W/D/L</div>
-                <div class="font-bold tabular-nums text-sm leading-none">${w}/${d}/${l}</div>
+              <!-- Separate W | D | L columns for beautiful classic standings look -->
+              <div class="flex gap-1.5 text-center">
+                <div class="min-w-[18px]">
+                  <div class="text-[9px] text-[#00cc77] tracking-widest">W</div>
+                  <div class="font-black tabular-nums text-base leading-none">${w}</div>
+                </div>
+                <div class="min-w-[18px]">
+                  <div class="text-[9px] text-[#888] tracking-widest">D</div>
+                  <div class="font-black tabular-nums text-base leading-none">${d}</div>
+                </div>
+                <div class="min-w-[18px]">
+                  <div class="text-[9px] text-[#cc5555] tracking-widest">L</div>
+                  <div class="font-black tabular-nums text-base leading-none">${l}</div>
+                </div>
               </div>
               <div class="w-px h-6 bg-[#333]"></div>
               <div>
@@ -3597,8 +3616,8 @@ function renderFplTailored() {
                 <div class="font-bold tabular-nums text-lg leading-none">${totalPts}</div>
               </div>
               <div class="w-px h-6 bg-[#333]"></div>
-              <div class="text-left min-w-[92px]">
-                <div class="text-[10px] text-[#666] tracking-widest">NEXT</div>
+              <div class="text-left min-w-[100px]">
+                <div class="text-[10px] text-[#666] tracking-widest">NEXT FIXTURE</div>
                 <div class="font-semibold text-xs truncate">${nextName}</div>
                 ${nextPts ? `<div class="text-[10px] text-[#00ff85]">pts ${nextPts}</div>` : ''}
               </div>
@@ -4107,19 +4126,20 @@ async function adminManageH2HFixtures() {
     return;
   }
   const dleague = standingsData.fpl;
-  let gw = parseInt(prompt('Enter GW to edit fixtures for (2-38, GW1 concluded):', '2'));
+  let gw = parseInt(prompt('H2H FIXTURES: Enter the GW number to set matchups for (2-38, GW1 concluded):', '2'));
   if (!gw || gw < 2 || gw > 38) return;
 
   // Build UI for picking opponents
   const modal = document.createElement('div');
   modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:100;display:flex;align-items:center;justify-content:center;';
   modal.innerHTML = `
-    <div style="background:#1c1c1c;border:1px solid #333;padding:16px;border-radius:12px;max-width:600px;width:90%;">
-      <div style="font-weight:bold;margin-bottom:8px;">H2H Fixtures for GW${gw} (pick opponents)</div>
-      <div id="h2h-picks" style="max-height:400px;overflow:auto;"></div>
+    <div style="background:#1c1c1c;border:1px solid #333;padding:16px;border-radius:12px;max-width:620px;width:94%;">
+      <div style="font-weight:bold;font-size:15px;margin-bottom:4px;">Enter H2H Fixtures for GW${gw}</div>
+      <div style="font-size:11px;color:#888;margin-bottom:8px;">For each D-League manager on the left, select their opponent on the right. These become the "NEXT FIXTURE" shown in the main H2H box. Only D-League participants listed. Click SAVE when done.</div>
+      <div id="h2h-picks" style="max-height:420px;overflow:auto;"></div>
       <div style="margin-top:12px;">
-        <button id="h2h-save" style="background:#00ff85;color:#111;padding:6px 12px;border-radius:6px;margin-right:8px;">SAVE</button>
-        <button id="h2h-cancel" style="padding:6px 12px;border-radius:6px;border:1px solid #444;">CANCEL</button>
+        <button id="h2h-save" style="background:#00ff85;color:#111;padding:7px 14px;border-radius:6px;margin-right:8px;font-weight:600;">SAVE FIXTURES FOR GW${gw}</button>
+        <button id="h2h-cancel" style="padding:7px 14px;border-radius:6px;border:1px solid #444;">CANCEL</button>
       </div>
     </div>
   `;
