@@ -858,7 +858,7 @@ function renderActiveBeefs() {
           <span class="text-xl font-black">₦${(potSize || 0).toLocaleString()}</span>
         </div>
         <div class="text-xs mt-0.5">Paid: ${paidCount} — ${paidNames}</div>
-        <div class="text-xs">Status: <span class="${statusClass} font-semibold">${b.status || 'proposed'}</span>${b.locked ? ` <span class="text-red-400">(LOCKED for GW${displayGW})</span>` : ''}${b.joinDeadline ? ` • Join for GW${displayGW}` : ''}</div>
+        <div class="text-xs">Status: <span class="${statusClass} font-semibold">${b.status || 'proposed'}</span>${b.locked ? ` <span class="text-red-400">(LOCKED for GW${displayGW})</span>` : ''}</div>
         <div class="mt-2 flex flex-wrap gap-1 text-[10px]">
           <button onclick="showWhatsAppShare(decodeURIComponent('${safeShare}'), 'Share beef'); event.stopImmediatePropagation();" class="px-2 py-0.5 bg-[#ffaa00] text-black rounded">📲 Share WA + Link</button>
           ${!b.locked && b.status === 'proposed' ? `<button onclick="respondToBeefLink('${b.id}', 'accept')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Accept</button>` : ''}
@@ -3529,7 +3529,7 @@ function renderFplTailored() {
     });
   }
 
-  // H2H box — renamed & enhanced to full standings + fixtures (clean, no commentaries)
+  // H2H box — beautiful full-width like main FPL list. Manager (Club), W/D/L + total, next fixture + pts below. No commentary.
   if ($('fpl-h2h-this')) {
     const lids = standingsData.leagueIds || {};
     let html = '<span class="text-[#888]">Set fplH2h ID in admin</span>';
@@ -3540,39 +3540,73 @@ function renderFplTailored() {
         let results = [...h2hData.standings.results].sort((a,b) => (a.rank||999) - (b.rank||999));
         const nextGw = ((standingsData.currentRound && standingsData.currentRound.fpl) || 1) + 1;
         const fixtures = (standingsData.h2hFixtures && standingsData.h2hFixtures[nextGw]) || {};
-        // Build table for all
-        let htmlList = `<div class="text-xs font-semibold mb-1">H2H League Standings (GW${nextGw} fixtures)</div>`;
-        htmlList += `<div class="space-y-1">`;
+
+        // Map D-League managers by their FPL teamId (entry) for proper manager (club) names
+        const mgrByTeamId = {};
+        (standingsData.fpl || []).forEach(m => {
+          const tid = String((m.fplTeam && m.fplTeam.teamId) || (m.fpl && m.fpl.teamId) || m.id || '');
+          if (tid) mgrByTeamId[tid] = m;
+        });
+
+        const isAdmin = currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com';
+
+        let htmlList = `<div class="space-y-1">`;
         results.forEach(r => {
-          const isD = (standingsData.fpl || []).some(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId)) === String(r.entry));
-          const mainPts = isD ? (standingsData.fpl || []).find(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId))===String(r.entry)) : null;
-          const totalPts = (r.matches_won || 0) * 3 + (r.matches_drawn || 0);
-          const name = r.entry_name || r.player_name || 'Unknown';
-          const club = isD && mainPts ? ` (${mainPts.fplClubName || ''})` : '';
-          let nextFix = 'TBD';
-          const myKey = String(r.entry);
-          const oppKey = fixtures[myKey];
+          const tid = String(r.entry);
+          const dm = mgrByTeamId[tid];
+          const isD = !!dm;
+          let displayName = (dm && dm.displayName) || r.player_name || r.entry_name || 'Unknown';
+          let clubPart = '';
+          if (dm && dm.fplClubName) {
+            clubPart = ` <span class="text-[#888] text-xs">(${dm.fplClubName})</span>`;
+          }
+          const w = r.matches_won || 0;
+          const d = r.matches_drawn || 0;
+          const l = r.matches_lost || 0;
+          const totalPts = (w * 3) + d;
+
+          // Next fixture: resolve using fixtures map (by entry/teamId), show name + pts below
+          let nextName = 'TBD';
+          let nextPts = '';
+          const oppKey = fixtures[tid];
           if (oppKey) {
             const oppR = results.find(x => String(x.entry) === String(oppKey));
             if (oppR) {
-              const oppIsD = (standingsData.fpl || []).some(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId)) === String(oppR.entry));
-              const oppMain = oppIsD ? (standingsData.fpl || []).find(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId))===String(oppR.entry)) : null;
-              const oppForm = oppMain ? oppMain.currentFpl ?? '—' : '-';
-              nextFix = `${oppR.entry_name || oppR.player_name || oppKey} <span class="text-[9px]">pts:${oppForm}</span>`;
+              const oppDm = mgrByTeamId[String(oppR.entry)];
+              nextName = (oppDm && oppDm.displayName) || oppR.player_name || oppR.entry_name || String(oppKey);
+              if (oppDm && oppDm.fplClubName) nextName += ` (${oppDm.fplClubName})`;
+              const oppMain = oppDm ? oppDm : (standingsData.fpl || []).find(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId))===String(oppR.entry));
+              const oppForm = (oppMain && oppMain.currentFpl != null) ? oppMain.currentFpl : '—';
+              nextPts = String(oppForm);
             }
           }
-          htmlList += `<div class="flex justify-between items-center px-3 py-1 rounded-xl hover:bg-[#111] gap-4 text-xs">
-            <div class="min-w-0">
-              <div class="font-semibold truncate">${r.rank}. ${name}${club}</div>
+
+          const rowClass = isD ? 'flex justify-between items-center px-3 py-2 rounded-xl hover:bg-[#111] gap-4 text-sm' : 'flex justify-between items-center px-3 py-2 rounded-xl hover:bg-[#111] gap-4 text-sm opacity-90';
+          htmlList += `<div class="${rowClass}">
+            <div class="min-w-0 flex-1">
+              <div class="font-semibold truncate">${r.rank}. ${displayName}${clubPart}</div>
+              ${nextName !== 'TBD' ? `<div class="text-[10px] text-[#888] mt-0.5">vs ${nextName}</div>` : ''}
             </div>
-            <div class="flex items-center gap-3 text-right font-mono flex-shrink-0">
-              <div class="text-[10px]">W${r.matches_won||0} D${r.matches_drawn||0} L${r.matches_lost||0}</div>
-              <div class="font-bold tabular-nums">${totalPts}</div>
-              <div class="text-[10px] text-[#666]">${nextFix}</div>
+            <div class="flex items-center gap-4 text-right font-mono flex-shrink-0">
+              <div>
+                <div class="text-[10px] text-[#666] tracking-widest">W/D/L</div>
+                <div class="font-bold tabular-nums text-sm leading-none">${w}/${d}/${l}</div>
+              </div>
+              <div class="w-px h-6 bg-[#333]"></div>
+              <div>
+                <div class="text-[10px] text-[#666] tracking-widest">TOTAL</div>
+                <div class="font-bold tabular-nums text-lg leading-none">${totalPts}</div>
+              </div>
+              <div class="w-px h-6 bg-[#333]"></div>
+              <div class="text-left min-w-[92px]">
+                <div class="text-[10px] text-[#666] tracking-widest">NEXT</div>
+                <div class="font-semibold text-xs truncate">${nextName}</div>
+                ${nextPts ? `<div class="text-[10px] text-[#00ff85]">pts ${nextPts}</div>` : ''}
+              </div>
             </div>
           </div>`;
         });
-        htmlList += `</div><div class="text-[9px] text-[#888] mt-1">Next fixture & opponents set via admin (manual select per GW). Total = 3*W + D. Form uses main league current GW points.</div>`;
+        htmlList += `</div>`;
         html = htmlList;
       } else {
         html = `H2H ID set (${lids.fplH2h}) — loading data...`;
@@ -4037,7 +4071,7 @@ async function refreshAdminBeefsList() {
         const joinGW = bf.joinDeadline || currentGW;
         const displayGW = Math.max(joinGW, currentGW);
         bh += `<div class="mb-2 p-2 bg-black/60 rounded text-xs border border-[#ffaa00]">
-          <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | ${bDesc} | Pot ₦${pz} ${bf.locked ? `(LOCKED for GW${displayGW})` : ''}${bf.joinDeadline ? ` • Join for GW${displayGW}` : ''}</div>
+          <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | ${bDesc} | Pot ₦${pz} ${bf.locked ? `(LOCKED for GW${displayGW})` : ''}</div>
           <div>Status: ${bf.status} | Paid: ${pstr}</div>
           ${winPreview}
           ${canC ? `<button onclick="adminCancelBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-red-700 text-white text-[10px] rounded">${bf.status === 'settled' ? 'UNDO SETTLEMENT (restore pot)' : 'CANCEL + REFUND'}</button> ${lockBtn}` : ''}
@@ -4098,22 +4132,25 @@ async function adminManageH2HFixtures() {
   dleague.forEach(m => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;margin-bottom:4px;font-size:12px;';
-    row.innerHTML = `<span style="width:140px;">${m.displayName}</span>`;
+    const clubLabel = m.fplClubName ? ` <span style="color:#888;font-size:10px;">(${m.fplClubName})</span>` : '';
+    row.innerHTML = `<span style="width:160px;">${m.displayName}${clubLabel}</span>`;
     const sel = document.createElement('select');
     sel.style.cssText = 'flex:1;font-size:12px;';
     sel.innerHTML = '<option value="">-- pick opponent --</option>';
+    const myKey = (m.fplTeam && m.fplTeam.teamId) || m.id;
     dleague.forEach(o => {
       if (o.id === m.id) return;
       const opt = document.createElement('option');
-      opt.value = (o.fplTeam && o.fplTeam.teamId) || o.id;
-      opt.text = o.displayName;
-      if (currentFixtures[(m.fplTeam && m.fplTeam.teamId) || m.id] == opt.value) opt.selected = true;
+      const oKey = (o.fplTeam && o.fplTeam.teamId) || o.id;
+      opt.value = oKey;
+      opt.text = o.displayName + (o.fplClubName ? ` (${o.fplClubName})` : '');
+      if (String(currentFixtures[myKey] || '') === String(oKey)) opt.selected = true;
       sel.appendChild(opt);
     });
     row.appendChild(sel);
     picksDiv.appendChild(row);
-    // store ref
-    row._managerKey = (m.fplTeam && m.fplTeam.teamId) || m.id;
+    // store ref — prefer FPL teamId (matches h2h entry in standings) for fixture keys
+    row._managerKey = myKey;
     row._sel = sel;
   });
 
