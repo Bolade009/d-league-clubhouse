@@ -3585,7 +3585,6 @@ function renderFplTailored() {
           htmlList += `<div class="${rowClass}">
             <div class="min-w-0 flex-1">
               <div class="font-semibold truncate">${r.rank}. ${displayName}${clubPart}</div>
-              ${nextName !== 'TBD' ? `<div class="text-[10px] text-[#888] mt-0.5">vs ${nextName}</div>` : ''}
             </div>
             <div class="flex items-center gap-4 text-right font-mono flex-shrink-0">
               <div>
