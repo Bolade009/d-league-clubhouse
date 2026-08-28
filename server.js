@@ -581,6 +581,8 @@ async function loadStore() {
     }
     storeCache.settings.firstRunnerUpPot = storeCache.settings.firstRunnerUpPot || 0;
     storeCache.settings.secondRunnerUpPot = storeCache.settings.secondRunnerUpPot || 0;
+    storeCache.settings.uclSecondPlacePot = storeCache.settings.uclSecondPlacePot || 0;
+    storeCache.settings.uclThirdPlacePot = storeCache.settings.uclThirdPlacePot || 0;
     // Initialize collection keys to arrays only if completely absent (first run); do not overwrite or persist empty if key missing after partial load
     ['managers','payments','scores','ledger','h2h','challenges','sponsorships','events','complaints','beefs','potBoosts'].forEach(k => {
       if (!Array.isArray(storeCache[k])) storeCache[k] = [];
@@ -625,7 +627,7 @@ async function loadStore() {
 
       // For revenue/pot numbers, take the maximum seen (never lose money tracking)
       const moneyKeys = ['totalFplRevenue', 'totalUclRevenue', 'houseFplAdmin', 'houseUclAdmin',
-                         'fplOverallPot', 'fplCupPot', 'uclOverallPot', 'h2hOverallPot', 'seasonReserveBoost',
+                         'fplOverallPot', 'fplCupPot', 'uclOverallPot', 'uclSecondPlacePot', 'uclThirdPlacePot', 'h2hOverallPot', 'seasonReserveBoost',
                          'firstRunnerUpPot', 'secondRunnerUpPot'];
       moneyKeys.forEach(k => {
         let maxVal = (result.settings[k] || 0);
@@ -1435,15 +1437,20 @@ async function settleWeeklyPot(comp, round) {
       at: nowISO()
     });
   } else {
-    // For UCL: currently 10% treated as admin reserve (align to weekly 500 model later if needed)
+    // UCL: 10% reserve from MD pot goes to 2nd/3rd place pots (60/40), distributed at end of season based on total points
+    const res = pot.reserve;
+    const toSecond = Math.floor(res * 0.6);
+    const toThird = res - toSecond;
+    s.settings.uclSecondPlacePot = (s.settings.uclSecondPlacePot || 0) + toSecond;
+    s.settings.uclThirdPlacePot = (s.settings.uclThirdPlacePot || 0) + toThird;
     s.ledger.push({
       id: generateId("ldg"),
-      type: "house_commission",
-      managerId: "house",
+      type: "ucl_runner_up_contribution",
+      managerId: "system",
       competition: comp,
       round,
-      amount: -pot.reserve,
-      note: `Reserve (10% of weekly pot) from ${comp} ${round}`,
+      amount: -res,
+      note: `Reserve from UCL MD ${round} to 2nd/3rd place pots`,
       at: nowISO()
     });
   }
@@ -1464,6 +1471,80 @@ async function settleWeeklyPot(comp, round) {
   });
 
   return pot.winnerShare;
+}
+
+async function settleUclEndOfSeason() {
+  const s = await loadStore();
+  const uclPaid = getEligibleManagers('ucl');
+  if (uclPaid.length < 3) return [];
+
+  // Compute totals from stored per-MD scores (admin entered or synced)
+  const withTotals = uclPaid.map(mgr => {
+    const total = s.scores
+      .filter(sc => sc.managerId === mgr.id && sc.competition === 'ucl' && typeof sc.points === 'number')
+      .reduce((sum, sc) => sum + (sc.points || 0), 0);
+    return { id: mgr.id, displayName: mgr.displayName, total };
+  }).sort((a, b) => b.total - a.total);
+
+  const first = withTotals[0];
+  const second = withTotals[1];
+  const third = withTotals[2];
+
+  const awarded = [];
+
+  const overall = s.settings.uclOverallPot || 0;
+  if (overall > 0 && first) {
+    s.ledger.push({
+      id: generateId("ldg"),
+      type: "ucl_season_win",
+      managerId: first.id,
+      competition: "ucl",
+      round: 17,
+      amount: overall,
+      note: "UCL Season Winner",
+      at: nowISO()
+    });
+    s.settings.uclOverallPot = 0;
+    awarded.push({ type: 'overall', managerId: first.id, amount: overall });
+  }
+
+  const secPot = s.settings.uclSecondPlacePot || 0;
+  if (secPot > 0 && second) {
+    s.ledger.push({
+      id: generateId("ldg"),
+      type: "ucl_season_win",
+      managerId: second.id,
+      competition: "ucl",
+      round: 17,
+      amount: secPot,
+      note: "UCL 2nd Place",
+      at: nowISO()
+    });
+    s.settings.uclSecondPlacePot = 0;
+    awarded.push({ type: 'second', managerId: second.id, amount: secPot });
+  }
+
+  const thiPot = s.settings.uclThirdPlacePot || 0;
+  if (thiPot > 0 && third) {
+    s.ledger.push({
+      id: generateId("ldg"),
+      type: "ucl_season_win",
+      managerId: third.id,
+      competition: "ucl",
+      round: 17,
+      amount: thiPot,
+      note: "UCL 3rd Place",
+      at: nowISO()
+    });
+    s.settings.uclThirdPlacePot = 0;
+    awarded.push({ type: 'third', managerId: third.id, amount: thiPot });
+  }
+
+  if (awarded.length) {
+    await persistStore();
+    await logEvent("ucl_season_settled", { awarded });
+  }
+  return awarded;
 }
 
 function computeWinnerFromLogic(logic, s) {
@@ -1887,6 +1968,11 @@ async function autoSettleIfNeeded() {
   // No auto bank transfer here. Winner must explicitly request payout to bank.
   await settleWeeklyPot("fpl", curF - 1);
   await settleWeeklyPot("ucl", curU - 1);
+
+  // Auto distribute UCL end of season pots (overall + 2nd/3rd from MD reserves) once all MDs done
+  if (curU >= 17) {
+    try { await settleUclEndOfSeason(); } catch (e) { console.warn('[UCL end] auto distribute failed', e.message); }
+  }
 
   // Auto award for presets using programmable logic (after GW ends via API)
   if (curF > 1) {
@@ -2492,6 +2578,10 @@ async function getProjectedPayouts() {
 
   const h2hTotal = h2hFromExtra + voluntaryH2H;
 
+  const uclOverall = s.settings.uclOverallPot || 0;
+  const uclSecond = s.settings.uclSecondPlacePot || 0;
+  const uclThird = s.settings.uclThirdPlacePot || 0;
+
   return {
     fpl: {
       weeklyPot90: weeklyPot90,
@@ -2506,7 +2596,9 @@ async function getProjectedPayouts() {
       phaseReserve: 0,
       upcomingMatches: upcomingUCLMatches,
       lastStatsUpdate: uclStats.lastUpdated || null,
-      overallWinnerPot: 0
+      overallWinnerPot: uclOverall,
+      secondPlacePot: uclSecond,
+      thirdPlacePot: uclThird
     },
     // adminTotal hidden from regular managers
     seasonPots: {
@@ -5537,6 +5629,11 @@ app.post("/api/settle/run", async (req, res) => {
   await autoSettleIfNeeded();
   if (comp === "fpl" || !comp) await settleWeeklyPot("fpl", (await loadStore()).settings.currentRound.fpl);
   if (comp === "ucl" || !comp) await settleWeeklyPot("ucl", (await loadStore()).settings.currentRound.ucl);
+
+  const curUcl = (await loadStore()).settings.currentRound.ucl;
+  if ((comp === "ucl" || !comp) && curUcl >= 17) {
+    try { await settleUclEndOfSeason(); } catch (e) {}
+  }
 
   // End of season (or manual trigger) for H2H + runner ups
   if (!comp || comp === 'season' || (await loadStore()).settings.currentRound.fpl >= 38) {

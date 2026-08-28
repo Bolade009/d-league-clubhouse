@@ -528,23 +528,32 @@ function renderTopPotsAndActions() {
   const uclProj = (proj.ucl || {});
   const isUcl = currentLeagueMode === 'ucl';
 
-  const weekly = isUcl ? (uclProj.mdPot90 || 0) : (fpl.weeklyPot90 || 0);
-  const h2h = fpl.h2hOverallPot || 0;
-  const overall = fpl.overallWinnerPot || 0;
-  const cup = fpl.cupWinnerPot || 0;
-  const firstRU = fpl.firstRunnerUpPot || 0;
-  const secondRU = fpl.secondRunnerUpPot || 0;
-
-  // In UCL mode: ONLY show current Match Day pot. No FPL mixing.
   if (isUcl) {
+    const uclMd = uclProj.mdPot90 || 0;
+    const uclWin = uclProj.overallWinnerPot || 0;
+    const ucl2nd = uclProj.secondPlacePot || 0;
+    const ucl3rd = uclProj.thirdPlacePot || 0;
+
     if (!container.hasChildNodes() || container.querySelector('#pot-grid-ucl') === null) {
       container.innerHTML = `
         <div class="mt-4 p-4 bg-[#0a0a0a] border border-[#00ff85] rounded-3xl">
-          <div class="font-black text-lg mb-2 text-[#00ff85]">💰 UCL MATCH DAY POT</div>
-          <div id="pot-grid-ucl" class="grid grid-cols-1 md:grid-cols-1 gap-3 text-sm">
+          <div class="font-black text-lg mb-2 text-[#00ff85]">💰 UCL POTS</div>
+          <div id="pot-grid-ucl" class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
             <div class="bg-black p-3 rounded-2xl border border-[#333]">
-              <div class="text-xs text-[#888]">This MD pot (90% to winner)</div>
+              <div class="text-xs text-[#888]">This MD Pot</div>
               <div id="pot-ucl-md" class="text-2xl font-black text-[#00ff85]">₦0</div>
+            </div>
+            <div class="bg-black p-3 rounded-2xl border border-[#333]">
+              <div class="text-xs text-[#888]">Season Winner</div>
+              <div id="pot-ucl-overall" class="text-2xl font-black">₦0</div>
+            </div>
+            <div class="bg-black p-3 rounded-2xl border border-[#333]">
+              <div class="text-xs text-[#888]">2nd Place</div>
+              <div id="pot-ucl-second" class="text-2xl font-black">₦0</div>
+            </div>
+            <div class="bg-black p-3 rounded-2xl border border-[#333]">
+              <div class="text-xs text-[#888]">3rd Place</div>
+              <div id="pot-ucl-third" class="text-2xl font-black">₦0</div>
             </div>
           </div>
           <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
@@ -552,12 +561,77 @@ function renderTopPotsAndActions() {
             <button onclick="showSponsorModal()" class="px-2 py-1 bg-yellow-500 text-black font-semibold rounded hover:bg-yellow-400">🏆 Sponsor an Award</button>
           </div>
           <div id="pot-boosts-list" class="mt-3 text-[11px] text-[#aaa] max-h-24 overflow-auto"></div>
-          <div class="text-[10px] text-[#666] mt-1">UCL mode: Only MD pot shown. Boosts &amp; sponsors for UCL awards/pots work here. No FPL data mixed.</div>
         </div>
       `;
     }
     const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = '₦' + (val || 0).toLocaleString(); };
-    setVal('pot-ucl-md', weekly);
+    setVal('pot-ucl-md', uclMd);
+    setVal('pot-ucl-overall', uclWin);
+    setVal('pot-ucl-second', ucl2nd);
+    setVal('pot-ucl-third', ucl3rd);
+
+    const boostsWrap = document.getElementById('pot-boosts-list');
+    if (boostsWrap && standingsData && Array.isArray(standingsData.potBoosts)) {
+      const recent = [...standingsData.potBoosts].slice(-8).reverse();
+      if (recent.length) {
+        boostsWrap.innerHTML = '<div class="font-semibold text-[#00ff85] mb-0.5">Recent boosts:</div>' +
+          recent.map(b => `<div>${b.managerName || ''} added ₦${(b.amount||0).toLocaleString()}</div>`).join('');
+      } else {
+        boostsWrap.innerHTML = '<div class="text-[10px]">No boosts yet.</div>';
+      }
+    }
+    return;
+  }
+
+  const weekly = fpl.weeklyPot90 || 0;
+  const h2h = fpl.h2hOverallPot || 0;
+  const overall = fpl.overallWinnerPot || 0;
+  const cup = fpl.cupWinnerPot || 0;
+  const firstRU = fpl.firstRunnerUpPot || 0;
+  const secondRU = fpl.secondRunnerUpPot || 0;
+
+  // In UCL mode: show all 4 UCL pots with clean labels (no % commentary)
+  if (isUcl) {
+    const uclMd = uclProj.mdPot90 || 0;
+    const uclWin = uclProj.overallWinnerPot || 0;
+    const ucl2nd = uclProj.secondPlacePot || 0;
+    const ucl3rd = uclProj.thirdPlacePot || 0;
+
+    if (!container.hasChildNodes() || container.querySelector('#pot-grid-ucl') === null) {
+      container.innerHTML = `
+        <div class="mt-4 p-4 bg-[#0a0a0a] border border-[#00ff85] rounded-3xl">
+          <div class="font-black text-lg mb-2 text-[#00ff85]">💰 UCL POTS</div>
+          <div id="pot-grid-ucl" class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            <div class="bg-black p-3 rounded-2xl border border-[#333]">
+              <div class="text-xs text-[#888]">This MD Pot</div>
+              <div id="pot-ucl-md" class="text-2xl font-black text-[#00ff85]">₦0</div>
+            </div>
+            <div class="bg-black p-3 rounded-2xl border border-[#333]">
+              <div class="text-xs text-[#888]">Season Winner</div>
+              <div id="pot-ucl-overall" class="text-2xl font-black">₦0</div>
+            </div>
+            <div class="bg-black p-3 rounded-2xl border border-[#333]">
+              <div class="text-xs text-[#888]">2nd Place</div>
+              <div id="pot-ucl-second" class="text-2xl font-black">₦0</div>
+            </div>
+            <div class="bg-black p-3 rounded-2xl border border-[#333]">
+              <div class="text-xs text-[#888]">3rd Place</div>
+              <div id="pot-ucl-third" class="text-2xl font-black">₦0</div>
+            </div>
+          </div>
+          <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+            <button onclick="boostPot('weekly')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost this MD pot</button>
+            <button onclick="showSponsorModal()" class="px-2 py-1 bg-yellow-500 text-black font-semibold rounded hover:bg-yellow-400">🏆 Sponsor an Award</button>
+          </div>
+          <div id="pot-boosts-list" class="mt-3 text-[11px] text-[#aaa] max-h-24 overflow-auto"></div>
+        </div>
+      `;
+    }
+    const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = '₦' + (val || 0).toLocaleString(); };
+    setVal('pot-ucl-md', uclMd);
+    setVal('pot-ucl-overall', uclWin);
+    setVal('pot-ucl-second', ucl2nd);
+    setVal('pot-ucl-third', ucl3rd);
 
     const boostsWrap = document.getElementById('pot-boosts-list');
     if (boostsWrap && standingsData && Array.isArray(standingsData.potBoosts)) {
