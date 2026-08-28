@@ -174,7 +174,7 @@ function createEmptyStore() {
       totalUclRevenue: 0,
       houseFplAdmin: 0,
       houseUclAdmin: 0,
-      // Season pots: weekly contribs split, + direct 60/40 runner-up pots from 10% house cuts on beef/sponsor payments (immediate)
+      // Season pots: weekly contribs split, + direct 50/30/20 runner-up pots (20% house) from 10% house cuts on beef/sponsor payments (immediate)
       fplOverallPot: 0,
       fplCupPot: 0,
       uclOverallPot: 0,
@@ -354,8 +354,7 @@ function reconstructBeefsFromPayments(s) {
 }
 
 // Derive and set first/secondRunnerUpPot from all confirmed beef_stake + sponsor payments.
-// This is the key to making runner-up funding solid even after restore/export of paid beefs.
-// House cuts are 10% split 60/40. Call after bringing in payment/beef data via restore or repair.
+// House cuts are 10% split 50/30/20 (20% to house). Call after bringing in payment/beef data via restore or repair.
 function reconcileRunnerUpPots(s) {
   if (!s || !s.settings) return { first: 0, second: 0 };
   const payments = s.payments || [];
@@ -386,8 +385,9 @@ function reconcileRunnerUpPots(s) {
     totalCuts += Math.floor(amt * 0.1);
   });
 
-  const first = Math.floor(totalCuts * 0.6);
-  const second = totalCuts - first;
+  const first = Math.floor(totalCuts * 0.5);
+  const second = Math.floor(totalCuts * 0.3);
+  const house = totalCuts - first - second;
 
   const prevFirst = s.settings.firstRunnerUpPot || 0;
   const prevSecond = s.settings.secondRunnerUpPot || 0;
@@ -396,6 +396,7 @@ function reconcileRunnerUpPots(s) {
   // For a fresh restore of paid data, this will populate the correct value from the paid records.
   s.settings.firstRunnerUpPot = Math.max(prevFirst, first);
   s.settings.secondRunnerUpPot = Math.max(prevSecond, second);
+  s.settings.houseFplAdmin = (s.settings.houseFplAdmin || 0) + house;
 
   if (first > prevFirst || second > prevSecond) {
     console.log(`[reconcile] Runner up pots updated from paid records: 1st ${prevFirst}→${s.settings.firstRunnerUpPot}, 2nd ${prevSecond}→${s.settings.secondRunnerUpPot}`);
@@ -1132,16 +1133,18 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
           beef.paidBy[payerId] = { amount: paidAmt, ref: reference, paidAt: nowISO() };
           beef.totalStaked = (beef.totalStaked || 0) + paidAmt;
           const cut = Math.floor(paidAmt * 0.1);
-          const first = Math.floor(cut * 0.6);
-          const second = cut - first;
+          const first = Math.floor(cut * 0.5);
+          const second = Math.floor(cut * 0.3);
+          const house = cut - first - second;
           s.settings.firstRunnerUpPot = (s.settings.firstRunnerUpPot || 0) + first;
           s.settings.secondRunnerUpPot = (s.settings.secondRunnerUpPot || 0) + second;
+          s.settings.houseFplAdmin = (s.settings.houseFplAdmin || 0) + house;
           s.ledger.push({
             id: generateId("ldg"),
             type: "runner_up_fund",
             managerId: "system",
             amount: -cut,
-            note: `House cut 60/40 to 1st/2nd runner up from beef stake payment for "${beef.category}"`,
+            note: `House cut 50/30/20 (20% house) from beef stake payment for "${beef.category}"`,
             at: nowISO()
           });
           beef.prizePot = (beef.prizePot || 0) + (paidAmt - cut);
@@ -1199,10 +1202,12 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
       };
       beef.totalStaked = (beef.totalStaked || 0) + paidAmt;
       const cut = Math.floor(paidAmt * 0.1);
-      const first = Math.floor(cut * 0.6);
-      const second = cut - first;
+      const first = Math.floor(cut * 0.5);
+      const second = Math.floor(cut * 0.3);
+      const house = cut - first - second;
       s.settings.firstRunnerUpPot = (s.settings.firstRunnerUpPot || 0) + first;
       s.settings.secondRunnerUpPot = (s.settings.secondRunnerUpPot || 0) + second;
+      s.settings.houseFplAdmin = (s.settings.houseFplAdmin || 0) + house;
       s.ledger.push({
         id: generateId("ldg"),
         type: "runner_up_fund",
@@ -1228,16 +1233,18 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
     const sponsorAmt = Number(payment.amount) || 0;
     const sponsorCut = Math.floor(sponsorAmt * 0.1);
     if (sponsorCut > 0) {
-      const sf = Math.floor(sponsorCut * 0.6);
-      const ss = sponsorCut - sf;
+      const sf = Math.floor(sponsorCut * 0.5);
+      const ss = Math.floor(sponsorCut * 0.3);
+      const sh = sponsorCut - sf - ss;
       s.settings.firstRunnerUpPot = (s.settings.firstRunnerUpPot || 0) + sf;
       s.settings.secondRunnerUpPot = (s.settings.secondRunnerUpPot || 0) + ss;
+      s.settings.houseFplAdmin = (s.settings.houseFplAdmin || 0) + sh;
       s.ledger.push({
         id: generateId("ldg"),
         type: "runner_up_fund",
         managerId: "system",
         amount: -sponsorCut,
-        note: `10% house cut 60/40 from sponsor "${payment.sponsorTarget}" on payment`,
+        note: `10% house cut 50/30/20 (20% house) from sponsor "${payment.sponsorTarget}" on payment`,
         at: nowISO()
       });
     }
@@ -1811,12 +1818,14 @@ async function cancelBeef(beefId) {
             note: `Full refund for cancelled beef "${beef.category}" (stake returned to wallet)`,
             at: nowISO()
           });
-          // Reverse the house cut 60/40 since cancelled
+          // Reverse the house cut 50/30/20 since cancelled
           const cut = Math.floor(p.amount * 0.1);
-          const rf = Math.floor(cut * 0.6);
-          const rs = cut - rf;
+          const rf = Math.floor(cut * 0.5);
+          const rs = Math.floor(cut * 0.3);
+          const rh = cut - rf - rs;
           s.settings.firstRunnerUpPot = Math.max(0, (s.settings.firstRunnerUpPot || 0) - rf);
           s.settings.secondRunnerUpPot = Math.max(0, (s.settings.secondRunnerUpPot || 0) - rs);
+          s.settings.houseFplAdmin = Math.max(0, (s.settings.houseFplAdmin || 0) - rh);
           s.ledger.push({
             id: generateId("ldg"),
             type: "runner_up_fund",
@@ -4204,9 +4213,11 @@ app.post("/api/wallet/request-payout", async (req, res) => {
   const balance = getWalletBalance(mgr.id);
   const payoutAmount = Math.min(Number(amount) || 0, balance);
   if (payoutAmount <= 0) return res.status(400).json({ error: "Invalid amount or insufficient balance" });
+  const fee = payoutAmount >= 5000 ? 150 : 50;
+  if (payoutAmount + fee > balance) return res.status(400).json({ error: `Insufficient balance after withdrawal fee (₦${fee})` });
   if (!mgr.payoutDetails) return res.status(400).json({ error: "No bank details saved. Update profile first." });
 
-  // DEFAULT: Attempt auto Paystack payout
+  // DEFAULT: Attempt auto Paystack payout (bank gets payoutAmount, fee deducted from wallet)
   const transferResult = await initiateTransfer(mgr.id, payoutAmount, "Wallet withdrawal");
 
   const s = await loadStore();
@@ -4239,11 +4250,12 @@ app.post("/api/wallet/request-payout", async (req, res) => {
     id: generateId("ldg"),
     type: entryType,
     managerId: mgr.id,
-    amount: -payoutAmount,
-    note,
+    amount: -(payoutAmount + fee),
+    note: note + (fee > 0 ? ` (fee ₦${fee} deducted)` : ''),
     at: nowISO(),
     payoutDetails: mgr.payoutDetails,
-    transferResult
+    transferResult,
+    fee
   });
   await persistStore();
 
@@ -4254,6 +4266,8 @@ app.post("/api/wallet/request-payout", async (req, res) => {
   res.json({ 
     ok: true, 
     requested: payoutAmount, 
+    fee,
+    totalDeducted: payoutAmount + fee,
     newBalance: getWalletBalance(mgr.id), 
     transfer: transferResult,
     message
@@ -4354,8 +4368,9 @@ app.post("/api/sponsor", async (req, res) => {
   const sponsorAmtW = Number(amount) || 0;
   const sponsorCutW = Math.floor(sponsorAmtW * 0.1);
   if (sponsorCutW > 0) {
-    const sfW = Math.floor(sponsorCutW * 0.6);
-    const ssW = sponsorCutW - sfW;
+    const sfW = Math.floor(sponsorCutW * 0.5);
+    const ssW = Math.floor(sponsorCutW * 0.3);
+    const shW = sponsorCutW - sfW - ssW;
     s.settings.firstRunnerUpPot = (s.settings.firstRunnerUpPot || 0) + sfW;
     s.settings.secondRunnerUpPot = (s.settings.secondRunnerUpPot || 0) + ssW;
     s.ledger.push({
@@ -4436,7 +4451,7 @@ app.post("/api/beef/propose", async (req, res) => {
     at: nowISO(),
     paidBy: {},
     locked: false,
-    joinDeadline: Math.max(1, joinDeadline || currentGW || 1),  // min 1, pre-season safe
+    joinDeadline: Math.max(1, joinDeadline || (currentGW ? currentGW + 1 : 1)),  // default to next/upcoming GW after current finalized (not concluded)
     lockedAt: null,
     autoSettle: !!BEEF_LOGIC_MAP[category]  // only preset logic categories auto-settle; user custom categories stay manual to prevent wrong auto-settlement
   };
@@ -4445,16 +4460,18 @@ app.post("/api/beef/propose", async (req, res) => {
     beef.paidBy[mgr.id] = { amount: paidAmt, ref: 'wallet', paidAt: nowISO() };
     beef.totalStaked = paidAmt;
     const cut = Math.floor(paidAmt * 0.1);
-    const first = Math.floor(cut * 0.6);
-    const second = cut - first;
+    const first = Math.floor(cut * 0.5);
+    const second = Math.floor(cut * 0.3);
+    const house = cut - first - second;
     s.settings.firstRunnerUpPot = (s.settings.firstRunnerUpPot || 0) + first;
     s.settings.secondRunnerUpPot = (s.settings.secondRunnerUpPot || 0) + second;
+    s.settings.houseFplAdmin = (s.settings.houseFplAdmin || 0) + house;
     s.ledger.push({
       id: generateId("ldg"),
       type: "runner_up_fund",
       managerId: "system",
       amount: -cut,
-      note: `House cut 60/40 to 1st/2nd runner up from beef stake (wallet) for "${category}"`,
+      note: `House cut 50/30/20 (20% house) from beef stake (wallet) for "${category}"`,
       at: nowISO()
     });
     beef.prizePot = paidAmt - cut;

@@ -264,7 +264,11 @@ function showDashboard() {
   renderPayAccess();
 
   $('welcome-line').textContent = `WELCOME BACK, MANAGER • ${new Date().getFullYear()}`;
-  $('manager-name').textContent = currentManager.displayName;
+  const nameEl = $('manager-name');
+  if (nameEl) {
+    const b = getBadgeForManager(currentManager.id);
+    nameEl.innerHTML = b ? `${b} ${currentManager.displayName}` : currentManager.displayName;
+  }
   // Persona as big as the name, separated by hyphen, green. Clickable for full details (no brackets).
   if (currentManager.persona) {
     const nameEl = $('manager-name');
@@ -859,7 +863,7 @@ function renderActiveBeefs() {
           <span class="text-xl font-black">₦${(potSize || 0).toLocaleString()}</span>
         </div>
         <div class="text-xs mt-0.5">Paid: ${paidCount} — ${paidNames}</div>
-        <div class="text-xs">Status: <span class="${statusClass} font-semibold">${b.status || 'proposed'}</span>${b.locked ? ' <span class="text-red-400">(LOCKED)</span>' : ''}${b.joinDeadline ? ` • Join by GW${b.joinDeadline}` : ''}</div>
+        <div class="text-xs">Status: <span class="${statusClass} font-semibold">${b.status || 'proposed'}</span>${b.locked ? ' <span class="text-red-400">(LOCKED)</span>' : ''}${b.joinDeadline ? ` • Join for GW${b.joinDeadline} (upcoming)` : ''}</div>
         <div class="mt-2 flex flex-wrap gap-1 text-[10px]">
           <button onclick="showWhatsAppShare(decodeURIComponent('${safeShare}'), 'Share beef'); event.stopImmediatePropagation();" class="px-2 py-0.5 bg-[#ffaa00] text-black rounded">📲 Share WA + Link</button>
           ${!b.locked && b.status === 'proposed' ? `<button onclick="respondToBeefLink('${b.id}', 'accept')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Accept</button>` : ''}
@@ -2685,13 +2689,24 @@ async function loadAndRenderLineup(managerId, container) {
 function simulateNextGW(managerData, recent, container) {
   const basePts = recent.points || (managerData.fplTotal || 60);
   const avg = (window.standingsData && window.standingsData.roundAverages && window.standingsData.roundAverages.fpl) || 65;
-  // How it works: 60% your recent performance + 40% league average + random variance for form/opponents + small form bias.
-  // This models "what you MAY get next week" based on stats (not the official API live projection).
-  const variance = (Math.random() - 0.5) * 25; // +/-12.5
-  const formBoost = basePts > avg ? 4 : -3;
-  const proj = Math.max(20, Math.round(basePts * 0.6 + avg * 0.4 + variance + formBoost));
+  // Robust simulation using actual squad data if available (picks from last GW), last captain multiplier, and league avg.
+  // Uses FPL squad players' recent points form if squad same. Adds captain boost. Still has variance for opponents/form.
+  let squadBase = basePts;
+  let capBoost = 0;
+  if (managerData.recentPicks && managerData.recentPicks.length > 0) {
+    const picks = managerData.recentPicks;
+    squadBase = picks.reduce((sum, p) => sum + (p.points || 0), 0);
+    const lastCap = picks.find(p => p.multiplier > 1);
+    if (lastCap) {
+      capBoost = (lastCap.points || 0) * 1; // extra for armband simulation if squad same
+    }
+  }
+  const variance = (Math.random() - 0.5) * 20;
+  const formBoost = basePts > avg ? 3 : -2;
+  const proj = Math.max(20, Math.round(squadBase * 0.7 + avg * 0.3 + variance + formBoost + capBoost));
   const chipNote = recent.activeChip ? ' (chip available last week)' : '';
-  const simHtml = `<div class="mt-3 p-2 bg-black/60 rounded text-xs border border-[#00ff85]">Simulate next game week for ${managerData.displayName}: ~${proj} pts (your recent ${basePts} + league avg ${avg}${chipNote}). Possible range ±15. (Variance model from stats)</div>`;
+  const squadNote = (managerData.recentPicks && managerData.recentPicks.length) ? ' (based on your last squad + captain)' : '';
+  const simHtml = `<div class="mt-3 p-2 bg-black/60 rounded text-xs border border-[#00ff85]">Simulate next game week for ${managerData.displayName}: ~${proj} pts${squadNote}${chipNote}. Range ~±15-20 pts. Uses your actual last squad players' form + captain if squad unchanged + league data.</div>`;
   const old = container.querySelector('.sim-result');
   if (old) old.remove();
   const div = document.createElement('div');
@@ -3486,7 +3501,7 @@ function renderFplTailored() {
       if (h2hConfigured && mgrTeamId) {
         const h2hRes = h2hResults.find(r => String(r.entry) === String(mgrTeamId));
         if (h2hRes) {
-          h2hHtml = `<div class="text-[9px] text-[#00ff85] mt-0.5">H2H Rank: ${h2hRes.rank} (P: ${h2hRes.points_for || 0}/${h2hRes.points_against || 0})</div>`;
+          h2hHtml = `<div class="text-[9px] text-[#00ff85] mt-0.5">H2H Rank: ${h2hRes.rank} W${h2hRes.matches_won||0}D${h2hRes.matches_drawn||0}L${h2hRes.matches_lost||0} (P:${h2hRes.points_for||0}/${h2hRes.points_against||0})</div>`;
         } else {
           h2hHtml = `<div class="text-[9px] text-[#666] mt-0.5">H2H: not matched in league (your teamId=${mgrTeamId})</div>`;
         }
@@ -3518,74 +3533,43 @@ function renderFplTailored() {
     });
   }
 
-  // H2H box — real data from fplH2h league standings (not derived/fake)
+  // H2H box — renamed & enhanced to full standings + fixtures (clean, no commentaries)
   if ($('fpl-h2h-this')) {
     const lids = standingsData.leagueIds || {};
-    let html = '<span class="text-[#888]">Set fplH2h ID in admin (Leagues → set fplH2h)</span>';
+    let html = '<span class="text-[#888]">Set fplH2h ID in admin</span>';
     if (lids.fplH2h) {
       const serverH = standingsData.realLeagues && standingsData.realLeagues.fplH2h;
       const h2hData = (serverH && serverH.standings && serverH.standings.results) ? serverH : (clientH2HData || serverH || null);
-      const source = (serverH && serverH.standings && serverH.standings.results) ? 'server' : (clientH2HData ? 'client-direct' : 'none');
       if (h2hData && h2hData.standings && h2hData.standings.results) {
-        const results = h2hData.standings.results;
-        // Find D-League participants in H2H league
-        const dleagueInH2H = (standingsData.fpl || []).map(m => {
-          const mgrTid = (m.fplTeam && m.fplTeam.teamId) || (m.fpl && m.fpl.teamId) || '';
-          const res = results.find(r => String(r.entry) === String(mgrTid));
-          return res ? { ...m, h2hRes: res } : null;
-        }).filter(Boolean).sort((a,b) => (a.h2hRes.rank || 999) - (b.h2hRes.rank || 999));
-
-        const userTid = (currentManager && ((currentManager.fplTeam && currentManager.fplTeam.teamId) || (currentManager.fpl && currentManager.fpl.teamId)) || '');
-        let content = '';
-        if (userTid) {
-          const userRes = results.find(r => String(r.entry) === String(userTid));
-          if (userRes) {
-            content = `Your H2H Rank: <span class="font-bold text-[#00ff85]">${userRes.rank}</span>`;
-            if (userRes.matches_won !== undefined) {
-              content += ` <span class="text-xs">(${userRes.matches_won}W-${userRes.matches_drawn || 0}D-${userRes.matches_lost || 0}L)</span>`;
-            }
-            content += `<div class="text-[9px] mt-1">For: ${userRes.points_for || 0} • Against: ${userRes.points_against || 0}</div>`;
-          } else {
-            content = `<div>You (FPL team ${userTid}) not found in this H2H league's standings.</div>`;
-          }
-        }
-
-        if (dleagueInH2H.length) {
-          content += `<div class="text-[10px] mt-2 font-semibold">D-League in H2H:</div>`;
-          content += dleagueInH2H.slice(0, 5).map(item => {
-            const r = item.h2hRes;
-            return `<div class="text-[9px]">${r.rank}. ${item.displayName} (P:${r.points_for||0}/${r.points_against||0})</div>`;
-          }).join('');
-          if (dleagueInH2H.length > 5) content += `<div class="text-[8px] text-[#888]">... +${dleagueInH2H.length-5} more</div>`;
-        } else {
-          content += `<div class="text-[10px] mt-1 text-[#888]">No D-League managers matched in H2H results (check manager FPL Team IDs in admin audit match the league entries).</div>`;
-        }
-
-        html = content || `H2H league ID set (${lids.fplH2h}).`;
-        const leagueName = (h2hData.league && h2hData.league.name) ? ` — ${h2hData.league.name}` : '';
-        html += `<div class="text-[9px] text-[#888] mt-1">League${leagueName}. Source: ${source}. <a href="https://fantasy.premierleague.com/leagues/${lids.fplH2h}/standings" target="_blank" class="underline">View on FPL</a></div>`;
-        // Debug info so you can see exactly what's happening
-        const sampleFplEntries = results.slice(0,3).map(r => r.entry).join(', ');
-        const sampleDTeamIds = (standingsData.fpl || []).slice(0,3).map(m => (m.fplTeam && m.fplTeam.teamId) || (m.fpl && m.fpl.teamId) || '?').join(', ');
-        html += `<div class="text-[8px] text-[#555] mt-1">DEBUG: FPL results=${results.length} | D-matches=${dleagueInH2H.length} | sample FPL entries: ${sampleFplEntries} | sample D teamIds: ${sampleDTeamIds}</div>`;
+        let results = [...h2hData.standings.results].sort((a,b) => (a.rank||999) - (b.rank||999));
+        const nextGw = ((standingsData.currentRound && standingsData.currentRound.fpl) || 1) + 1;
+        // Build table for all
+        let table = `<div class="text-xs font-semibold mb-1">H2H League Standings (GW${nextGw} fixtures)</div>`;
+        table += `<table class="w-full text-[10px]"><thead><tr class="text-[#888]"><th class="text-left">Rank</th><th class="text-left">Team</th><th>W</th><th>D</th><th>L</th><th>PF/PA</th><th>Next</th></tr></thead><tbody>`;
+        results.forEach(r => {
+          const isD = (standingsData.fpl || []).some(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId)) === String(r.entry));
+          const mainPts = isD ? (standingsData.fpl || []).find(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId))===String(r.entry)) : null;
+          const ptsNote = mainPts && mainPts.currentFpl != null ? ` (main GW: ${mainPts.currentFpl})` : '';
+          table += `<tr><td>${r.rank}</td><td>${r.entry_name || r.player_name}${ptsNote}</td><td>${r.matches_won||0}</td><td>${r.matches_drawn||0}</td><td>${r.matches_lost||0}</td><td>${r.points_for||0}/${r.points_against||0}</td><td>GW${nextGw} (app)</td></tr>`;
+        });
+        table += `</tbody></table>`;
+        html = table;
       } else {
-        const detail = (h2hData && h2hData.detail) ? ` — ${h2hData.detail}` : '';
-        html = `H2H league ID set (${lids.fplH2h})${detail}. Could not load standings (verify ID, ensure it's a H2H not classic league, or refresh). <a href="https://fantasy.premierleague.com/leagues/${lids.fplH2h}/standings" target="_blank" class="underline">Open league on FPL</a>`;
+        html = `H2H ID set (${lids.fplH2h}) — loading data...`;
       }
     }
     $('fpl-h2h-this').innerHTML = html;
   }
   if ($('fpl-h2h-next')) $('fpl-h2h-next').textContent = 'End of season settlement';
 
-  // Cup info
+  // Cup info — only FPL Cup, cleaned
   if ($('fpl-cup-info')) {
-    $('fpl-cup-info').innerHTML = `Cup starts GW 17-18 per FPL. Check official for bracket. <span class="text-[#666]">No separate custom cup here.</span>`;
+    $('fpl-cup-info').innerHTML = `FPL Cup`;
   }
 
-  // Challenge of week + more (plenty)
+  // Challenge of week removed from UI (clean)
   if ($('fpl-challenge-week')) {
-    const chs = FPL_CHALLENGES.slice(0, 5).map(ch => `<div>⚔️ <strong>${ch.title}</strong>: ${ch.desc} <span class="text-[#00ff85]">₦${ch.prize}</span></div>`).join('');
-    $('fpl-challenge-week').innerHTML = chs + `<div class="text-[#888] text-[9px] mt-1">+ more in Challenge Room (auto settled to ledger)</div>`;
+    $('fpl-challenge-week').innerHTML = ``;
   }
 
   // Squad status
@@ -3783,9 +3767,13 @@ function renderUclTailored() {
       const isMe = m.id === currentManager?.id;
       const row = document.createElement('div');
       row.className = `flex justify-between items-center px-3 py-1.5 rounded-xl cursor-pointer ${isMe ? 'bg-[#222]' : 'hover:bg-[#1c1c1c]'}`;
+      const mdBadge = m.currentUclSource === 'live-projection' ? '<span class="text-[9px] px-1 bg-blue-900 text-blue-300">LIVE</span>' : (m.currentUclSource==='official-fpl' ? '<span class="text-[9px] px-1 bg-[#003322] text-[#00ff85]">FINAL</span>' : '');
       row.innerHTML = `
         <div>${m.displayName} ${m.uclClubName ? `(${m.uclClubName})` : ''} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
-        <div class="font-mono font-bold">${m.uclTotal ?? '—'} pts</div>
+        <div class="text-right font-mono">
+          <div class="font-bold">${m.uclTotal ?? '—'} pts</div>
+          <div class="text-[10px]">MD: ${m.currentUcl ?? '—'} ${mdBadge}</div>
+        </div>
       `;
       row.onclick = () => {
         // Now loads into the shared lineup viewer (will show UCL squad)
