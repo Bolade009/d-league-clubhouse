@@ -4364,6 +4364,24 @@ async function adminManageH2HFixtures() {
 
   const allRows = Array.from(picksDiv.children);
 
+  // Auto-fill reverses from currentFixtures for symmetry (e.g. if A->B set but B->A not)
+  Object.entries(currentFixtures).forEach(([k, v]) => {
+    if (!v) return;
+    const rowForK = allRows.find(r => String(r._managerKey) === String(k));
+    const rowForV = allRows.find(r => String(r._managerKey) === String(v));
+    if (rowForK && rowForK._sel && String(rowForK._sel.value || '') !== String(v)) {
+      rowForK._sel.value = v;
+    }
+    if (rowForV && rowForV._sel && String(rowForV._sel.value || '') !== String(k)) {
+      rowForV._sel.value = k;
+    }
+  });
+
+  // set initial prevValue for change tracking
+  allRows.forEach(r => {
+    if (r._sel) r._sel.dataset.prevValue = r._sel.value || '';
+  });
+
   // Dynamically remove already-selected opponents from other dropdowns (unique assignments, no double-booking).
   // Rebuilds options live as you pick.
   function refreshOptions() {
@@ -4398,7 +4416,37 @@ async function adminManageH2HFixtures() {
 
   allRows.forEach(row => {
     if (row._sel) {
-      row._sel.onchange = () => refreshOptions();
+      row._sel.onchange = () => {
+        const myKey = row._managerKey;
+        const sel = row._sel;
+        const prev = sel.dataset.prevValue || '';
+        const curr = sel.value;
+        if (curr && curr !== prev) {
+          // auto-fill the reverse for symmetry (A picks B => also set B picks A)
+          const oppRow = allRows.find(r => String(r._managerKey) === String(curr));
+          if (oppRow && oppRow._sel && String(oppRow._sel.value || '') !== String(myKey)) {
+            oppRow._sel.value = myKey;
+            oppRow._sel.dataset.prevValue = myKey;
+          }
+        } else if (!curr && prev) {
+          // cleared: clear the old reverse if it was pointing back
+          const prevOppRow = allRows.find(r => String(r._managerKey) === String(prev));
+          if (prevOppRow && prevOppRow._sel && String(prevOppRow._sel.value || '') === String(myKey)) {
+            prevOppRow._sel.value = '';
+            prevOppRow._sel.dataset.prevValue = '';
+          }
+        }
+        // also if changed, clear old partner's reverse
+        if (prev && prev !== curr) {
+          const prevOppRow = allRows.find(r => String(r._managerKey) === String(prev));
+          if (prevOppRow && prevOppRow._sel && String(prevOppRow._sel.value || '') === String(myKey)) {
+            prevOppRow._sel.value = '';
+            prevOppRow._sel.dataset.prevValue = '';
+          }
+        }
+        sel.dataset.prevValue = curr;
+        refreshOptions();
+      };
     }
   });
   // initial cleanup in case preloaded currentFixtures had any overlap
