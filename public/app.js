@@ -297,6 +297,7 @@ function showDashboard() {
     ${bankStatus}
     <button onclick="showBeefModal()" class="text-xs px-3 py-1 bg-purple-600 text-white font-semibold rounded-lg active:scale-[0.985] ml-2">⚔️ Start a Beef</button>
     <button onclick="showSponsorModal()" class="text-xs px-3 py-1 bg-yellow-500 text-black font-semibold rounded-lg active:scale-[0.985]">🏆 Sponsor an Award</button>
+    ${currentLeagueMode !== 'ucl' ? `<button onclick="showBeefModal()" class="text-xs px-3 py-1 bg-purple-600 text-white font-semibold rounded-lg active:scale-[0.985] ml-2">⚔️ Start a Beef</button>` : ''}
   `;
   if (nameEl && nameEl.parentNode) nameEl.parentNode.appendChild(walletEl);
 
@@ -524,14 +525,54 @@ function renderTopPotsAndActions() {
 
   const proj = window.lastProjections || {};
   const fpl = proj.fpl || {};
+  const uclProj = (proj.ucl || {});
+  const isUcl = currentLeagueMode === 'ucl';
+
+  const weekly = isUcl ? (uclProj.mdPot90 || 0) : (fpl.weeklyPot90 || 0);
   const h2h = fpl.h2hOverallPot || 0;
   const overall = fpl.overallWinnerPot || 0;
   const cup = fpl.cupWinnerPot || 0;
-  const weekly = fpl.weeklyPot90 || 0;
   const firstRU = fpl.firstRunnerUpPot || 0;
   const secondRU = fpl.secondRunnerUpPot || 0;
 
-  // Build once, then update values for speed (avoids full re-parse on every data refresh)
+  // In UCL mode: ONLY show current Match Day pot. No FPL mixing.
+  if (isUcl) {
+    if (!container.hasChildNodes() || container.querySelector('#pot-grid-ucl') === null) {
+      container.innerHTML = `
+        <div class="mt-4 p-4 bg-[#0a0a0a] border border-[#00ff85] rounded-3xl">
+          <div class="font-black text-lg mb-2 text-[#00ff85]">💰 UCL MATCH DAY POT</div>
+          <div id="pot-grid-ucl" class="grid grid-cols-1 md:grid-cols-1 gap-3 text-sm">
+            <div class="bg-black p-3 rounded-2xl border border-[#333]">
+              <div class="text-xs text-[#888]">This MD pot (90% to winner)</div>
+              <div id="pot-ucl-md" class="text-2xl font-black text-[#00ff85]">₦0</div>
+            </div>
+          </div>
+          <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+            <button onclick="boostPot('weekly')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost this MD pot</button>
+            <button onclick="showSponsorModal()" class="px-2 py-1 bg-yellow-500 text-black font-semibold rounded hover:bg-yellow-400">🏆 Sponsor an Award</button>
+          </div>
+          <div id="pot-boosts-list" class="mt-3 text-[11px] text-[#aaa] max-h-24 overflow-auto"></div>
+          <div class="text-[10px] text-[#666] mt-1">UCL mode: Only MD pot shown. Boosts &amp; sponsors for UCL awards/pots work here. No FPL data mixed.</div>
+        </div>
+      `;
+    }
+    const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = '₦' + (val || 0).toLocaleString(); };
+    setVal('pot-ucl-md', weekly);
+
+    const boostsWrap = document.getElementById('pot-boosts-list');
+    if (boostsWrap && standingsData && Array.isArray(standingsData.potBoosts)) {
+      const recent = [...standingsData.potBoosts].slice(-8).reverse();
+      if (recent.length) {
+        boostsWrap.innerHTML = '<div class="font-semibold text-[#00ff85] mb-0.5">Recent boosts:</div>' +
+          recent.map(b => `<div>${b.managerName || ''} added ₦${(b.amount||0).toLocaleString()}</div>`).join('');
+      } else {
+        boostsWrap.innerHTML = '<div class="text-[10px]">No boosts yet.</div>';
+      }
+    }
+    return;
+  }
+
+  // FPL mode: full pots (original)
   if (!container.hasChildNodes() || container.querySelector('#pot-grid') === null) {
     container.innerHTML = `
       <div class="mt-4 p-4 bg-[#0a0a0a] border border-[#00ff85] rounded-3xl">
@@ -563,8 +604,6 @@ function renderTopPotsAndActions() {
           </div>
         </div>
 
-
-
         <div class="mt-3 grid grid-cols-2 md:grid-cols-6 gap-2 text-xs">
           <button onclick="boostPot('weekly')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost this week's</button>
           <button onclick="boostPot('h2h')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost H2H</button>
@@ -579,7 +618,6 @@ function renderTopPotsAndActions() {
     `;
   }
 
-  // Fast update only the values (no full DOM rebuild)
   const setVal = (id, val) => {
     const el = document.getElementById(id);
     if (el) el.textContent = '₦' + (val || 0).toLocaleString();
@@ -591,7 +629,6 @@ function renderTopPotsAndActions() {
   setVal('pot-first-ru', firstRU);
   setVal('pot-second-ru', secondRU);
 
-  // Render recent boosts with names (only if data present)
   const boostsWrap = document.getElementById('pot-boosts-list');
   if (boostsWrap && standingsData && Array.isArray(standingsData.potBoosts)) {
     const recent = [...standingsData.potBoosts].slice(-8).reverse();
@@ -789,6 +826,11 @@ function createActiveBeefsContainer() {
 }
 
 function renderActiveBeefs() {
+  if (currentLeagueMode === 'ucl') {
+    const c = document.getElementById('active-beefs-top');
+    if (c) c.style.display = 'none';
+    return;
+  }
   const container = document.getElementById('active-beefs-top') || createActiveBeefsContainer();
   if (!container) return;
 
@@ -917,7 +959,7 @@ async function loadAdminOverview() {
               <div><span class="px-2 py-0.5 text-xs rounded ${isSelf ? 'bg-[#003322] text-[#00ff85]' : 'bg-[#003322] text-[#00ff85]'}">${isSelf ? 'SELF-REGISTERED' : (isAdded ? 'ADDED' : 'APPROVED')}</span>${teamMissing ? ' <span class="px-1 text-[9px] bg-red-900 text-red-300 rounded">MISSING TEAM ID - FIX</span>' : ''}</div>
               <div class="font-mono text-sm mt-1">${code}</div>
               <button onclick="navigator.clipboard.writeText('${code}');this.textContent='copied!'" class="mt-1 text-[10px] px-2 py-0.5 bg-[#00ff85] text-black rounded">copy code</button>
-              ${teamMissing ? `<button onclick="editManager('${email}', '${(existing && existing.displayName || p.name || '').replace(/'/g,'\\\'')}', '${(existing && existing.fplClubName || p.fplClubName || '').replace(/'/g,'\\\'')}', '${(existing && existing.fpl && existing.fpl.teamId || p.fplId || '').replace(/'/g,'\\\'')}', '', '${code}');" class="mt-1 block text-[9px] px-2 py-0.5 bg-red-600 text-white rounded">FIX TEAM ID NOW</button>` : ''}
+              ${teamMissing ? `<button onclick="editManager('${email}', '${(existing && existing.displayName || p.name || '').replace(/'/g,'\\\'')}', '${(existing && existing.fplClubName || p.fplClubName || '').replace(/'/g,'\\\'')}', '${(existing && existing.uclClubName || '').replace(/'/g,'\\\'')}', '${(existing && existing.fpl && existing.fpl.teamId || p.fplId || '').replace(/'/g,'\\\'')}', '', '${code}');" class="mt-1 block text-[9px] px-2 py-0.5 bg-red-600 text-white rounded">FIX TEAM ID NOW</button>` : ''}
             </div>`;
         } else {
           actionHtml = `<button data-name="${(p.name || '').replace(/"/g, '&quot;')}" data-email="${(p.email || '').replace(/"/g, '&quot;')}" data-club="${(p.fplClubName || '').replace(/"/g, '&quot;')}" data-fplid="${(p.fplId || '').replace(/"/g, '&quot;')}"
@@ -986,7 +1028,7 @@ async function loadAdminOverview() {
           <div class="text-right">
             <div class="font-mono text-sm">${code}</div>
             <button onclick="navigator.clipboard.writeText('${code}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500)" class="mt-1 text-[10px] px-3 py-0.5 bg-[#222] hover:bg-[#333] rounded">Copy Code</button>
-            <button onclick="editManager('${(m.email||'').replace(/'/g,'\\\'')}', '${(m.displayName||'').replace(/'/g,'\\\'')}', '${(m.fplClubName||'').replace(/'/g,'\\\'')}', '${(m.fpl && m.fpl.teamId || '').replace(/'/g,'\\\'')}', '${(m.ucl && m.ucl.teamId || '').replace(/'/g,'\\\'')}', '${code.replace(/'/g,'\\\'')}')" class="mt-1 ml-1 text-[9px] px-2 py-0.5 bg-[#222] hover:bg-[#333] rounded">Edit</button>
+            <button onclick="editManager('${(m.email||'').replace(/'/g,'\\\'')}', '${(m.displayName||'').replace(/'/g,'\\\'')}', '${(m.fplClubName||'').replace(/'/g,'\\\'')}', '${(m.uclClubName||m.ucl?.clubName||'').replace(/'/g,'\\\'')}', '${(m.fpl && m.fpl.teamId || '').replace(/'/g,'\\\'')}', '${(m.ucl && m.ucl.teamId || '').replace(/'/g,'\\\'')}', '${code.replace(/'/g,'\\\'')}')" class="mt-1 ml-1 text-[9px] px-2 py-0.5 bg-[#222] hover:bg-[#333] rounded">Edit</button>
             ${reclaimBtn}
             ${!isAdmin ? `<button onclick="if(confirm('Delete ${ (m.displayName||'').replace(/'/g,'\\\'') }? History stays. This cannot be undone easily.')) deleteManager('${m.id || ''}', '${(m.email||'').replace(/'/g,'\\\'')}');" class="mt-1 ml-1 text-[9px] px-2 py-0.5 bg-red-900 text-white rounded">Delete</button>` : ''}
           </div>
@@ -1034,6 +1076,7 @@ async function loadAdminOverview() {
           <button onclick="promptSetLeagues()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">SET LEAGUE IDs</button>
           <button onclick="emergencySync()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">FORCE SYNC</button>
           <button onclick="adminManageH2HFixtures()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">H2H FIXTURES (enter matchups)</button>
+          <button onclick="adminManageUclMdScores()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">UCL MD SCORES (manual + finalize)</button>
         </div>
       </div>
 
@@ -1744,24 +1787,25 @@ async function deleteManager(id, email) {
   }
 }
 
-async function editManager(email, currentName, currentClub, currentFplId, currentUclId, currentCode) {
+async function editManager(email, currentName, currentFplClub, currentUclClub, currentFplId, currentUclId, currentCode) {
   if (!email) return alert('No email');
   const modal = $('modal');
   const content = $('modal-content');
   content.innerHTML = `
     <div class="space-y-3">
       <div class="font-bold text-lg">Edit Manager — only change what you need</div>
-      <div class="text-xs text-[#888]">Team IDs and league IDs are critical for auto beefs, H2H, runner-ups. Edit one field at a time if preferred. Paid status & history preserved.</div>
+      <div class="text-xs text-[#888]">UCL Club Name can be different from FPL. Team IDs critical for data. Edit one field at a time. Paid status & history preserved.</div>
       <div><label class="text-xs">Display Name</label><input id="edit-name" value="${currentName || ''}" class="w-full bg-[#111] border border-[#444] p-1 rounded text-sm"></div>
       <div><label class="text-xs">Access Code</label><input id="edit-code" value="${currentCode || ''}" class="w-full bg-[#111] border border-[#444] p-1 rounded text-sm"></div>
-      <div><label class="text-xs">FPL Club Name</label><input id="edit-club" value="${currentClub || ''}" class="w-full bg-[#111] border border-[#444] p-1 rounded text-sm"></div>
+      <div><label class="text-xs">FPL Club Name</label><input id="edit-club" value="${currentFplClub || ''}" class="w-full bg-[#111] border border-[#444] p-1 rounded text-sm"></div>
+      <div><label class="text-xs">UCL Club / Team Name (separate, used in UCL mode)</label><input id="edit-uclclub" value="${currentUclClub || ''}" class="w-full bg-[#111] border border-[#444] p-1 rounded text-sm"></div>
       <div><label class="text-xs">FPL Team ID (exact from FPL)</label><input id="edit-fplid" value="${currentFplId || ''}" class="w-full bg-[#111] border border-[#444] p-1 rounded text-sm font-mono"></div>
       <div><label class="text-xs">UCL Team ID (optional)</label><input id="edit-uclid" value="${currentUclId || ''}" class="w-full bg-[#111] border border-[#444] p-1 rounded text-sm font-mono"></div>
       <div class="flex gap-2">
         <button onclick="submitEditManager('${email}')" class="flex-1 py-2 bg-[#00ff85] text-black font-bold rounded">SAVE CHANGES</button>
         <button onclick="closeModal()" class="flex-1 py-2 border border-[#333] rounded">CANCEL</button>
       </div>
-      <div class="text-[10px] text-[#666]">League IDs shown above in this panel. Make sure they match your FPL leagues exactly.</div>
+      <div class="text-[10px] text-[#666]">UCL name shows in UCL list and squads. Make sure IDs match if using auto data.</div>
     </div>
   `;
   modal.classList.remove('hidden');
@@ -1772,13 +1816,14 @@ async function submitEditManager(email) {
   const name = $('edit-name') ? $('edit-name').value.trim() : '';
   const accessCode = $('edit-code') ? $('edit-code').value.trim() : '';
   const fplClubName = $('edit-club') ? $('edit-club').value.trim() : '';
+  const uclClubName = $('edit-uclclub') ? $('edit-uclclub').value.trim() : '';
   const fplId = $('edit-fplid') ? $('edit-fplid').value.trim() : '';
   const uclId = $('edit-uclid') ? $('edit-uclid').value.trim() : '';
-  if (!name && !accessCode && !fplClubName && !fplId && !uclId) return alert('No changes');
+  if (!name && !accessCode && !fplClubName && !uclClubName && !fplId && !uclId) return alert('No changes');
   try {
     const res = await fetchJSON('/api/admin/add-manager', {
       method: 'POST',
-      body: JSON.stringify({ name, email, accessCode, fplId, uclId, fplClubName })
+      body: JSON.stringify({ name, email, accessCode, fplId, uclId, fplClubName, uclClubName })
     });
     closeModal();
     alert('✅ Manager updated!\n' + (res.message || 'Details saved. Paid status preserved.'));
@@ -3821,17 +3866,29 @@ function renderUclTailored() {
     uclList.forEach(m => {
       const isMe = m.id === currentManager?.id;
       const row = document.createElement('div');
-      row.className = `flex justify-between items-center px-3 py-1.5 rounded-xl cursor-pointer ${isMe ? 'bg-[#222]' : 'hover:bg-[#1c1c1c]'}`;
-      const mdBadge = m.currentUclSource === 'live-projection' ? '<span class="text-[9px] px-1 bg-blue-900 text-blue-300">LIVE</span>' : (m.currentUclSource==='official-fpl' ? '<span class="text-[9px] px-1 bg-[#003322] text-[#00ff85]">FINAL</span>' : '');
+      row.className = `flex justify-between items-center px-3 py-2 rounded-xl cursor-pointer ${isMe ? 'bg-[#0d2a1f]' : 'hover:bg-[#111]'} gap-4`;
+      const mdBadge = m.currentUclSource === 'live-projection' ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-900 text-blue-300 font-mono">LIVE</span>' : (m.currentUclSource==='official-fpl' ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-[#003322] text-[#00ff85] font-mono">FINAL</span>' : '');
+      const club = m.uclClubName ? ` <span class="text-[#888] text-xs">(${m.uclClubName})</span>` : '';
       row.innerHTML = `
-        <div>${m.displayName} ${m.uclClubName ? `(${m.uclClubName})` : ''} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
-        <div class="text-right font-mono">
-          <div class="font-bold">${m.uclTotal ?? '—'} pts</div>
-          <div class="text-[10px]">MD: ${m.currentUcl ?? '—'} ${mdBadge}</div>
+        <div class="min-w-0">
+          <div class="font-semibold truncate">${m.displayName}${club} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
+        </div>
+        <div class="flex items-center gap-3 text-right font-mono flex-shrink-0">
+          <div>
+            <div class="text-[10px] text-[#666] tracking-widest">TOTAL</div>
+            <div class="font-bold tabular-nums text-lg leading-none">${m.uclTotal ?? '—'}</div>
+          </div>
+          <div class="w-px h-6 bg-[#333]"></div>
+          <div>
+            <div class="text-[10px] text-[#666] tracking-widest">THIS MD</div>
+            <div class="flex items-center gap-1 justify-end">
+              <span class="font-bold tabular-nums text-lg leading-none">${m.currentUcl ?? '—'}</span>
+              ${mdBadge}
+            </div>
+          </div>
         </div>
       `;
       row.onclick = () => {
-        // Now loads into the shared lineup viewer (will show UCL squad)
         loadAndRenderLineup(m.id, $('lineup-viewer'));
       };
       list.appendChild(row);
@@ -4232,6 +4289,94 @@ async function adminManageH2HFixtures() {
   modal.querySelector('#h2h-cancel').onclick = () => document.body.removeChild(modal);
 }
 
+async function adminManageUclMdScores() {
+  if (!standingsData || !(standingsData.ucl || []).length) {
+    alert('Switch to UCL or load data with paid UCL managers first.');
+    return;
+  }
+  const uclMgrs = standingsData.ucl || [];
+  let md = parseInt(prompt('Enter UCL Match Day number to edit/finalize (e.g. 1-17):', (standingsData.currentRound?.ucl || 2) - 1 || '1'));
+  if (!md || md < 1) return;
+
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:100;display:flex;align-items:center;justify-content:center;';
+  modal.innerHTML = `
+    <div style="background:#1c1c1c;border:1px solid #333;padding:16px;border-radius:12px;max-width:620px;width:94%;">
+      <div style="font-weight:bold;font-size:15px;margin-bottom:4px;">UCL MD${md} — Enter Points (manual)</div>
+      <div style="font-size:11px;color:#888;margin-bottom:8px;">Enter final points for each paid UCL manager. Use "Finalize &amp; Settle" to credit the winner automatically (same money logic as FPL).</div>
+      <div id="ucl-md-picks" style="max-height:380px;overflow:auto;"></div>
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+        <button id="ucl-md-save" style="background:#00ff85;color:#111;padding:7px 14px;border-radius:6px;font-weight:600;">SAVE POINTS</button>
+        <button id="ucl-md-finalize" style="background:#ffaa00;color:#111;padding:7px 14px;border-radius:6px;font-weight:600;">FINALIZE MD${md} &amp; SETTLE WINNER</button>
+        <button id="ucl-md-cancel" style="padding:7px 14px;border-radius:6px;border:1px solid #444;">CANCEL</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const picksDiv = modal.querySelector('#ucl-md-picks');
+  const currentScores = {};
+  (standingsData.ucl || []).forEach(m => {
+    const sc = (standingsData.scores || []).find(s => s.managerId === m.id && s.competition === 'ucl' && s.round === md);
+    currentScores[m.id] = sc ? sc.points : (m.currentUcl || '');
+  });
+
+  uclMgrs.forEach(m => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;margin-bottom:6px;font-size:12px;gap:8px;';
+    const club = m.uclClubName ? ` (${m.uclClubName})` : '';
+    row.innerHTML = `<span style="width:220px;">${m.displayName}${club}</span>`;
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.style.cssText = 'flex:1; font-size:12px; background:#f8f8f8; color:#111; padding:4px;';
+    inp.value = currentScores[m.id] || '';
+    row.appendChild(inp);
+    picksDiv.appendChild(row);
+    row._managerId = m.id;
+    row._inp = inp;
+  });
+
+  modal.querySelector('#ucl-md-save').onclick = async () => {
+    const updates = {};
+    Array.from(picksDiv.children).forEach(r => {
+      if (r._inp) {
+        const pts = parseInt(r._inp.value, 10);
+        if (!isNaN(pts)) updates[r._managerId] = pts;
+      }
+    });
+    try {
+      await fetchJSON('/api/admin/set-ucl-md-scores', {
+        method: 'POST',
+        body: JSON.stringify({ md, scores: updates })
+      });
+      alert('Saved MD' + md + ' points.');
+      await loadStandings();
+      renderUclTailored();
+    } catch (e) { alert('Save failed: ' + e.message); }
+  };
+
+  modal.querySelector('#ucl-md-finalize').onclick = async () => {
+    if (!confirm(`Finalize MD${md} and settle winner now? This will credit the top scorer using the same pot/wallet logic as FPL.`)) return;
+    const updates = {};
+    Array.from(picksDiv.children).forEach(r => {
+      if (r._inp) {
+        const pts = parseInt(r._inp.value, 10);
+        if (!isNaN(pts)) updates[r._managerId] = pts;
+      }
+    });
+    try {
+      await fetchJSON('/api/admin/set-ucl-md-scores', { method: 'POST', body: JSON.stringify({ md, scores: updates }) });
+      await fetchJSON('/api/settle/run', { method: 'POST', body: JSON.stringify({ comp: 'ucl' }) });
+      alert('MD' + md + ' finalized and settled. Check ledger for winner credit.');
+      document.body.removeChild(modal);
+      await loadAllData();
+      renderUclTailored();
+    } catch (e) { alert('Finalize failed: ' + e.message); }
+  };
+
+  modal.querySelector('#ucl-md-cancel').onclick = () => document.body.removeChild(modal);
+}
+
 // Keep for any legacy calls (prompt fallback minimal)
 async function confirmAndSettleBeef(beefId, prechosenWinnerId) {
   let winnerId = prechosenWinnerId;
@@ -4406,12 +4551,27 @@ function switchLeague(mode) {
   if (mode === 'fpl') {
     if (fplTail) fplTail.classList.remove('hidden');
     if (uclTail) uclTail.classList.add('hidden');
+    // Show FPL-specific areas
+    const fplSections = document.querySelectorAll('.fpl-only, #fpl-cup-info, .fpl-squad-section');
+    fplSections.forEach(el => el.classList.remove('hidden'));
     renderFplTailored();
     if (typeof renderLineupViewer === 'function') renderLineupViewer();
+    // Re-render pots full
+    if (typeof renderTopPotsAndActions === 'function') renderTopPotsAndActions();
+    const beefTop = $('active-beefs-top');
+    if (beefTop) beefTop.style.display = '';
   } else if (mode === 'ucl') {
     if (fplTail) fplTail.classList.add('hidden');
     if (uclTail) uclTail.classList.remove('hidden');
+    // Hide FPL mixing sections when in UCL
+    const fplSections = document.querySelectorAll('.fpl-only, #fpl-cup-info, .fpl-squad-section, #fpl-h2h-this');
+    fplSections.forEach(el => el.classList.add('hidden'));
+    // Hide beefs completely in UCL per request
+    const beefEls = document.querySelectorAll('#active-beefs-top, .beef-admin-section');
+    beefEls.forEach(el => el.style.display = 'none');
     renderUclTailored();
+    // Re-render pots as UCL-only (current MD pot)
+    if (typeof renderTopPotsAndActions === 'function') renderTopPotsAndActions();
   }
 
   // Hide old combined for cleanliness

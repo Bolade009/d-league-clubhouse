@@ -2312,6 +2312,13 @@ function getManagerScore(managerId, comp, round) {
 }
 
 async function syncUCL(roundsToSync = null) {
+  // UCL Fantasy API reality check (2026):
+  // - No public equivalent to FPL's /entry/{id}/event/{round}/picks/ or league standings for fantasy teams.
+  // - Official UCL Fantasy is closed; no reliable free picks/points API for user teams.
+  // - football-data.org (if key) gives real CL matches/standings only (useful for projections/context, not fantasy scores).
+  // - Therefore: we primarily support MANUAL admin entry for MD points (via adminManageUclMdScores).
+  //   Adapter (UCL_FANTASY_API_TEMPLATE) is optional fallback for those who build a private scraper/proxy.
+  //   Layout is made beautiful because most updates will be manual.
   const s = await loadStore();
   const current = s.settings.currentRound.ucl;
   const rounds = roundsToSync || [current - 1, current].filter(Boolean);
@@ -3129,7 +3136,7 @@ app.post("/api/admin/add-manager", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
   }
-  const { name, email, accessCode, fplId, uclId, fplClubName } = req.body || {};
+  const { name, email, accessCode, fplId, uclId, fplClubName, uclClubName } = req.body || {};
   if (!email) return res.status(400).json({ error: "email required" });
 
   const s = await loadStore();
@@ -3155,8 +3162,9 @@ app.post("/api/admin/add-manager", async (req, res) => {
     if (email) existing.email = email;
     if (accessCode) existing.accessCode = accessCode;
     if (fplId) existing.fpl = { teamId: fplId, teamName: fplClubName || existing.fpl?.teamName || '' };
-    if (uclId) existing.ucl = { teamId: uclId, teamName: fplClubName || existing.ucl?.teamName || '' };
+    if (uclId) existing.ucl = { teamId: uclId, teamName: uclClubName || fplClubName || existing.ucl?.teamName || '' };
     if (fplClubName) existing.fplClubName = fplClubName;
+    if (uclClubName) existing.uclClubName = uclClubName;
     await persistStore();
     try {
       const fresh = await loadStore();
@@ -3178,9 +3186,10 @@ app.post("/api/admin/add-manager", async (req, res) => {
     email,
     accessCode,
     fpl: { teamId: fplId || `test-${id.slice(-6)}`, teamName: fplClubName || `${name} FC` },
-    ucl: { teamId: uclId || `ucl-${id.slice(-6)}`, teamName: fplClubName || `${name} United` },
+    ucl: { teamId: uclId || `ucl-${id.slice(-6)}`, teamName: uclClubName || fplClubName || `${name} United` },
     payoutDetails: "",  // manager must set via Update Bank Details for Paystack auto transfers
     fplClubName: fplClubName || `${name} FC`,
+    uclClubName: uclClubName || `${name} United`,
     createdAt: nowISO()
   };
   s.managers.push(mgr);
@@ -4199,6 +4208,41 @@ app.post("/api/admin/set-h2h-fixtures", async (req, res) => {
   writeAtomicSidecar(s);
   await persistStore();
   res.json({ ok: true, message: "H2H fixtures saved for GW" + gw });
+});
+
+// Admin manual entry for UCL MD points (since no reliable public picks API for UCL Fantasy).
+// Points are entered manually, then "finalize" calls settle which credits the winner.
+app.post("/api/admin/set-ucl-md-scores", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { md, scores } = req.body || {}; // scores: { managerId: points }
+  if (!md || typeof scores !== 'object') return res.status(400).json({ error: 'md and scores required' });
+
+  const s = await loadStore();
+  Object.entries(scores).forEach(([mgrId, pts]) => {
+    const num = parseInt(pts, 10);
+    if (isNaN(num)) return;
+    // Upsert as final (admin entered)
+    upsertScore(s, mgrId, 'ucl', md, num, 'manual-admin', true, {});
+  });
+  writeAtomicSidecar(s);
+  await persistStore();
+  res.json({ ok: true, message: `UCL MD${md} scores saved (manual). Use finalize/settle to pay winner.` });
 });
 
 // Admin toggles league lock (simple manual control, no date logic)
