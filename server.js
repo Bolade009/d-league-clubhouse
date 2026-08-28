@@ -583,6 +583,7 @@ async function loadStore() {
     storeCache.settings.secondRunnerUpPot = storeCache.settings.secondRunnerUpPot || 0;
     storeCache.settings.uclSecondPlacePot = storeCache.settings.uclSecondPlacePot || 0;
     storeCache.settings.uclThirdPlacePot = storeCache.settings.uclThirdPlacePot || 0;
+    updateSeasonPots(storeCache);  // ensure UCL overall pot is correct based on revenue
     // Initialize collection keys to arrays only if completely absent (first run); do not overwrite or persist empty if key missing after partial load
     ['managers','payments','scores','ledger','h2h','challenges','sponsorships','events','complaints','beefs','potBoosts'].forEach(k => {
       if (!Array.isArray(storeCache[k])) storeCache[k] = [];
@@ -2545,6 +2546,7 @@ async function getUCLStats() {
 
 async function getProjectedPayouts() {
   const s = getStore();
+  updateSeasonPots(s);  // ensure derived UCL (and FPL) pots are up-to-date from current revenue
   const fplPaid = getEligibleManagers("fpl").length;
   const uclPaid = getEligibleManagers("ucl").length;
 

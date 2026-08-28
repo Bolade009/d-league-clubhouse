@@ -523,7 +523,12 @@ function renderTopPotsAndActions() {
   const container = document.getElementById('pots-top') || createPotsContainer();
   if (!container) return;
 
-  const proj = window.lastProjections || {};
+  let proj = window.lastProjections || {};
+  // Fallback/refresh from current standingsData (which includes fresh projections from server) to ensure UCL pots (season/2nd/3rd) are not stale or zeroed by old cache.
+  if (standingsData && standingsData.projections && (!proj.ucl || !proj.ucl.overallWinnerPot)) {
+    proj = standingsData.projections;
+    window.lastProjections = proj;
+  }
   const fpl = proj.fpl || {};
   const uclProj = (proj.ucl || {});
   const isUcl = currentLeagueMode === 'ucl';
@@ -2047,6 +2052,13 @@ async function loadStandings() {
   // Old internal h2h (fake pairings) cleared - we use real FPL H2H standings.
   // Legacy combined/old race + table renders removed (their containers no longer exist after separate FPL/UCL UI cleanup).
   // standingsData.fpl / .ucl / .all are still used by renderFplTailored, renderUclTailored, lineup viewer, etc.
+
+  // Ensure lastProjections (used for UCL/FPL pots in renderTopPots) is updated from the response which includes fresh getProjectedPayouts().
+  // This guarantees UCL pots (overall/2nd/3rd) reflect latest after payments or MD settles, even if lastProjections was stale.
+  if (standingsData.projections) {
+    window.lastProjections = standingsData.projections;
+  }
+
   // Auto switch to current mode after load
   if (currentLeagueMode) switchLeague(currentLeagueMode);
 
