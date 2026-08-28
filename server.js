@@ -4211,14 +4211,15 @@ app.post("/api/wallet/request-payout", async (req, res) => {
   if (!mgr) return res.status(401).json({ error: "Login required" });
 
   const balance = getWalletBalance(mgr.id);
-  const payoutAmount = Math.min(Number(amount) || 0, balance);
-  if (payoutAmount <= 0) return res.status(400).json({ error: "Invalid amount or insufficient balance" });
-  const fee = payoutAmount >= 5000 ? 150 : 50;
-  if (payoutAmount + fee > balance) return res.status(400).json({ error: `Insufficient balance after withdrawal fee (₦${fee})` });
+  const amountToBank = Math.min(Number(amount) || 0, balance);
+  if (amountToBank <= 0) return res.status(400).json({ error: "Invalid amount or insufficient balance" });
+  const fee = amountToBank >= 5000 ? 150 : 50;
+  const totalDebit = amountToBank + fee;
+  if (totalDebit > balance) return res.status(400).json({ error: `Insufficient balance for ₦${amountToBank} + ₦${fee} fee` });
   if (!mgr.payoutDetails) return res.status(400).json({ error: "No bank details saved. Update profile first." });
 
-  // DEFAULT: Attempt auto Paystack payout (bank gets payoutAmount, fee deducted from wallet)
-  const transferResult = await initiateTransfer(mgr.id, payoutAmount, "Wallet withdrawal");
+  // DEFAULT: Attempt auto Paystack payout (you receive amountToBank after fee deducted)
+  const transferResult = await initiateTransfer(mgr.id, amountToBank, "Wallet withdrawal");
 
   const s = await loadStore();
   let entryType = "payout_requested";
@@ -4242,15 +4243,15 @@ app.post("/api/wallet/request-payout", async (req, res) => {
   } else {
     note = `Auto Paystack payout FAILED or pending. Admin notified for manual handling.`;
     // Notify admin only on failure/pending
-    const adminText = `PAYOUT AUTO FAILED (manual is fallback option only)\n\nManager: ${mgr.displayName} (${mgr.email})\nAmount: ₦${payoutAmount}\nBank details: ${mgr.payoutDetails || 'not set'}\n\nTransfer result: ${JSON.stringify(transferResult)}\n\nOpen admin cockpit → see in RECENT PAYOUTS + PENDING box. Do real bank transfer (or Paystack manual), then click CONFIRM MANUAL to flip the ledger entry (no double debit). Success autos are already recorded as payout_completed.`;
-    await sendEmail(ADMIN_EMAIL, `D League Payout AUTO FAILED: ${mgr.displayName} - ₦${payoutAmount}`, adminText);
+    const adminText = `PAYOUT AUTO FAILED (manual is fallback option only)\n\nManager: ${mgr.displayName} (${mgr.email})\nAmount: ₦${amountToBank}\nBank details: ${mgr.payoutDetails || 'not set'}\n\nTransfer result: ${JSON.stringify(transferResult)}\n\nOpen admin cockpit → see in RECENT PAYOUTS + PENDING box. Do real bank transfer (or Paystack manual), then click CONFIRM MANUAL to flip the ledger entry (no double debit). Success autos are already recorded as payout_completed.`;
+    await sendEmail(ADMIN_EMAIL, `D League Payout AUTO FAILED: ${mgr.displayName} - ₦${amountToBank}`, adminText);
   }
 
   s.ledger.push({
     id: generateId("ldg"),
     type: entryType,
     managerId: mgr.id,
-    amount: -(payoutAmount + fee),
+    amount: -totalDebit,
     note: note + (fee > 0 ? ` (fee ₦${fee} deducted)` : ''),
     at: nowISO(),
     payoutDetails: mgr.payoutDetails,
@@ -4260,14 +4261,14 @@ app.post("/api/wallet/request-payout", async (req, res) => {
   await persistStore();
 
   const message = autoSucceeded
-    ? "Payout requested and auto-completed via Paystack. Check your bank and ledger."
+    ? `Payout requested and auto-completed via Paystack. You receive ₦${amountToBank} (fee ₦${fee} deducted from wallet). Check your bank and ledger.`
     : "Payout requested. Auto attempt failed — admin has been notified and can handle manually.";
 
   res.json({ 
     ok: true, 
-    requested: payoutAmount, 
+    requested: amountToBank, 
     fee,
-    totalDeducted: payoutAmount + fee,
+    totalDeducted: totalDebit,
     newBalance: getWalletBalance(mgr.id), 
     transfer: transferResult,
     message

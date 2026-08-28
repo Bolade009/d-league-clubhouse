@@ -255,7 +255,7 @@
       <div id="fpl-managers-list" class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4 mb-4 space-y-1 text-sm"></div>
 
       <!-- H2H -->
-      <div class="grid md:grid-cols-2 gap-4 mb-4">
+      <div class="mb-4">
         <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
           <div class="font-semibold mb-2 flex items-center justify-between gap-2">
             <span>H2H Standings and fixtures</span>
@@ -263,14 +263,12 @@
           </div>
           <div id="fpl-h2h-this" class="text-sm"></div>
         </div>
+      </div>
 
-        <!-- Cup & Challenges -->
-        <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
-          <div class="font-semibold mb-2">FPL Cup</div>
-          <div id="fpl-cup-info" class="text-xs mb-2"></div>
-          <div id="fpl-challenge-week" class="text-sm"></div>
-          <div class="mt-2 text-xs">Squad status: <span id="fpl-squad-status"></span></div>
-        </div>
+      <!-- FPL Cup section on its own -->
+      <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4 mb-4">
+        <div class="font-semibold mb-2">FPL Cup</div>
+        <div id="fpl-cup-info" class="text-xs mb-2"></div>
       </div>
 
       <!-- Sponsored & Personal Beef removed from UI (logic untouched; see active beefs if needed) -->
@@ -286,7 +284,7 @@
       </div>
     </div>
 
-    <!-- Old mixed races and standings removed for clean separate FPL/UCL only views -->
+    <!-- Challenge room (innovative, autosettled), payout projections, FPL projections and LIVE cleaned from UI -->
 
     <!-- CHALLENGE ROOM (kept as liked) - populated with expanded innovative challenges -->
     <div class="md:col-span-12 bg-[#1c1c1c] border border-[#333] rounded-3xl p-6 mt-5">
@@ -312,18 +310,12 @@
     <!-- FPL SECTION -->
     <div class="mt-5">
       <div class="text-[#00ff85] text-xs uppercase tracking-widest mb-2">FPL • PREMIER LEAGUE</div>
-      <div class="grid md:grid-cols-2 gap-5">
-        <div class="premium-card">
-          <div class="font-semibold mb-3 flex items-center justify-between">
-            <span>MY SQUAD & CHIPS</span>
-            <button onclick="showSquadModal()" class="text-xs px-3 py-1 bg-[#00ff85]/10 text-[#00ff85] rounded-full">VIEW LINEUP</button>
-          </div>
-          <div id="squad-chips" class="text-sm space-y-2"></div>
+      <div class="premium-card">
+        <div class="font-semibold mb-3 flex items-center justify-between">
+          <span>MY SQUAD & CHIPS</span>
+          <button onclick="showSquadModal()" class="text-xs px-3 py-1 bg-[#00ff85]/10 text-[#00ff85] rounded-full">VIEW LINEUP</button>
         </div>
-        <div class="premium-card">
-          <div class="font-semibold mb-3">FPL PROJECTIONS & LIVE</div>
-          <div id="fpl-projections" class="text-sm"></div>
-        </div>
+        <div id="squad-chips" class="text-sm space-y-2"></div>
       </div>
     </div>
 

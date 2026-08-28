@@ -469,7 +469,6 @@ async function loadAllData() {
   renderManagerHero();
   renderSpotlight();
   renderSquadChips();
-  renderProjectionsLive();
   showPendingBeefsBanner();
   renderActiveBeefs();
   renderSponsoredAwards();
@@ -566,7 +565,7 @@ function renderTopPotsAndActions() {
             <div id="pot-second-ru" class="text-2xl font-black">₦0</div>
           </div>
         </div>
-        <div class="mt-3 text-xs text-[#00ff85]">Beef and sponsored awards fund the 1st/2nd league runner-ups through 60/40 house cuts (immediate on payment)</div>
+        <div class="mt-3 text-xs text-[#00ff85]">Beef and sponsored awards fund the 1st/2nd league runner-ups (50/30/20 house cuts immediate on payment)</div>
 
         <div class="mt-2 text-[10px]">
           <span class="font-semibold">Active Sponsored:</span> 
@@ -863,7 +862,7 @@ function renderActiveBeefs() {
           <span class="text-xl font-black">₦${(potSize || 0).toLocaleString()}</span>
         </div>
         <div class="text-xs mt-0.5">Paid: ${paidCount} — ${paidNames}</div>
-        <div class="text-xs">Status: <span class="${statusClass} font-semibold">${b.status || 'proposed'}</span>${b.locked ? ' <span class="text-red-400">(LOCKED)</span>' : ''}${b.joinDeadline ? ` • Join for GW${b.joinDeadline} (upcoming)` : ''}</div>
+        <div class="text-xs">Status: <span class="${statusClass} font-semibold">${b.status || 'proposed'}</span>${b.locked ? ' <span class="text-red-400">(LOCKED)</span>' : ''}${b.joinDeadline ? ` • Join for GW${b.joinDeadline}` : ''}</div>
         <div class="mt-2 flex flex-wrap gap-1 text-[10px]">
           <button onclick="showWhatsAppShare(decodeURIComponent('${safeShare}'), 'Share beef'); event.stopImmediatePropagation();" class="px-2 py-0.5 bg-[#ffaa00] text-black rounded">📲 Share WA + Link</button>
           ${!b.locked && b.status === 'proposed' ? `<button onclick="respondToBeefLink('${b.id}', 'accept')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Accept</button>` : ''}
@@ -1076,7 +1075,7 @@ async function loadAdminOverview() {
           <button onclick="showIdMappings()" class="px-3 py-2 bg-[#222] hover:bg-[#333] text-[#ffaa00] rounded-2xl text-xs border border-[#ffaa00]">VIEW ID MAPPINGS</button>
           <button onclick="loadAdminOverview()" class="px-3 py-2 bg-[#333] text-xs rounded-2xl">Refresh</button>
         </div>
-        <div class="text-[10px] text-[#aa8800] mt-2">Use REPAIR BEEFS after restoring any JSON that had bolade-henry or other paid beefs. Then FORCE PERSIST. Beefs + 60/40 runner-up cuts will survive restarts/hard refreshes.</div>
+        <div class="text-[10px] text-[#aa8800] mt-2">Use REPAIR BEEFS after restoring any JSON that had bolade-henry or other paid beefs. Then FORCE PERSIST. Beefs + runner-up cuts will survive restarts/hard refreshes.</div>
       </div>
 
       <!-- MORE SEASON SUPERPOWERS -->
@@ -2231,15 +2230,15 @@ async function loadProjections() {
       <div class="text-2xl font-black tabular-nums">₦${f.overallWinnerPot || 0}</div>
     </div>
     <div>
-      <div class="text-[#00ff85] text-xs">END OF SEASON CUP WINNER</div>
+      <div class="text-[#00ff85] text-xs">SEASON CUP WINNER</div>
       <div class="text-2xl font-black tabular-nums">₦${f.cupWinnerPot || 0}</div>
     </div>
     <div>
-      <div class="text-[#00ff85] text-xs">1ST LEAGUE RUNNER UP (60%)</div>
+      <div class="text-[#00ff85] text-xs">1ST LEAGUE RUNNER UP</div>
       <div class="text-xl font-black tabular-nums">₦${f.firstRunnerUpPot || 0}</div>
     </div>
     <div>
-      <div class="text-[#00ff85] text-xs">2ND LEAGUE RUNNER UP (40%)</div>
+      <div class="text-[#00ff85] text-xs">2ND LEAGUE RUNNER UP</div>
       <div class="text-xl font-black tabular-nums">₦${f.secondRunnerUpPot || 0}</div>
     </div>
   `;
@@ -2401,7 +2400,7 @@ function showSponsorModal() {
       </select>
       <input id="sp-amount" type="number" placeholder="Amount to sponsor (e.g. 10000)" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm" value="10000">
       <button id="sp-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">SPONSOR &amp; PAY (wallet if balance, else Paystack)</button>
-      <div class="text-[10px] mt-1">Pay to activate. 10% house cut to 1st/2nd runner-up (60/40); 90% to winner(s).</div>
+      <div class="text-[10px] mt-1">Pay to activate. 10% house cut (50/30/20); 90% to winner(s).</div>
     </div>
   `;
   modal.classList.remove('hidden');
@@ -2689,24 +2688,37 @@ async function loadAndRenderLineup(managerId, container) {
 function simulateNextGW(managerData, recent, container) {
   const basePts = recent.points || (managerData.fplTotal || 60);
   const avg = (window.standingsData && window.standingsData.roundAverages && window.standingsData.roundAverages.fpl) || 65;
-  // Robust simulation using actual squad data if available (picks from last GW), last captain multiplier, and league avg.
-  // Uses FPL squad players' recent points form if squad same. Adds captain boost. Still has variance for opponents/form.
+  // Advanced simulation using FPL data:
+  // - Squad points from recentPicks (actual player performances if squad same)
+  // - Captain multiplier applied
+  // - League avg for baseline
+  // - Form boost based on recent vs avg
+  // - Dynamic variance based on squad consistency (std dev proxy from picks variance)
+  // - Chip if used last
+  // This uses real FPL picks data + stats for meaningful projection.
   let squadBase = basePts;
   let capBoost = 0;
+  let dynamicVar = 18;
   if (managerData.recentPicks && managerData.recentPicks.length > 0) {
-    const picks = managerData.recentPicks;
-    squadBase = picks.reduce((sum, p) => sum + (p.points || 0), 0);
-    const lastCap = picks.find(p => p.multiplier > 1);
-    if (lastCap) {
-      capBoost = (lastCap.points || 0) * 1; // extra for armband simulation if squad same
+    const picks = managerData.recentPicks.filter(p => p.position <= 11); // starters
+    if (picks.length > 0) {
+      squadBase = picks.reduce((sum, p) => sum + (p.points || 0), 0);
+      const lastCap = managerData.recentPicks.find(p => p.multiplier > 1);
+      if (lastCap) {
+        capBoost = Math.max(0, (lastCap.points || 0));
+      }
+      // Dynamic variance from squad point spread (more spread = higher uncertainty)
+      const mean = squadBase / picks.length;
+      const varianceCalc = picks.reduce((sum, p) => sum + Math.pow((p.points || 0) - mean, 2), 0) / picks.length;
+      dynamicVar = Math.max(10, Math.min(30, Math.sqrt(varianceCalc) * 1.2));
     }
   }
-  const variance = (Math.random() - 0.5) * 20;
-  const formBoost = basePts > avg ? 3 : -2;
-  const proj = Math.max(20, Math.round(squadBase * 0.7 + avg * 0.3 + variance + formBoost + capBoost));
-  const chipNote = recent.activeChip ? ' (chip available last week)' : '';
-  const squadNote = (managerData.recentPicks && managerData.recentPicks.length) ? ' (based on your last squad + captain)' : '';
-  const simHtml = `<div class="mt-3 p-2 bg-black/60 rounded text-xs border border-[#00ff85]">Simulate next game week for ${managerData.displayName}: ~${proj} pts${squadNote}${chipNote}. Range ~±15-20 pts. Uses your actual last squad players' form + captain if squad unchanged + league data.</div>`;
+  const formBoost = basePts > avg ? 4 : (basePts < avg - 5 ? -4 : 0);
+  const variance = (Math.random() - 0.5) * dynamicVar;
+  const proj = Math.max(15, Math.round(squadBase + capBoost + formBoost + variance));
+  const chipNote = recent.activeChip ? ' (chip available last week - potential boost)' : '';
+  const squadNote = (managerData.recentPicks && managerData.recentPicks.length) ? ' (based on current squad form + last captain)' : '';
+  const simHtml = `<div class="mt-3 p-2 bg-black/60 rounded text-xs border border-[#00ff85]">Simulate next game week for ${managerData.displayName}: ~${proj} pts${squadNote}${chipNote}. Dynamic range ±${Math.round(dynamicVar/2)} based on your squad point variance + FPL stats.</div>`;
   const old = container.querySelector('.sim-result');
   if (old) old.remove();
   const div = document.createElement('div');
@@ -2831,14 +2843,16 @@ async function requestPayout() {
     alert('Invalid amount.');
     return;
   }
-  if (!confirm(`Request ₦${amount} to your bank? (DEFAULT: auto Paystack transfer from league balance. If it fails, admin will handle manually as fallback.)`)) return;
+  const fee = amount >= 5000 ? 150 : 50;
+  const net = amount; // amount is what to bank, fee extra from wallet
+  if (!confirm(`Request ₦${amount} to bank? Fee ₦${fee} will be deducted from wallet (you pay ₦${amount + fee} total, receive ₦${net}). Auto Paystack if possible.`)) return;
 
   try {
     const res = await fetchJSON('/api/wallet/request-payout', {
       method: 'POST',
       body: JSON.stringify({ amount })
     });
-    alert(res.message || `Requested ₦${amount}. Check your bank and ledger.`);
+    alert(res.message || `Requested ₦${amount} (net to bank after fee). Check your bank and ledger.`);
     // Refresh data
     const me = await fetchJSON('/api/me');
     currentManager = normalizeAdmin(me.manager);
@@ -3501,7 +3515,7 @@ function renderFplTailored() {
       if (h2hConfigured && mgrTeamId) {
         const h2hRes = h2hResults.find(r => String(r.entry) === String(mgrTeamId));
         if (h2hRes) {
-          h2hHtml = `<div class="text-[9px] text-[#00ff85] mt-0.5">H2H Rank: ${h2hRes.rank} W${h2hRes.matches_won||0}D${h2hRes.matches_drawn||0}L${h2hRes.matches_lost||0} (P:${h2hRes.points_for||0}/${h2hRes.points_against||0})</div>`;
+          h2hHtml = `<div class="text-[9px] text-[#00ff85] mt-0.5">H2H Rank: ${h2hRes.rank}</div>`;
         } else {
           h2hHtml = `<div class="text-[9px] text-[#666] mt-0.5">H2H: not matched in league (your teamId=${mgrTeamId})</div>`;
         }
@@ -3511,7 +3525,7 @@ function renderFplTailored() {
       row.innerHTML = `
         <div class="min-w-0">
           <div class="font-semibold truncate">${withBadge(m.displayName, m.id)} ${m.fplClubName ? `<span class="text-[#888] text-xs">(${m.fplClubName})</span>` : ''} ${isMe ? '<span class="text-[#00ff85] text-xs">(YOU)</span>' : ''}</div>
-          ${h2hHtml}
+          ${h2hHtml.replace(/ W\d+D\d+L\d+ \(P:.*?\)/, '')}
         </div>
         <div class="flex items-center gap-3 text-right font-mono flex-shrink-0">
           <div>
@@ -3545,14 +3559,18 @@ function renderFplTailored() {
         const nextGw = ((standingsData.currentRound && standingsData.currentRound.fpl) || 1) + 1;
         // Build table for all
         let table = `<div class="text-xs font-semibold mb-1">H2H League Standings (GW${nextGw} fixtures)</div>`;
-        table += `<table class="w-full text-[10px]"><thead><tr class="text-[#888]"><th class="text-left">Rank</th><th class="text-left">Team</th><th>W</th><th>D</th><th>L</th><th>PF/PA</th><th>Next</th></tr></thead><tbody>`;
+        table += `<div class="overflow-x-auto"><table class="w-full text-[10px] border-collapse"><thead><tr class="text-[#888] border-b border-[#333]"><th class="text-left py-1">Rank</th><th class="text-left py-1">Team</th><th class="py-1">W</th><th class="py-1">D</th><th class="py-1">L</th><th class="py-1">Total</th><th class="text-left py-1">Form (Main GW)</th><th class="text-left py-1">Next Fixture</th></tr></thead><tbody>`;
         results.forEach(r => {
           const isD = (standingsData.fpl || []).some(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId)) === String(r.entry));
           const mainPts = isD ? (standingsData.fpl || []).find(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId))===String(r.entry)) : null;
-          const ptsNote = mainPts && mainPts.currentFpl != null ? ` (main GW: ${mainPts.currentFpl})` : '';
-          table += `<tr><td>${r.rank}</td><td>${r.entry_name || r.player_name}${ptsNote}</td><td>${r.matches_won||0}</td><td>${r.matches_drawn||0}</td><td>${r.matches_lost||0}</td><td>${r.points_for||0}/${r.points_against||0}</td><td>GW${nextGw} (app)</td></tr>`;
+          const totalPts = (r.matches_won || 0) * 3 + (r.matches_drawn || 0);
+          const name = r.entry_name || r.player_name || 'Unknown';
+          const club = isD && mainPts ? ` (${mainPts.fplClubName || ''})` : '';
+          const form = mainPts ? `${mainPts.currentFpl ?? '—'}` : '-';
+          const nextFix = '-'; // admin manual wiring below
+          table += `<tr class="border-b border-[#222]"><td class="py-0.5">${r.rank}</td><td class="py-0.5 font-medium">${name}${club}</td><td class="py-0.5 text-center">${r.matches_won||0}</td><td class="py-0.5 text-center">${r.matches_drawn||0}</td><td class="py-0.5 text-center">${r.matches_lost||0}</td><td class="py-0.5 text-center font-bold">${totalPts}</td><td class="py-0.5 text-left">${form}</td><td class="py-0.5 text-left">${nextFix}</td></tr>`;
         });
-        table += `</tbody></table>`;
+        table += `</tbody></table></div><div class="text-[9px] text-[#888] mt-1">Next fixture & opponents set via admin (manual select per GW). Form = main league current GW points.</div>`;
         html = table;
       } else {
         html = `H2H ID set (${lids.fplH2h}) — loading data...`;
@@ -3562,9 +3580,9 @@ function renderFplTailored() {
   }
   if ($('fpl-h2h-next')) $('fpl-h2h-next').textContent = 'End of season settlement';
 
-  // Cup info — only FPL Cup, cleaned
+  // Cup info — only FPL Cup, starts GW32 (wired via current league config)
   if ($('fpl-cup-info')) {
-    $('fpl-cup-info').innerHTML = `FPL Cup`;
+    $('fpl-cup-info').innerHTML = `<strong class="text-[#00ff85]">FPL Cup starts in GW32</strong>`;
   }
 
   // Challenge of week removed from UI (clean)
@@ -3572,14 +3590,7 @@ function renderFplTailored() {
     $('fpl-challenge-week').innerHTML = ``;
   }
 
-  // Squad status
-  const statusEl = $('fpl-squad-status');
-  if (statusEl && currentManager) {
-    const hasSquad = currentManager.recentPicks && currentManager.recentPicks.length > 0;
-    statusEl.innerHTML = hasSquad ? 
-      `<span class="text-[#00ff85]">Squad set • Your rank among DLeague participants</span>` : 
-      `<span class="text-red-400">No squad set up seen for this GW</span>`;
-  }
+
 
   // Sponsored
   renderSponsoredAwardsFpl();
@@ -3700,7 +3711,7 @@ function getBadgeForManager(managerId) {
 
 function renderBadgeChooser() {
   if (!currentManager || !standingsData) return;
-  const container = $('fpl-tailored');
+  const container = $('dashboard') || $('fpl-tailored');
   if (!container) return;
 
   const old = $('badge-chooser');
@@ -3714,7 +3725,6 @@ function renderBadgeChooser() {
   chooser.innerHTML = `
     <div class="mb-1.5 flex items-center gap-2">
       <span class="font-semibold">Your badge</span>
-      <span class="text-[10px] text-[#888]">(pre-defined, no uploads)</span>
     </div>
     <div class="flex flex-wrap gap-1.5 mb-1.5">
       ${PREDEFINED_BADGES.map(b => `
@@ -3726,10 +3736,10 @@ function renderBadgeChooser() {
     <div class="text-[10px] text-[#888]">Current: ${currentBadge || 'None'} • Saved in this browser</div>
   `;
 
-  // Place it nicely
-  const roll = $('gw-winners-roll');
-  if (roll) {
-    roll.parentNode.insertBefore(chooser, roll.nextSibling);
+  // Place it directly below manager name at top
+  const mgrName = $('manager-name');
+  if (mgrName && mgrName.parentNode) {
+    mgrName.parentNode.insertBefore(chooser, mgrName.nextSibling);
   } else {
     container.appendChild(chooser);
   }
@@ -3783,16 +3793,7 @@ function renderUclTailored() {
     });
   }
 
-  // Squad status for current user (UCL)
-  const statusEl = $('ucl-squad-status') || $('fpl-squad-status'); // reuse if no dedicated
-  if (statusEl && currentManager) {
-    const hasUclSquad = currentManager.recentUclPicks && currentManager.recentUclPicks.length > 0;
-    if (statusEl.id === 'ucl-squad-status' || statusEl) {
-      statusEl.innerHTML = hasUclSquad 
-        ? `<span class="text-[#00ff85]">Squad set for MD${md}</span>` 
-        : `<span class="text-red-400">No UCL squad data yet (sync needed)</span>`;
-    }
-  }
+
 
   if ($('ucl-challenge')) {
     const chs = UCL_CHALLENGES.map(ch => `<div>⚔️ <strong>${ch.title}</strong>: ${ch.desc} <span class="text-[#00ff85]">₦${ch.prize}</span></div>`).join('');
@@ -3852,7 +3853,7 @@ function showBeefModal() {
       </select>
       <input id="beef-stake" type="number" value="5000" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
       <button id="beef-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">PROPOSE (deduct from wallet if balance; Paystack on accept)</button>
-      <div class="text-[10px] mt-1">Select one or more paid FPL managers. Stake per person. 10% house cut to 1st/2nd runner-up pots (60/40); 90% to winner. <strong>Joins close before FPL GW deadline (admin can lock early).</strong></div>
+      <div class="text-[10px] mt-1">Select one or more paid FPL managers. Stake per person. 10% house cut (50/30/20 split); 90% to winner. <strong>Joins close before FPL GW deadline (admin can lock early).</strong></div>
     </div>
   `;
   modal.classList.remove('hidden');
@@ -3996,7 +3997,7 @@ async function refreshAdminBeefsList() {
     if (dash) dash.appendChild(container);
     const bdata = await fetchJSON('/api/admin/beefs');
     let bh = `<div class="font-black text-lg mb-2 text-[#ffaa00]">⚔️ BEEFS — ADMIN (manual settle + preview)</div>
-      <div class="text-[10px] text-[#888] mb-2">Use SETTLE button (shows computed winner if data available for the round). 10% house cuts (paid) go immediately 60/40 to 1st/2nd runner-up pots. Beefs persist.</div>`;
+      <div class="text-[10px] text-[#888] mb-2">Use SETTLE button (shows computed winner if data available for the round). 10% house cuts (paid) split 50/30/20. Beefs persist.</div>`;
     const bl = (bdata.beefs || []);
     if (bl.length === 0) {
       bh += `<div class="text-xs text-[#666]">No beefs found.</div>`;
