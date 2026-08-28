@@ -3593,9 +3593,10 @@ function renderFplTailored() {
           htmlList += `<div class="${rowClass}">
             <div class="min-w-0 flex-1">
               <div class="font-semibold truncate">${r.rank}. ${displayName}${clubPart}</div>
+              <div class="text-[10px] text-[#888] mt-0.5">NEXT: ${nextName}${nextPts ? ` <span class="text-[#00ff85]">pts ${nextPts}</span>` : ''}</div>
             </div>
             <div class="flex items-center gap-4 text-right font-mono flex-shrink-0">
-              <!-- Separate W | D | L columns for beautiful classic standings look -->
+              <!-- Separate W | D | L + TOTAL on right; NEXT is left-attached so long names never shift the numeric columns -->
               <div class="flex gap-1.5 text-center">
                 <div class="min-w-[18px]">
                   <div class="text-[9px] text-[#00cc77] tracking-widest">W</div>
@@ -3614,12 +3615,6 @@ function renderFplTailored() {
               <div>
                 <div class="text-[10px] text-[#666] tracking-widest">TOTAL</div>
                 <div class="font-bold tabular-nums text-lg leading-none">${totalPts}</div>
-              </div>
-              <div class="w-px h-6 bg-[#333]"></div>
-              <div class="text-left min-w-[100px]">
-                <div class="text-[10px] text-[#666] tracking-widest">NEXT FIXTURE</div>
-                <div class="font-semibold text-xs truncate">${nextName}</div>
-                ${nextPts ? `<div class="text-[10px] text-[#00ff85]">pts ${nextPts}</div>` : ''}
               </div>
             </div>
           </div>`;
@@ -4148,13 +4143,14 @@ async function adminManageH2HFixtures() {
   const picksDiv = modal.querySelector('#h2h-picks');
   const currentFixtures = (standingsData.h2hFixtures && standingsData.h2hFixtures[gw]) || {};
 
+  // Build rows + selects. Use light bg + black text so picked names are clearly visible (black) instead of white/blank.
   dleague.forEach(m => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;margin-bottom:4px;font-size:12px;';
     const clubLabel = m.fplClubName ? ` <span style="color:#888;font-size:10px;">(${m.fplClubName})</span>` : '';
     row.innerHTML = `<span style="width:160px;">${m.displayName}${clubLabel}</span>`;
     const sel = document.createElement('select');
-    sel.style.cssText = 'flex:1;font-size:12px;';
+    sel.style.cssText = 'flex:1;font-size:12px;background:#f8f8f8;color:#111;border:1px solid #555;padding:3px 4px;border-radius:3px;';
     sel.innerHTML = '<option value="">-- pick opponent --</option>';
     const myKey = (m.fplTeam && m.fplTeam.teamId) || m.id;
     dleague.forEach(o => {
@@ -4168,10 +4164,51 @@ async function adminManageH2HFixtures() {
     });
     row.appendChild(sel);
     picksDiv.appendChild(row);
-    // store ref — prefer FPL teamId (matches h2h entry in standings) for fixture keys
     row._managerKey = myKey;
     row._sel = sel;
   });
+
+  const allRows = Array.from(picksDiv.children);
+
+  // Dynamically remove already-selected opponents from other dropdowns (unique assignments, no double-booking).
+  // Rebuilds options live as you pick.
+  function refreshOptions() {
+    const selections = {};
+    allRows.forEach(r => {
+      if (r._sel) selections[r._managerKey] = r._sel.value;
+    });
+    allRows.forEach(r => {
+      const sel = r._sel;
+      const myKey = r._managerKey;
+      const curr = sel.value;
+      const takenByOthers = new Set();
+      Object.entries(selections).forEach(([k, v]) => {
+        if (k !== myKey && v) takenByOthers.add(String(v));
+      });
+      // rebuild options excluding self + taken by others
+      sel.innerHTML = '<option value="">-- pick opponent --</option>';
+      dleague.forEach(o => {
+        const oKey = (o.fplTeam && o.fplTeam.teamId) || o.id;
+        // skip self
+        const thisMgr = dleague.find(mm => ((mm.fplTeam && mm.fplTeam.teamId) || mm.id) === myKey);
+        if (thisMgr && o.id === thisMgr.id) return;
+        if (takenByOthers.has(String(oKey))) return;
+        const opt = document.createElement('option');
+        opt.value = oKey;
+        opt.text = o.displayName + (o.fplClubName ? ` (${o.fplClubName})` : '');
+        if (String(curr) === String(oKey)) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    });
+  }
+
+  allRows.forEach(row => {
+    if (row._sel) {
+      row._sel.onchange = () => refreshOptions();
+    }
+  });
+  // initial cleanup in case preloaded currentFixtures had any overlap
+  refreshOptions();
 
   modal.querySelector('#h2h-save').onclick = async () => {
     const newFix = {};
