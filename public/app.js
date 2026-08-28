@@ -3644,14 +3644,6 @@ function renderGWWinLeaders() {
       </div>
       <div class="text-xs px-2 py-0.5 bg-[#003322] text-[#00ff85] rounded font-mono">${winnersList.length} CHAMP${winnersList.length > 1 ? 'S' : ''}</div>
     </div>
-  `;
-
-  const ledgerCol = document.getElementById('ledger-col');
-  if (ledgerCol) {
-    ledgerCol.appendChild(section);
-  } else {
-    container.appendChild(section);
-  }
     <div class="divide-y divide-[#222]">
       ${winnersList.map(mgr => {
         const gwBadges = mgr.rounds.sort((a,b)=>a-b).map(r => 
@@ -3667,10 +3659,11 @@ function renderGWWinLeaders() {
       }).join('')}
     </div>
   `;
-  // Append near bottom of fpl section, before or after challenges
-  const challenges = $('fpl-challenge-week');
-  if (challenges && challenges.parentNode) {
-    challenges.parentNode.insertBefore(section, challenges.nextSibling);
+
+  // Share width by appending inside ledger col if present (as per request)
+  const ledgerCol = document.getElementById('ledger-col');
+  if (ledgerCol) {
+    ledgerCol.appendChild(section);
   } else {
     container.appendChild(section);
   }
