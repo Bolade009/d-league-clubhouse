@@ -275,10 +275,7 @@
     <div id="ucl-tailored" class="mb-8 hidden">
       <div class="font-bold text-xl mb-3">UCL • MD<span id="ucl-md-num2"></span></div>
       <div id="ucl-managers-list" class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4 mb-4 space-y-1 text-sm"></div>
-      <div class="bg-[#1c1c1c] border border-[#333] rounded-2xl p-4">
-        <div class="font-semibold mb-2">UCL CHALLENGE THIS MD</div>
-        <div id="ucl-challenge" class="text-sm"></div>
-      </div>
+      <!-- UCL CHALLENGE THIS MD removed (not supposed to exist per spec) -->
     </div>
 
 
@@ -300,7 +297,7 @@
     </div>
 
     <!-- FPL SECTION -->
-    <div class="mt-5">
+    <div class="mt-5 fpl-only">
       <div class="text-[#00ff85] text-xs uppercase tracking-widest mb-2">FPL • PREMIER LEAGUE</div>
       <div class="premium-card">
         <div class="font-semibold mb-3 flex items-center justify-between">
@@ -314,7 +311,7 @@
     <!-- LINEUP VIEWER - Premium Visual Experience (moved above UCL) -->
     <div class="mt-5 premium-card">
       <div class="font-semibold mb-3 flex items-center justify-between">
-        <span>LINEUP VIEWER <span class="text-xs text-[#00ff85]">(Real FPL data)</span></span>
+        <span id="lineup-title">LINEUP VIEWER <span class="text-xs text-[#00ff85]">(Real FPL data)</span></span>
       </div>
       <select id="lineup-manager-select" class="w-full p-2 bg-[#111] border border-[#333] rounded-xl text-sm mb-4 text-white">
         <option value="">Select a manager to view lineup...</option>
@@ -327,7 +324,7 @@
     </div>
 
     <!-- UCL SECTION -->
-    <div class="mt-5">
+    <div class="mt-5 ucl-only">
       <div class="text-[#888] text-xs uppercase tracking-widest mb-2">UCL • CHAMPIONS LEAGUE</div>
       <div class="grid md:grid-cols-2 gap-5">
         <div class="premium-card">

@@ -2053,6 +2053,7 @@ async function createTransferRecipient(mgr) {
     };
   } else {
     // local Nigerian - nuban. bank_code must be Paystack code
+    // Note: OPAY uses code 999992 per Paystack (may have resolution issues for payouts in some cases)
     postDataObj = {
       type: "nuban",
       name: accountName,
@@ -5416,11 +5417,19 @@ app.post("/api/paystack/webhook", async (req, res) => {
     const amountNaira = Math.round((amountKobo || 0) / 100);
 
     const s = await loadStore();
-    const pending = s.payments.find(p => p.reference === reference && p.status !== "confirmed");
+    // More robust: find by ref even if not pending (webhook timing, OPAY etc)
+    let payment = s.payments.find(p => p.reference === reference && p.status !== "confirmed");
+    if (!payment) {
+      payment = s.payments.find(p => p.reference === reference);
+    }
 
-    if (pending) {
-      await confirmPayment(pending.managerId, pending.competition, reference, amountNaira, data);
+    if (payment && payment.status !== "confirmed") {
+      await confirmPayment(payment.managerId, payment.competition, reference, amountNaira, data);
       await logEvent("webhook_charge_success", { reference });
+    } else if (payment) {
+      // already confirmed, ignore
+    } else {
+      await logEvent("webhook_no_matching_payment", { reference });
     }
   }
 

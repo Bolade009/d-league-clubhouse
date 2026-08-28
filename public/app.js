@@ -1162,6 +1162,14 @@ async function loadAdminOverview() {
         <div class="text-[10px] mt-1.5 text-[#666]">Also available as "MANAGE H2H FIXTURES (per GW)" in the top button row, and directly in the H2H box header.</div>
       </div>
 
+      <!-- EXPLICIT UCL MD MANAGEMENT - unmistakable for admin -->
+      <div class="mb-4 p-4 bg-[#0a1a12] border-2 border-[#00ff85] rounded-3xl">
+        <div class="font-black text-[#00ff85] text-base mb-1 tracking-[-0.3px]">UCL MD SCORES — ENTER &amp; FINALIZE</div>
+        <div class="text-xs text-[#ccc] mb-2">Manually enter points for each MD (admin only). Finalize to auto-settle the MD winner (90% to wallet) and accumulate reserves for end-of-season 2nd/3rd. Scores build totals for overall ranking. Saves immediately.</div>
+        <button onclick="adminManageUclMdScores()" class="px-5 py-2 bg-[#00ff85] hover:bg-white text-black font-bold rounded-2xl text-sm active:scale-[0.985]">OPEN UCL MD SELECTOR — ENTER POINTS &amp; FINALIZE</button>
+        <div class="text-[10px] mt-1.5 text-[#666]">Also available as "UCL MD SCORES (manual + finalize)" in the top button row.</div>
+      </div>
+
       <!-- League Lock Control - separate for FPL and UCL -->
       <div class="mb-4 p-3 bg-[#161616] border border-[#222] rounded-2xl">
         <div class="flex items-center justify-between mb-2">
@@ -2621,17 +2629,22 @@ function renderSpotlight() {
   if (!standingsData || !standingsData.all) return;
   // Explicitly filter out admin/commissioner even if list wasn't perfectly filtered
   const filtered = standingsData.all.filter(m => !(m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com'));
-  const sorted = [...filtered].sort((a, b) => (b.combined || 0) - (a.combined || 0));
-  const top = sorted[0];
-  if (!top) return;
-
+  const isUcl = currentLeagueMode === 'ucl';
+  let top;
   const sn = $('spotlight-name');
   const ss = $('spotlight-stats');
-  if (sn) sn.innerHTML = top.displayName;
-  if (ss) ss.innerHTML = `
-    <div class="font-bold text-lg">${top.combined} pts</div>
-    <div class="text-xs">FPL ${top.fplTotal} • UCL ${top.uclTotal}</div>
-  `;
+  if (isUcl) {
+    const uclSorted = [...filtered].sort((a, b) => (b.uclTotal || 0) - (a.uclTotal || 0));
+    top = uclSorted[0];
+    if (sn) sn.innerHTML = top ? top.displayName : '';
+    if (ss) ss.innerHTML = top ? `<div class="font-bold text-lg">${top.uclTotal || 0} pts</div><div class="text-xs">UCL MD top</div>` : '';
+  } else {
+    const fplSorted = [...filtered].sort((a, b) => (b.fplTotal || 0) - (a.fplTotal || 0));
+    top = fplSorted[0];
+    if (sn) sn.innerHTML = top ? top.displayName : '';
+    if (ss) ss.innerHTML = top ? `<div class="font-bold text-lg">${top.fplTotal || 0} pts</div><div class="text-xs">FPL GW top</div>` : '';
+  }
+  if (!top) return;
 }
 
 function renderLineupViewer() {
@@ -3275,20 +3288,27 @@ function showPaymentModal(reference, comp, isDemo) {
 
 async function simulatePaymentSuccess(reference) {
   try {
-    await fetchJSON('/api/payments/simulate-success', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reference })
-    });
+    // Only call server simulate in demo; in prod rely on webhook but always refresh UI
+    if (window.__IS_DEMO__ || location.search.includes('demo')) {
+      await fetchJSON('/api/payments/simulate-success', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reference })
+      });
+    }
     closeModal();
-    // Refresh everything
+    // Refresh everything - this ensures paid status and pots update even if webhook delayed
     const me = await fetchJSON('/api/me');
     currentManager = normalizeAdmin(me.manager);
     await loadAllData();
     renderPayAccess();
-    alert('Payment confirmed via simulation. You are now eligible!');
+    // No alert in prod to avoid confusion; status will show
   } catch (e) {
-    alert('Simulate failed: ' + e.message);
+    // Still refresh on error, don't block user
+    try {
+      await loadAllData();
+      renderPayAccess();
+    } catch {}
   }
 }
 
@@ -3543,14 +3563,6 @@ const FPL_CHALLENGES = [
   { title: "Value Victor", desc: "Most points per £m this week.", prize: 3200 }
 ];
 
-const UCL_CHALLENGES = [
-  { title: "UCL Goal King", desc: "Most attacking returns from FWDs.", prize: 4000 },
-  { title: "Defensive Wall", desc: "Best clean sheet + defensive points.", prize: 2500 },
-  { title: "Midfield Maestro", desc: "Highest points from midfield this MD.", prize: 3000 },
-  { title: "European Elite", desc: "Top overall points in UCL this matchday.", prize: 5500 },
-  { title: "Comeback King", desc: "Most points from players who were subbed on.", prize: 2800 }
-];
-
 const SPONSORED_AWARDS = [
   { id: 'cap-clutch', name: "Captain Clutch Award", sponsor: "Local Legend FC", desc: "Highest captain score this week" },
   { id: 'bench-bandit', name: "Bench Bandit", sponsor: "Mystery Manager", desc: "Most bench points" },
@@ -3774,6 +3786,12 @@ function renderFplTailored() {
 }
 
 function renderGWWinLeaders() {
+  if (currentLeagueMode === 'ucl') {
+    // Blank for UCL (no MD winners yet); FPL winners only in FPL mode
+    const col = document.getElementById('gw-winners-col');
+    if (col) col.innerHTML = `<div class="text-xs text-[#888]">MD Winners roll appears here after UCL MD settles begin.</div>`;
+    return;
+  }
   const container = $('fpl-tailored');
   if (!container || !standingsData) return;
 
@@ -3971,9 +3989,9 @@ function renderUclTailored() {
 
 
 
+  // UCL CHALLENGE THIS MD removed per spec (not supposed to exist)
   if ($('ucl-challenge')) {
-    const chs = UCL_CHALLENGES.map(ch => `<div>⚔️ <strong>${ch.title}</strong>: ${ch.desc} <span class="text-[#00ff85]">₦${ch.prize}</span></div>`).join('');
-    $('ucl-challenge').innerHTML = chs;
+    $('ucl-challenge').innerHTML = '';
   }
 
   // Make sure lineup viewer can show UCL data
@@ -4625,27 +4643,38 @@ function switchLeague(mode) {
   if (mode === 'fpl') {
     if (fplTail) fplTail.classList.remove('hidden');
     if (uclTail) uclTail.classList.add('hidden');
-    // Show FPL-specific areas
+    // Show FPL-specific areas, hide UCL
     const fplSections = document.querySelectorAll('.fpl-only, #fpl-cup-info, .fpl-squad-section');
     fplSections.forEach(el => el.classList.remove('hidden'));
+    document.querySelectorAll('.ucl-only').forEach(el => el.classList.add('hidden'));
     renderFplTailored();
     if (typeof renderLineupViewer === 'function') renderLineupViewer();
     // Re-render pots full
     if (typeof renderTopPotsAndActions === 'function') renderTopPotsAndActions();
     const beefTop = $('active-beefs-top');
     if (beefTop) beefTop.style.display = '';
+    const lineupTitle = $('lineup-title');
+    if (lineupTitle) lineupTitle.innerHTML = 'LINEUP VIEWER <span class="text-xs text-[#00ff85]">(Real FPL data)</span>';
+    if (typeof renderSpotlight === 'function') renderSpotlight();
   } else if (mode === 'ucl') {
     if (fplTail) fplTail.classList.add('hidden');
     if (uclTail) uclTail.classList.remove('hidden');
-    // Hide FPL mixing sections when in UCL
+    // Hide FPL mixing sections when in UCL, show UCL only
     const fplSections = document.querySelectorAll('.fpl-only, #fpl-cup-info, .fpl-squad-section, #fpl-h2h-this');
     fplSections.forEach(el => el.classList.add('hidden'));
+    document.querySelectorAll('.ucl-only').forEach(el => el.classList.remove('hidden'));
     // Hide beefs completely in UCL per request
     const beefEls = document.querySelectorAll('#active-beefs-top, .beef-admin-section');
     beefEls.forEach(el => el.style.display = 'none');
     renderUclTailored();
     // Re-render pots as UCL-only (current MD pot)
     if (typeof renderTopPotsAndActions === 'function') renderTopPotsAndActions();
+    // Clear FPL GW winners in UCL mode (blank until MD winners)
+    const gwCol = document.getElementById('gw-winners-col');
+    if (gwCol) gwCol.innerHTML = `<div class="text-xs text-[#888]">MD Winners roll appears here after UCL MD settles begin.</div>`;
+    const lineupTitle = $('lineup-title');
+    if (lineupTitle) lineupTitle.innerHTML = 'LINEUP VIEWER <span class="text-xs text-[#00ff85]">(UCL data when loaded from UCL list)</span>';
+    if (typeof renderSpotlight === 'function') renderSpotlight();
   }
 
   // Hide old combined for cleanliness
