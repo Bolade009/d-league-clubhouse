@@ -1157,7 +1157,7 @@ async function loadAdminOverview() {
       <!-- EXPLICIT H2H FIXTURES ENTRY - prominent so admin can easily enter fixture details -->
       <div class="mb-4 p-4 bg-[#0a1a12] border-2 border-[#00ff85] rounded-3xl">
         <div class="font-black text-[#00ff85] text-base mb-1 tracking-[-0.3px]">H2H FIXTURES — ENTER MATCHUP DETAILS</div>
-        <div class="text-xs text-[#ccc] mb-2">Controls the "NEXT FIXTURE" column + opponents shown in the main H2H Standings box (the beautiful one on the dashboard). For each GW, pick the opponent for every manager using the dropdowns. GW1 is concluded. Saves immediately and appears after refresh.</div>
+        <div class="text-xs text-[#ccc] mb-2">Controls the H2H FIXTURE for the current GW + opponents shown in the main H2H box. For each GW, pick the opponent for every manager using the dropdowns. GW1 is concluded. Saves immediately and appears after refresh.</div>
         <button onclick="adminManageH2HFixtures()" class="px-5 py-2 bg-[#00ff85] hover:bg-white text-black font-bold rounded-2xl text-sm active:scale-[0.985]">OPEN FIXTURE SELECTOR — PICK OPPONENTS FOR A GW</button>
         <div class="text-[10px] mt-1.5 text-[#666]">Also available as "MANAGE H2H FIXTURES (per GW)" in the top button row, and directly in the H2H box header.</div>
       </div>
@@ -3691,8 +3691,9 @@ function renderFplTailored() {
       const h2hData = (serverH && serverH.standings && serverH.standings.results) ? serverH : (clientH2HData || serverH || null);
       if (h2hData && h2hData.standings && h2hData.standings.results) {
         let results = [...h2hData.standings.results].sort((a,b) => (a.rank||999) - (b.rank||999));
-        const nextGw = ((standingsData.currentRound && standingsData.currentRound.fpl) || 1) + 1;
-        const fixtures = (standingsData.h2hFixtures && standingsData.h2hFixtures[nextGw]) || {};
+        // H2H always shows fixtures for the *current* GW (not current+1/next). Matches the saved per-GW data from admin.
+        const currentGw = (standingsData.currentRound && standingsData.currentRound.fpl) || 1;
+        const fixtures = (standingsData.h2hFixtures && standingsData.h2hFixtures[currentGw]) || {};
 
         // Map D-League managers by their FPL teamId (entry) for proper manager (club) names
         const mgrByTeamId = {};
@@ -3718,9 +3719,9 @@ function renderFplTailored() {
           const l = r.matches_lost || 0;
           const totalPts = (w * 3) + d;
 
-          // Next fixture: resolve using fixtures map (by entry/teamId), show name + pts below
-          let nextName = 'TBD';
-          let nextPts = '';
+          // Current fixture (H2H always shows current GW, not +1/next): resolve using fixtures map
+          let fixtureName = 'TBD';
+          let fixturePts = '';
           let oppKey = fixtures[tid];
           if (!oppKey) {
             // Fallback for key mismatch (teamId vs id, or saved vs current standings)
@@ -3736,11 +3737,11 @@ function renderFplTailored() {
             const oppR = results.find(x => String(x.entry) === String(oppKey));
             if (oppR) {
               const oppDm = mgrByTeamId[String(oppR.entry)];
-              nextName = (oppDm && oppDm.displayName) || oppR.player_name || oppR.entry_name || String(oppKey);
-              if (oppDm && oppDm.fplClubName) nextName += ` (${oppDm.fplClubName})`;
+              fixtureName = (oppDm && oppDm.displayName) || oppR.player_name || oppR.entry_name || String(oppKey);
+              if (oppDm && oppDm.fplClubName) fixtureName += ` (${oppDm.fplClubName})`;
               const oppMain = oppDm ? oppDm : (standingsData.fpl || []).find(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId))===String(oppR.entry));
               const oppForm = (oppMain && oppMain.currentFpl != null) ? oppMain.currentFpl : '—';
-              nextPts = String(oppForm);
+              fixturePts = String(oppForm);
             }
           }
 
@@ -3748,7 +3749,7 @@ function renderFplTailored() {
           htmlList += `<div class="${rowClass}">
             <div class="min-w-0 flex-1">
               <div class="font-semibold truncate">${r.rank}. ${displayName}${clubPart}</div>
-              <div class="text-[10px] text-[#888] mt-0.5">NEXT: ${nextName}${nextPts ? ` <span class="text-[#00ff85]">pts ${nextPts}</span>` : ''}</div>
+              <div class="text-[10px] text-[#888] mt-0.5">H2H FIXTURE: ${fixtureName}${fixturePts ? ` <span class="text-[#00ff85]">pts ${fixturePts}</span>` : ''}</div>
             </div>
             <div class="flex items-center gap-4 text-right font-mono flex-shrink-0">
               <!-- Separate W | D | L + TOTAL on right; NEXT is left-attached so long names never shift the numeric columns -->
@@ -4311,7 +4312,7 @@ async function adminManageH2HFixtures() {
   modal.innerHTML = `
     <div style="background:#1c1c1c;border:1px solid #333;padding:16px;border-radius:12px;max-width:620px;width:94%;">
       <div style="font-weight:bold;font-size:15px;margin-bottom:4px;">Enter H2H Fixtures for GW${gw}</div>
-      <div style="font-size:11px;color:#888;margin-bottom:8px;">For each D-League manager on the left, select their opponent on the right. These become the "NEXT FIXTURE" shown in the main H2H box. Only D-League participants listed. Click SAVE when done.</div>
+      <div style="font-size:11px;color:#888;margin-bottom:8px;">For each D-League manager on the left, select their opponent on the right. These become the H2H FIXTURE for the current GW shown in the main H2H box. Only D-League participants listed. Click SAVE when done.</div>
       <div id="h2h-picks" style="max-height:420px;overflow:auto;"></div>
       <div style="margin-top:12px;">
         <button id="h2h-save" style="background:#00ff85;color:#111;padding:7px 14px;border-radius:6px;margin-right:8px;font-weight:600;">SAVE FIXTURES FOR GW${gw}</button>
