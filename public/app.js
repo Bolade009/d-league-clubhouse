@@ -264,10 +264,10 @@ function showDashboard() {
   renderPayAccess();
 
   $('welcome-line').textContent = `WELCOME BACK, MANAGER • ${new Date().getFullYear()}`;
-  const nameEl = $('manager-name');
-  if (nameEl) {
+  const mgrNameEl = $('manager-name');
+  if (mgrNameEl) {
     const b = getBadgeForManager(currentManager.id);
-    nameEl.innerHTML = b ? `${b} ${currentManager.displayName}` : currentManager.displayName;
+    mgrNameEl.innerHTML = b ? `${b} ${currentManager.displayName}` : currentManager.displayName;
   }
   // Persona as big as the name, separated by hyphen, green. Clickable for full details (no brackets).
   if (currentManager.persona) {
