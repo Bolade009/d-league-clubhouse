@@ -1373,58 +1373,57 @@ async function settleWeeklyPot(comp, round) {
   // Fetch fresh points from FPL /picks/ for this round to guarantee settlement uses exact FPL final points.
   // This ensures no disparity from stored/live data affects who wins the pot.
   let scores = [];
-  const managersWithTeam = eligible.filter(m => isFullyPaidFor(m, comp) && m.fpl && m.fpl.teamId);
-  for (const mgr of managersWithTeam) {
-    try {
-      const pUrl = `${FPL_BASE}/entry/${mgr.fpl.teamId}/event/${round}/picks/`;
-      const pData = await safeFetchJSON(pUrl);
-      if (pData && pData.entry_history && typeof pData.entry_history.points === 'number') {
-        scores.push({ managerId: mgr.id, points: pData.entry_history.points });
+  if (comp === 'fpl') {
+    const managersWithTeam = eligible.filter(m => isFullyPaidFor(m, comp) && m.fpl && m.fpl.teamId);
+    for (const mgr of managersWithTeam) {
+      try {
+        const pUrl = `${FPL_BASE}/entry/${mgr.fpl.teamId}/event/${round}/picks/`;
+        const pData = await safeFetchJSON(pUrl);
+        if (pData && pData.entry_history && typeof pData.entry_history.points === 'number') {
+          scores.push({ managerId: mgr.id, points: pData.entry_history.points });
+        }
+      } catch (e) {
+        console.warn(`[SETTLE] could not fetch fresh FPL points for mgr ${mgr.id} round ${round}: ${e.message}`);
       }
-    } catch (e) {
-      console.warn(`[SETTLE] could not fetch fresh FPL points for mgr ${mgr.id} round ${round}: ${e.message}`);
     }
   }
   if (scores.length === 0) {
-    // Fallback to stored final scores if fetch failed for all
+    // Fallback to stored final scores (used for UCL manual/admin-entered scores, or if FPL fetch fails)
     scores = s.scores.filter(sc => sc.competition === comp && sc.round === round && typeof sc.points === 'number' && sc.isFinal);
   }
   if (!scores.length) return 0;
   scores.sort((a, b) => b.points - a.points);
-  const winner = scores[0];
 
-  // Guard against duplicate settles (prevents double wallet credits and fake win counts like "6 GWs")
-  const already = (s.ledger || []).some(l => l.competition === comp && l.round === round && l.type === 'weekly_win');
-  if (already) {
-    console.warn(`[settle] Duplicate settle skipped for ${comp} round ${round} to protect funds`);
-    return 0;
-  }
-
-  // Ensure the store reflects the fresh official FPL points for this round (isFinal)
+  // Ensure the store reflects the points for this round (isFinal). Use appropriate source.
   scores.forEach(sc => {
+    const source = (comp === 'fpl') ? 'official-fpl' : 'manual-admin';
     // Only update points/source/isFinal; preserve existing picks/extra data needed for beef compute etc.
-    upsertScore(s, sc.managerId, comp, round, sc.points, 'official-fpl', true, null);
+    upsertScore(s, sc.managerId, comp, round, sc.points, source, true, null);
   });
 
   // Credit winner(s) - split pot equally if tie
   const maxPoints = Math.max(...scores.map(sc => sc.points));
   const tiedWinners = scores.filter(sc => sc.points === maxPoints);
-  // Include any voluntary boosts made to this week's pot
-  const curWeeklyBoost = (s.settings.weeklyBoosts && s.settings.weeklyBoosts[round]) || 0;
-  const totalForWinners = pot.winnerShare + curWeeklyBoost;
-  const sharePerWinner = Math.floor(totalForWinners / tiedWinners.length);
-  tiedWinners.forEach(w => {
-    s.ledger.push({
-      id: generateId("ldg"),
-      type: "weekly_win",
-      managerId: w.managerId,
-      competition: comp,
-      round,
-      amount: sharePerWinner,
-      note: `${comp.toUpperCase()} GW/MD ${round} winner (90%${curWeeklyBoost ? ' + boosts' : ''} split for tie)`,
-      at: nowISO()
+
+  // Guard against duplicate win credits (prevents double wallet credits and fake win counts)
+  const alreadyWin = (s.ledger || []).some(l => l.competition === comp && l.round === round && l.type === 'weekly_win');
+  if (!alreadyWin) {
+    const curWeeklyBoost = (s.settings.weeklyBoosts && s.settings.weeklyBoosts[round]) || 0;
+    const totalForWinners = pot.winnerShare + curWeeklyBoost;
+    const sharePerWinner = Math.floor(totalForWinners / tiedWinners.length);
+    tiedWinners.forEach(w => {
+      s.ledger.push({
+        id: generateId("ldg"),
+        type: "weekly_win",
+        managerId: w.managerId,
+        competition: comp,
+        round,
+        amount: sharePerWinner,
+        note: `${comp.toUpperCase()} GW/MD ${round} winner (90%${curWeeklyBoost ? ' + boosts' : ''} split for tie)`,
+        at: nowISO()
+      });
     });
-  });
+  }
 
   if (comp === 'fpl') {
     const weeklyReserve = pot.reserve;
@@ -1446,21 +1445,25 @@ async function settleWeeklyPot(comp, round) {
     });
   } else {
     // UCL: 10% reserve from MD pot goes to 2nd/3rd place pots (60/40), distributed at end of season based on total points
-    const res = pot.reserve;
-    const toSecond = Math.floor(res * 0.6);
-    const toThird = res - toSecond;
-    s.settings.uclSecondPlacePot = (s.settings.uclSecondPlacePot || 0) + toSecond;
-    s.settings.uclThirdPlacePot = (s.settings.uclThirdPlacePot || 0) + toThird;
-    s.ledger.push({
-      id: generateId("ldg"),
-      type: "ucl_runner_up_contribution",
-      managerId: "system",
-      competition: comp,
-      round,
-      amount: -res,
-      note: `Reserve from UCL MD ${round} to 2nd/3rd place pots`,
-      at: nowISO()
-    });
+    // Add only if not already contributed for this round (prevents double funding)
+    const alreadyReserve = (s.ledger || []).some(l => l.competition === comp && l.round === round && l.type === 'ucl_runner_up_contribution');
+    if (!alreadyReserve) {
+      const res = pot.reserve;
+      const toSecond = Math.floor(res * 0.6);
+      const toThird = res - toSecond;
+      s.settings.uclSecondPlacePot = (s.settings.uclSecondPlacePot || 0) + toSecond;
+      s.settings.uclThirdPlacePot = (s.settings.uclThirdPlacePot || 0) + toThird;
+      s.ledger.push({
+        id: generateId("ldg"),
+        type: "ucl_runner_up_contribution",
+        managerId: "system",
+        competition: comp,
+        round,
+        amount: -res,
+        note: `Reserve from UCL MD ${round} to 2nd/3rd place pots`,
+        at: nowISO()
+      });
+    }
   }
 
   writeAtomicSidecar(s);

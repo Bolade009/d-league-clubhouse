@@ -4503,8 +4503,9 @@ async function adminManageUclMdScores() {
     });
     try {
       await fetchJSON('/api/admin/set-ucl-md-scores', { method: 'POST', body: JSON.stringify({ md, scores: updates }) });
-      await fetchJSON('/api/settle/run', { method: 'POST', body: JSON.stringify({ comp: 'ucl' }) });
-      alert('MD' + md + ' finalized and settled. Check ledger for winner credit.');
+      // Settle the *specific* md (not just current round), so that 10% reserves are added to 2nd/3rd pots
+      await fetchJSON('/api/admin/force-settle-round', { method: 'POST', body: JSON.stringify({ comp: 'ucl', round: md }) });
+      alert('MD' + md + ' finalized and settled. Check ledger for winner credit. Reserves added to 2nd/3rd pots (if any final scores for this MD).');
       document.body.removeChild(modal);
       await loadAllData();
       renderUclTailored();
