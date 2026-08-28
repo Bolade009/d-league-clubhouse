@@ -3880,6 +3880,7 @@ app.get("/api/admin/id-mappings", async (req, res) => {
   }));
   res.json({
     leagueIds: s.settings.leagueIds || {},
+    h2hFixtures: s.settings.h2hFixtures || {},
     managers: mappings,
     note: "Use these exact IDs for FPL API calls, auto beef resolution, H2H standings, and runner-up calculations. Update via manager edit."
   });
@@ -4168,6 +4169,36 @@ app.post("/api/admin/set-leagues", async (req, res) => {
   try { await populateH2HFixtures(s); await persistStore(); } catch (e) {}
   await logEvent("leagues_configured", { fplClassic, fplH2h, ucl });
   res.json({ ok: true, leagueIds: s.settings.leagueIds, message: "League IDs saved. If fplH2h set, real H2H ranks/records will show in FPL list + H2H box (map uses manager fplTeam.teamId == FPL entry id)." });
+});
+
+// Admin sets H2H fixtures per GW (managerId -> opponentId) for next fixtures display. GW1 concluded.
+app.post("/api/admin/set-h2h-fixtures", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { gw, fixtures } = req.body || {};
+  const s = await loadStore();
+  s.settings.h2hFixtures = s.settings.h2hFixtures || {};
+  if (gw) {
+    s.settings.h2hFixtures[gw] = fixtures || {};
+  }
+  writeAtomicSidecar(s);
+  await persistStore();
+  res.json({ ok: true, message: "H2H fixtures saved for GW" + gw });
 });
 
 // Admin toggles league lock (simple manual control, no date logic)
@@ -4973,6 +5004,7 @@ app.get("/api/standings", async (req, res) => {
     projections,
     realLeagues,  // Admin can use this for real standings/H2H
     leagueIds: ids,
+    h2hFixtures: s.settings.h2hFixtures || {},
     sponsorships: s.sponsorships || [],
     potBoosts: (s.potBoosts || []).slice(-20).map(b => {  // limit recent to keep responses small/fast
       const m = s.managers.find(mm => mm.id === b.managerId);

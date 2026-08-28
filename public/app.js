@@ -412,7 +412,6 @@ function renderPayAccess() {
 async function loadAllData() {
   const loads = [
     loadStandings().catch(e => console.warn('standings load failed', e)),
-    loadTicker().catch(e => console.warn('ticker failed', e)),
     loadH2H().catch(e => console.warn('h2h failed', e)),
     loadProjections().catch(e => console.warn('projections failed', e)),
     // Fetch server beefs so user-generated beefs survive restarts (localStorage is UI cache only now)
@@ -469,9 +468,7 @@ async function loadAllData() {
   renderManagerHero();
   renderSpotlight();
   renderSquadChips();
-  showPendingBeefsBanner();
   renderActiveBeefs();
-  renderSponsoredAwards();
   renderLineupViewer();
 
   // Auto settle awards for current round (wired)
@@ -553,24 +550,20 @@ function renderTopPotsAndActions() {
             <div id="pot-overall" class="text-2xl font-black">₦0</div>
           </div>
           <div class="bg-black p-3 rounded-2xl border border-[#333]">
-            <div class="text-xs text-[#888]">End of Season Cup Winner</div>
+            <div class="text-xs text-[#888]">End of Season Winner</div>
             <div id="pot-cup" class="text-2xl font-black">₦0</div>
           </div>
           <div class="bg-black p-3 rounded-2xl border border-[#333]">
-            <div class="text-xs text-[#888]">1st League Runner Up (60% of house cuts)</div>
+            <div class="text-xs text-[#888]">1st League Runner Up</div>
             <div id="pot-first-ru" class="text-2xl font-black">₦0</div>
           </div>
           <div class="bg-black p-3 rounded-2xl border border-[#333]">
-            <div class="text-xs text-[#888]">2nd League Runner Up (40% of house cuts)</div>
+            <div class="text-xs text-[#888]">2nd League Runner Up</div>
             <div id="pot-second-ru" class="text-2xl font-black">₦0</div>
           </div>
         </div>
-        <div class="mt-3 text-xs text-[#00ff85]">Beef and sponsored awards fund the 1st/2nd league runner-ups (50/30/20 house cuts immediate on payment)</div>
 
-        <div class="mt-2 text-[10px]">
-          <span class="font-semibold">Active Sponsored:</span> 
-          <span id="top-spon-inline">See awards section or sponsor to boost a pot!</span>
-        </div>
+
 
         <div class="mt-3 grid grid-cols-2 md:grid-cols-6 gap-2 text-xs">
           <button onclick="boostPot('weekly')" class="px-2 py-1 bg-[#112211] border border-[#00ff85] rounded hover:bg-[#003322]">+ Boost this week's</button>
@@ -844,6 +837,9 @@ function renderActiveBeefs() {
     const isAdmin = currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com';
     const nameMap = {};
     if (standingsData && standingsData.all) standingsData.all.forEach(m => { nameMap[m.id] = m.displayName; });
+    const currentGW = (standingsData && standingsData.currentRound && standingsData.currentRound.fpl) || 1;
+    const joinGW = b.joinDeadline || currentGW;
+    const displayGW = Math.max(joinGW, currentGW); // show next after concluded
     let pendingHtml = '';
     if ((isParticipant || isAdmin) && b.joinRequests && b.joinRequests.length > 0) {
       const reqs = b.joinRequests.map(rid => {
@@ -862,7 +858,7 @@ function renderActiveBeefs() {
           <span class="text-xl font-black">₦${(potSize || 0).toLocaleString()}</span>
         </div>
         <div class="text-xs mt-0.5">Paid: ${paidCount} — ${paidNames}</div>
-        <div class="text-xs">Status: <span class="${statusClass} font-semibold">${b.status || 'proposed'}</span>${b.locked ? ' <span class="text-red-400">(LOCKED)</span>' : ''}${b.joinDeadline ? ` • Join for GW${b.joinDeadline}` : ''}</div>
+        <div class="text-xs">Status: <span class="${statusClass} font-semibold">${b.status || 'proposed'}</span>${b.locked ? ` <span class="text-red-400">(LOCKED for GW${displayGW})</span>` : ''}${b.joinDeadline ? ` • Join for GW${displayGW}` : ''}</div>
         <div class="mt-2 flex flex-wrap gap-1 text-[10px]">
           <button onclick="showWhatsAppShare(decodeURIComponent('${safeShare}'), 'Share beef'); event.stopImmediatePropagation();" class="px-2 py-0.5 bg-[#ffaa00] text-black rounded">📲 Share WA + Link</button>
           ${!b.locked && b.status === 'proposed' ? `<button onclick="respondToBeefLink('${b.id}', 'accept')" class="px-2 py-0.5 bg-[#00ff85] text-black rounded">Accept</button>` : ''}
@@ -1037,6 +1033,7 @@ async function loadAdminOverview() {
           <button onclick="triggerSettle()" class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl">SETTLE &amp; PAYOUTS</button>
           <button onclick="promptSetLeagues()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">SET LEAGUE IDs</button>
           <button onclick="emergencySync()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">FORCE SYNC</button>
+          <button onclick="adminManageH2HFixtures()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">MANAGE H2H FIXTURES (per GW)</button>
         </div>
       </div>
 
@@ -2256,27 +2253,8 @@ function renderSquadChips() {
   `;
 }
 
-function renderProjectionsLive() {
-  const fplWrap = $('fpl-projections');
-  const uclWrap = $('ucl-projections');
-  const proj = window.lastProjections || {};
-  if (fplWrap) {
-    fplWrap.innerHTML = `
-      <div class="text-xs">This week 90% pot: <span class="font-bold text-[#00ff85]">₦${proj.fpl?.weeklyPot90 || 0}</span></div>
-      <div class="text-xs">H2H season: ₦${proj.fpl?.h2hOverallPot || 0}</div>
-      <div class="text-xs">Overall winner: ₦${proj.fpl?.overallWinnerPot || 0}</div>
-      <div class="text-xs">Cup winner: ₦${proj.fpl?.cupWinnerPot || 0}</div>
-      <div class="text-xs">1st RU: ₦${proj.fpl?.firstRunnerUpPot || 0} • 2nd RU: ₦${proj.fpl?.secondRunnerUpPot || 0}</div>
-    `;
-  }
-  if (uclWrap) {
-    const uclNote = proj.ucl?.upcomingMatches ? ` • ${proj.ucl.upcomingMatches} upcoming` : '';
-    uclWrap.innerHTML = `
-      <div class="text-xs">This MD 90% pot: <span class="font-bold text-[#aaa]">₦${proj.ucl?.mdPot90 || 0}</span>${uclNote}</div>
-      <div class="text-xs text-[#aaa]">UCL overall: ₦${proj.seasonPots?.uclOverall || 0}</div>
-    `;
-  }
-}
+// renderProjectionsLive removed from UI (function stub to avoid errors if called)
+function renderProjectionsLive() {}
 
 let playerChallenges = JSON.parse(localStorage.getItem('dl_playerChallenges') || '[]');
 window.activeBeefs = window.activeBeefs || [];
@@ -2482,8 +2460,8 @@ function boostPot(target) {
     h2h: "H2H pot",
     overall: "overall league pot",
     cup: "cup pot",
-    'first-ru': "1st runner up (60%)",
-    'second-ru': "2nd runner up (40%)"
+    'first-ru': "1st runner up",
+    'second-ru': "2nd runner up"
   };
   const label = labels[target] || target;
   const amtStr = prompt(`Enter amount in ₦ to add to ${label} (e.g. 1000). 100% goes to the pot.`, '1000');
@@ -3557,20 +3535,31 @@ function renderFplTailored() {
       if (h2hData && h2hData.standings && h2hData.standings.results) {
         let results = [...h2hData.standings.results].sort((a,b) => (a.rank||999) - (b.rank||999));
         const nextGw = ((standingsData.currentRound && standingsData.currentRound.fpl) || 1) + 1;
+        const fixtures = (standingsData.h2hFixtures && standingsData.h2hFixtures[nextGw]) || {};
         // Build table for all
         let table = `<div class="text-xs font-semibold mb-1">H2H League Standings (GW${nextGw} fixtures)</div>`;
-        table += `<div class="overflow-x-auto"><table class="w-full text-[10px] border-collapse"><thead><tr class="text-[#888] border-b border-[#333]"><th class="text-left py-1">Rank</th><th class="text-left py-1">Team</th><th class="py-1">W</th><th class="py-1">D</th><th class="py-1">L</th><th class="py-1">Total</th><th class="text-left py-1">Form (Main GW)</th><th class="text-left py-1">Next Fixture</th></tr></thead><tbody>`;
+        table += `<div class="overflow-x-auto"><table class="w-full text-[10px] border-collapse"><thead><tr class="text-[#888] border-b border-[#333]"><th class="text-left py-1">Rank</th><th class="text-left py-1">Team</th><th class="py-1">W</th><th class="py-1">D</th><th class="py-1">L</th><th class="py-1">Total</th><th class="text-left py-1">Next Fixture (pts)</th></tr></thead><tbody>`;
         results.forEach(r => {
           const isD = (standingsData.fpl || []).some(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId)) === String(r.entry));
           const mainPts = isD ? (standingsData.fpl || []).find(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId))===String(r.entry)) : null;
           const totalPts = (r.matches_won || 0) * 3 + (r.matches_drawn || 0);
           const name = r.entry_name || r.player_name || 'Unknown';
           const club = isD && mainPts ? ` (${mainPts.fplClubName || ''})` : '';
-          const form = mainPts ? `${mainPts.currentFpl ?? '—'}` : '-';
-          const nextFix = '-'; // admin manual wiring below
-          table += `<tr class="border-b border-[#222]"><td class="py-0.5">${r.rank}</td><td class="py-0.5 font-medium">${name}${club}</td><td class="py-0.5 text-center">${r.matches_won||0}</td><td class="py-0.5 text-center">${r.matches_drawn||0}</td><td class="py-0.5 text-center">${r.matches_lost||0}</td><td class="py-0.5 text-center font-bold">${totalPts}</td><td class="py-0.5 text-left">${form}</td><td class="py-0.5 text-left">${nextFix}</td></tr>`;
+          let nextFix = '-';
+          const myKey = String(r.entry);
+          const oppKey = fixtures[myKey];
+          if (oppKey) {
+            const oppR = results.find(x => String(x.entry) === String(oppKey));
+            if (oppR) {
+              const oppIsD = (standingsData.fpl || []).some(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId)) === String(oppR.entry));
+              const oppMain = oppIsD ? (standingsData.fpl || []).find(m => String((m.fplTeam&&m.fplTeam.teamId)||(m.fpl&&m.fpl.teamId))===String(oppR.entry)) : null;
+              const oppForm = oppMain ? oppMain.currentFpl ?? '—' : '-';
+              nextFix = `${oppR.entry_name || oppR.player_name || oppKey} <br> pts: ${oppForm}`;
+            }
+          }
+          table += `<tr class="border-b border-[#222]"><td class="py-0.5">${r.rank}</td><td class="py-0.5 font-medium">${name}${club}</td><td class="py-0.5 text-center">${r.matches_won||0}</td><td class="py-0.5 text-center">${r.matches_drawn||0}</td><td class="py-0.5 text-center">${r.matches_lost||0}</td><td class="py-0.5 text-center font-bold">${totalPts}</td><td class="py-0.5 text-left">${nextFix}</td></tr>`;
         });
-        table += `</tbody></table></div><div class="text-[9px] text-[#888] mt-1">Next fixture & opponents set via admin (manual select per GW). Form = main league current GW points.</div>`;
+        table += `</tbody></table></div><div class="text-[9px] text-[#888] mt-1">Next fixture & opponents set via admin (manual select per GW). Form uses main league points for D-League members.</div>`;
         html = table;
       } else {
         html = `H2H ID set (${lids.fplH2h}) — loading data...`;
@@ -3592,13 +3581,7 @@ function renderFplTailored() {
 
 
 
-  // Sponsored
-  renderSponsoredAwardsFpl();
 
-  // Personal Beef
-  if ($('fpl-personal-beef')) {
-    $('fpl-personal-beef').innerHTML = `<div class="text-xs">Propose measurable beefs above (use static form with paid managers dropdown).</div>`;
-  }
 
   // Ensure lineup viewer populated
   if (typeof renderLineupViewer === 'function') setTimeout(renderLineupViewer, 100);
@@ -3652,15 +3635,23 @@ function renderGWWinLeaders() {
 
   const section = document.createElement('div');
   section.id = 'gw-winners-roll';
-  section.className = 'mt-6 p-4 bg-[#1a1a1a] border border-[#333] rounded-2xl';
+  section.className = 'mt-2 p-3 bg-[#111] border border-[#00ff85] rounded-2xl';
   section.innerHTML = `
-    <div class="flex items-baseline justify-between mb-3">
+    <div class="flex items-baseline justify-between mb-2">
       <div>
-        <div class="font-semibold text-base tracking-tight">GW Winners Roll</div>
-        <div class="text-[10px] text-[#888]">Managers who have won a weekly pot this season</div>
+        <div class="font-black text-lg tracking-[-0.5px]">GW WINNERS ROLL</div>
+        <div class="text-[9px] text-[#888]">Season champs (weekly pots)</div>
       </div>
       <div class="text-xs px-2 py-0.5 bg-[#003322] text-[#00ff85] rounded font-mono">${winnersList.length} CHAMP${winnersList.length > 1 ? 'S' : ''}</div>
     </div>
+  `;
+
+  const ledgerCol = document.getElementById('ledger-col');
+  if (ledgerCol) {
+    ledgerCol.appendChild(section);
+  } else {
+    container.appendChild(section);
+  }
     <div class="divide-y divide-[#222]">
       ${winnersList.map(mgr => {
         const gwBadges = mgr.rounds.sort((a,b)=>a-b).map(r => 
@@ -3997,7 +3988,7 @@ async function refreshAdminBeefsList() {
     if (dash) dash.appendChild(container);
     const bdata = await fetchJSON('/api/admin/beefs');
     let bh = `<div class="font-black text-lg mb-2 text-[#ffaa00]">⚔️ BEEFS — ADMIN (manual settle + preview)</div>
-      <div class="text-[10px] text-[#888] mb-2">Use SETTLE button (shows computed winner if data available for the round). 10% house cuts (paid) split 50/30/20. Beefs persist.</div>`;
+      <div class="text-[10px] text-[#888] mb-2">Use SETTLE button (shows computed winner if data available for the round). Beefs persist.</div>`;
     const bl = (bdata.beefs || []);
     if (bl.length === 0) {
       bh += `<div class="text-xs text-[#666]">No beefs found.</div>`;
@@ -4035,8 +4026,11 @@ async function refreshAdminBeefsList() {
           sel += `</select>`;
           settleUI = sel + `<button onclick="settleBeefWithSelected('${bf.id}', '${selId}')" class="mt-1 px-2 py-0.5 bg-green-700 text-white text-[10px] rounded">SETTLE SELECTED</button>`;
         }
+        const currentGW = (standingsData && standingsData.currentRound && standingsData.currentRound.fpl) || 1;
+        const joinGW = bf.joinDeadline || currentGW;
+        const displayGW = Math.max(joinGW, currentGW);
         bh += `<div class="mb-2 p-2 bg-black/60 rounded text-xs border border-[#ffaa00]">
-          <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | ${bDesc} | Pot ₦${pz} ${bf.locked ? '(LOCKED)' : ''}${bf.joinDeadline ? ' • deadline GW'+bf.joinDeadline : ''}</div>
+          <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | ${bDesc} | Pot ₦${pz} ${bf.locked ? `(LOCKED for GW${displayGW})` : ''}${bf.joinDeadline ? ` • Join for GW${displayGW}` : ''}</div>
           <div>Status: ${bf.status} | Paid: ${pstr}</div>
           ${winPreview}
           ${canC ? `<button onclick="adminCancelBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-red-700 text-white text-[10px] rounded">${bf.status === 'settled' ? 'UNDO SETTLEMENT (restore pot)' : 'CANCEL + REFUND'}</button> ${lockBtn}` : ''}
@@ -4065,6 +4059,77 @@ async function settleBeefWithSelected(beefId, selectElId) {
   } catch (e) {
     alert('Settle failed: ' + (e.message || e));
   }
+}
+
+async function adminManageH2HFixtures() {
+  if (!standingsData || !standingsData.fpl || !standingsData.fpl.length) {
+    alert('Load FPL data first (refresh admin or switch to FPL)');
+    return;
+  }
+  const dleague = standingsData.fpl;
+  let gw = parseInt(prompt('Enter GW to edit fixtures for (2-38, GW1 concluded):', '2'));
+  if (!gw || gw < 2 || gw > 38) return;
+
+  // Build UI for picking opponents
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:100;display:flex;align-items:center;justify-content:center;';
+  modal.innerHTML = `
+    <div style="background:#1c1c1c;border:1px solid #333;padding:16px;border-radius:12px;max-width:600px;width:90%;">
+      <div style="font-weight:bold;margin-bottom:8px;">H2H Fixtures for GW${gw} (pick opponents)</div>
+      <div id="h2h-picks" style="max-height:400px;overflow:auto;"></div>
+      <div style="margin-top:12px;">
+        <button id="h2h-save" style="background:#00ff85;color:#111;padding:6px 12px;border-radius:6px;margin-right:8px;">SAVE</button>
+        <button id="h2h-cancel" style="padding:6px 12px;border-radius:6px;border:1px solid #444;">CANCEL</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const picksDiv = modal.querySelector('#h2h-picks');
+  const currentFixtures = (standingsData.h2hFixtures && standingsData.h2hFixtures[gw]) || {};
+
+  dleague.forEach(m => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;margin-bottom:4px;font-size:12px;';
+    row.innerHTML = `<span style="width:140px;">${m.displayName}</span>`;
+    const sel = document.createElement('select');
+    sel.style.cssText = 'flex:1;font-size:12px;';
+    sel.innerHTML = '<option value="">-- pick opponent --</option>';
+    dleague.forEach(o => {
+      if (o.id === m.id) return;
+      const opt = document.createElement('option');
+      opt.value = (o.fplTeam && o.fplTeam.teamId) || o.id;
+      opt.text = o.displayName;
+      if (currentFixtures[(m.fplTeam && m.fplTeam.teamId) || m.id] == opt.value) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    row.appendChild(sel);
+    picksDiv.appendChild(row);
+    // store ref
+    row._managerKey = (m.fplTeam && m.fplTeam.teamId) || m.id;
+    row._sel = sel;
+  });
+
+  modal.querySelector('#h2h-save').onclick = async () => {
+    const newFix = {};
+    Array.from(picksDiv.children).forEach(row => {
+      if (row._sel && row._sel.value) {
+        newFix[row._managerKey] = row._sel.value;
+      }
+    });
+    try {
+      await fetchJSON('/api/admin/set-h2h-fixtures', {
+        method: 'POST',
+        body: JSON.stringify({ gw, fixtures: newFix })
+      });
+      alert('Saved GW' + gw);
+      document.body.removeChild(modal);
+      // refresh data
+      await loadStandings();
+      renderFplTailored();
+    } catch (e) { alert('Failed ' + e.message); }
+  };
+  modal.querySelector('#h2h-cancel').onclick = () => document.body.removeChild(modal);
 }
 
 // Keep for any legacy calls (prompt fallback minimal)
