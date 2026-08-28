@@ -1392,6 +1392,13 @@ async function settleWeeklyPot(comp, round) {
   scores.sort((a, b) => b.points - a.points);
   const winner = scores[0];
 
+  // Guard against duplicate settles (prevents double wallet credits and fake win counts like "6 GWs")
+  const already = (s.ledger || []).some(l => l.competition === comp && l.round === round && l.type === 'weekly_win');
+  if (already) {
+    console.warn(`[settle] Duplicate settle skipped for ${comp} round ${round} to protect funds`);
+    return 0;
+  }
+
   // Ensure the store reflects the fresh official FPL points for this round (isFinal)
   scores.forEach(sc => {
     // Only update points/source/isFinal; preserve existing picks/extra data needed for beef compute etc.
@@ -3493,6 +3500,8 @@ app.post("/api/admin/mark-paid", async (req, res) => {
     s.settings.h2hOverallPot = (s.settings.h2hOverallPot || 0) + 1500; // current allocation model
   }
 
+  updateSeasonPots(s);  // ensure UCL overall pot (20%) and other derived pots update immediately
+
   await persistStore();
   await logEvent("manual_mark_paid", { managerId: mgr.id, competition, amount: amt, byAdmin: true });
 
@@ -5580,7 +5589,8 @@ app.get("/api/admin/overview", async (req, res) => {
     fplTeam: m.fpl || {},
     uclTeam: m.ucl || {},
     selfRegistered: !!m.selfRegistered,
-    teamIdMissing: !!m.teamIdMissing
+    teamIdMissing: !!m.teamIdMissing,
+    wallet: getWalletBalance(m.id)
   }));
 
   res.json({

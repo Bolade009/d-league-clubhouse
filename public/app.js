@@ -1275,6 +1275,20 @@ async function loadAdminOverview() {
           <div class="text-xs text-[#666] mt-2">FPL/UCL show per-comp paid status. Admin has no team. Click code to copy.</div>
         </div>
 
+        <!-- MANAGER WALLETS - admin superpower for anomaly detection and quick correction -->
+        <div class="mt-4 bg-[#161616] border border-[#ffaa00] rounded-3xl p-5">
+          <div class="font-semibold text-xl mb-3 text-[#ffaa00]">MANAGER WALLETS (anomaly detection)</div>
+          <div class="max-h-[220px] overflow-auto text-sm divide-y divide-[#333]">
+            ${(data.managers || []).sort((a,b) => ((b.wallet||0) - (a.wallet||0))).map(m => `
+              <div class="flex justify-between items-center py-1.5">
+                <div class="font-medium">${m.displayName} ${m.fplPaid || m.uclPaid ? '<span class="text-[10px] text-[#00ff85]">PAID</span>' : ''}</div>
+                <div class="font-mono tabular-nums ${((m.wallet||0) > 50000 || (m.wallet||0) < 0) ? 'text-red-400 font-bold' : ''}">₦${(m.wallet||0).toLocaleString()}</div>
+              </div>
+            `).join('')}
+          </div>
+          <div class="text-[10px] mt-2 text-[#888]">Sorted high→low. Red flag: >₦50k or negative (investigate immediately). Use existing DEDUCT FROM WALLET or credit form below to correct. Refresh after fixes.</div>
+        </div>
+
         <!-- Sponsored -->
         <div class="bg-[#161616] border border-[#222] rounded-3xl p-5">
           <div class="font-semibold text-xl mb-3">SPONSORED AWARDS</div>
