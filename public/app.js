@@ -3721,7 +3721,17 @@ function renderFplTailored() {
           // Next fixture: resolve using fixtures map (by entry/teamId), show name + pts below
           let nextName = 'TBD';
           let nextPts = '';
-          const oppKey = fixtures[tid];
+          let oppKey = fixtures[tid];
+          if (!oppKey) {
+            // Fallback for key mismatch (teamId vs id, or saved vs current standings)
+            const mgr = dm;
+            if (mgr) {
+              const alt1 = (mgr.fplTeam && mgr.fplTeam.teamId) || '';
+              const alt2 = mgr.id || '';
+              if (alt1 && fixtures[String(alt1)]) oppKey = fixtures[String(alt1)];
+              else if (alt2 && fixtures[String(alt2)]) oppKey = fixtures[String(alt2)];
+            }
+          }
           if (oppKey) {
             const oppR = results.find(x => String(x.entry) === String(oppKey));
             if (oppR) {
@@ -3813,6 +3823,10 @@ function renderGWWinLeaders() {
   const old = $('gw-winners-roll');
   if (old) old.remove();
 
+  // Always clear the dedicated col to prevent duplicate renders (was causing 6x repeat on multiple renderFpl calls)
+  let winnersCol = document.getElementById('gw-winners-col');
+  if (winnersCol) winnersCol.innerHTML = '';
+
   const weekly = (standingsData.history && standingsData.history.weekly) || [];
   const fplWins = weekly.filter(w => w.comp === 'fpl' && w.winners && w.winners.length);
 
@@ -3835,6 +3849,11 @@ function renderGWWinLeaders() {
   Object.keys(managerWins).forEach(id => {
     const m = allMgrs.find(x => x.id === id);
     managerWins[id].name = m ? m.displayName : 'Manager';
+  });
+
+  // Dedup rounds (in case history had duplicate entries from repeated settles)
+  Object.keys(managerWins).forEach(id => {
+    managerWins[id].rounds = [...new Set(managerWins[id].rounds)];
   });
 
   // Filter to only those with wins, sort by #wins desc then name
@@ -3872,9 +3891,8 @@ function renderGWWinLeaders() {
   `;
 
   // Share width by appending inside ledger col if present (as per request)
-  const winnersCol = document.getElementById('gw-winners-col');
+  // (cleared at start of function to avoid duplicates from repeated renders)
   if (winnersCol) {
-    winnersCol.innerHTML = ''; // clear
     winnersCol.appendChild(section);
   } else {
     container.appendChild(section);
