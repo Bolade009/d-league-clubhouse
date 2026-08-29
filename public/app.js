@@ -1153,6 +1153,7 @@ async function loadAdminOverview() {
           <button onclick="promptAddManager()" class="px-6 py-2 bg-[#00ff85] text-black font-bold rounded-2xl hover:bg-white">+ ADD MANAGER</button>
           <button onclick="triggerSettle()" class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl">SETTLE &amp; PAYOUTS</button>
           <button onclick="promptSetLeagues()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">SET LEAGUE IDs</button>
+          <button onclick="promptEditServiceFees()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">EDIT SERVICE FEES</button>
           <button onclick="emergencySync()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">FORCE SYNC</button>
           <button onclick="adminManageH2HFixtures()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">H2H FIXTURES (enter matchups)</button>
           <button onclick="adminManageUclMdScores()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">UCL MD SCORES (manual + finalize)</button>
@@ -1820,6 +1821,30 @@ async function promptSetLeagues() {
     }
   } catch (e) {
     alert('Failed to set leagues: ' + e.message);
+  }
+}
+
+async function promptEditServiceFees() {
+  // Load fresh to get current actuals (serviceFees come from house*Admin)
+  let cur = { fpl: 0, ucl: 0 };
+  try {
+    const ov = await fetchJSON('/api/admin/overview');
+    cur = (ov && ov.serviceFees) || cur;
+    window.lastAdminData = ov;
+  } catch (e) {}
+  const fpl = prompt('FPL service fee (houseFplAdmin actuals):', cur.fpl || 0);
+  if (fpl === null) return;
+  const ucl = prompt('UCL service fee (houseUclAdmin actuals):', cur.ucl || 0);
+  if (ucl === null) return;
+  try {
+    const res = await fetchJSON('/api/admin/set-service-fees', {
+      method: 'POST',
+      body: JSON.stringify({ fpl: Number(fpl), ucl: Number(ucl) })
+    });
+    alert(res.message || 'Service fees updated.');
+    loadAdminOverview();
+  } catch (e) {
+    alert('Failed to update service fees: ' + (e.message || e));
   }
 }
 
@@ -3841,7 +3866,14 @@ function renderGWWinLeaders() {
   if (winnersCol) winnersCol.innerHTML = '';
 
   const weekly = (standingsData.history && standingsData.history.weekly) || [];
-  const fplWins = weekly.filter(w => w.comp === 'fpl' && w.winners && w.winners.length);
+  // Global dedup by round in case of any legacy dup history entries (different winners would be caught at source now).
+  const seenRound = new Set();
+  const fplWins = weekly.filter(w => {
+    if (w.comp !== 'fpl' || !w.winners || !w.winners.length) return false;
+    if (seenRound.has(w.round)) return false;
+    seenRound.add(w.round);
+    return true;
+  });
 
   if (!fplWins.length) {
     // Don't show empty section early season

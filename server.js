@@ -570,6 +570,12 @@ async function loadStore() {
     if (atomicComplaints && Array.isArray(atomicComplaints)) loaded.complaints = atomicComplaints;
     if (atomicSettings && typeof atomicSettings === 'object') loaded.settings = { ...(loaded.settings || {}), ...atomicSettings };
 
+    // Apply delete filter early on overrides too (deletedManagerIds may be in settings)
+    const earlyDel = new Set((loaded.settings && loaded.settings.deletedManagerIds) || []);
+    if (earlyDel.size && Array.isArray(loaded.managers)) {
+      loaded.managers = loaded.managers.filter(m => !earlyDel.has(m && m.id));
+    }
+
     storeCache = loaded || {};
 
     let needsPersist = false;
@@ -583,6 +589,7 @@ async function loadStore() {
     storeCache.settings.secondRunnerUpPot = storeCache.settings.secondRunnerUpPot || 0;
     storeCache.settings.uclSecondPlacePot = storeCache.settings.uclSecondPlacePot || 0;
     storeCache.settings.uclThirdPlacePot = storeCache.settings.uclThirdPlacePot || 0;
+    if (!Array.isArray(storeCache.settings.deletedManagerIds)) storeCache.settings.deletedManagerIds = [];
     updateSeasonPots(storeCache);  // ensure UCL overall pot is correct based on revenue
     // Initialize collection keys to arrays only if completely absent (first run); do not overwrite or persist empty if key missing after partial load
     ['managers','payments','scores','ledger','h2h','challenges','sponsorships','events','complaints','beefs','potBoosts'].forEach(k => {
@@ -611,6 +618,12 @@ async function loadStore() {
         });
       });
       result.managers = Array.from(mgrById.values());
+
+      // Permanently exclude deleted managers (even if they lurk in backups/sidecars). Delete records the id.
+      const delIds = new Set((result.settings && result.settings.deletedManagerIds) || []);
+      if (delIds.size) {
+        result.managers = result.managers.filter(m => !delIds.has(m && m.id));
+      }
 
       // Ledger, payments, scores, complaints etc: union by id (preserve *all* historical + recent winnings/settlements)
       ['ledger', 'payments', 'scores', 'events', 'sponsorships', 'challenges', 'complaints', 'beefs', 'potBoosts'].forEach(key => {
@@ -677,6 +690,21 @@ async function loadStore() {
     }
 
     console.log(`[store] Loaded from SQLite: ${storeCache.managers ? storeCache.managers.length : 0} managers`);
+
+    // Dedup GW/MD win history by (comp,round) to preserve winners roll integrity (keep earliest entry if dups from prior repeated settles).
+    // This + inside-guard push in settle prevents "two different winners for same GW" even across restarts/re-calls.
+    if (storeCache.settings) {
+      storeCache.settings.history = storeCache.settings.history || { weekly: [], awards: [], beefs: [], standings: [] };
+      if (Array.isArray(storeCache.settings.history.weekly)) {
+        const seen = new Set();
+        storeCache.settings.history.weekly = storeCache.settings.history.weekly.filter(h => {
+          const key = `${h.comp || h.competition || ''}:${h.round}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      }
+    }
 
     // Normalize ONLY for old season data...
     if (storeCache.settings && (storeCache.settings.seasonName.includes("2025/26") || storeCache.settings.seasonName.includes("25/26"))) {
@@ -1319,6 +1347,14 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
       s.settings.fplOverallPot = (s.settings.fplOverallPot || 0) + 525;
       s.settings.fplCupPot = (s.settings.fplCupPot || 0) + 175;
     }
+    if (competition === 'ucl') {
+      // Pre-allocate 2nd/3rd pots immediately on manager pay (like fpl fixed pots + ucl 20% overall).
+      // This ensures 2nd/3rd reflect as soon as paid, BEFORE any MD/pot settlement.
+      // 600/400 split chosen to approx full-season 10%-reserve share per paid manager (no settlement required to see).
+      // Additional pays (or edit service fees) will add to house and/or these.
+      s.settings.uclSecondPlacePot = (s.settings.uclSecondPlacePot || 0) + 600;
+      s.settings.uclThirdPlacePot = (s.settings.uclThirdPlacePot || 0) + 400;
+    }
   }
 
   await logEvent("payment_confirmed", { managerId, competition, reference, amount });
@@ -1425,34 +1461,36 @@ async function settleWeeklyPot(comp, round) {
     });
   }
 
+  // Guard fpl season pot contributions too (was outside, could double on re-calls)
   if (comp === 'fpl') {
-    const weeklyReserve = pot.reserve;
-    const toOverall = Math.floor(weeklyReserve * 0.75);
-    const toCup = weeklyReserve - toOverall;
-    s.settings.fplOverallPot = (s.settings.fplOverallPot || 0) + toOverall;
-    s.settings.fplCupPot = (s.settings.fplCupPot || 0) + toCup;
+    const alreadyContrib = (s.ledger || []).some(l => l.competition === comp && l.round === round && l.type === 'season_pot_contribution');
+    if (!alreadyContrib) {
+      const weeklyReserve = pot.reserve;
+      const toOverall = Math.floor(weeklyReserve * 0.75);
+      const toCup = weeklyReserve - toOverall;
+      s.settings.fplOverallPot = (s.settings.fplOverallPot || 0) + toOverall;
+      s.settings.fplCupPot = (s.settings.fplCupPot || 0) + toCup;
 
-    // Log transparently but these go to season pots
-    s.ledger.push({
-      id: generateId("ldg"),
-      type: "season_pot_contribution",
-      managerId: "system",
-      competition: comp,
-      round,
-      amount: -weeklyReserve,
-      note: `Weekly reserve split 75% overall / 25% cup from ${comp} ${round}`,
-      at: nowISO()
-    });
+      // Log transparently but these go to season pots
+      s.ledger.push({
+        id: generateId("ldg"),
+        type: "season_pot_contribution",
+        managerId: "system",
+        competition: comp,
+        round,
+        amount: -weeklyReserve,
+        note: `Weekly reserve split 75% overall / 25% cup from ${comp} ${round}`,
+        at: nowISO()
+      });
+    }
   } else {
-    // UCL: 10% reserve from MD pot goes to 2nd/3rd place pots (60/40), distributed at end of season based on total points
-    // Add only if not already contributed for this round (prevents double funding)
+    // UCL: 10% reserve from MD pot *was* source for 2nd/3rd. Now funded pre on pay (see confirm/mark-paid)
+    // so pots reflect as soon as managers pay (no MD settle required). Keep guard+ledger for audit.
     const alreadyReserve = (s.ledger || []).some(l => l.competition === comp && l.round === round && l.type === 'ucl_runner_up_contribution');
     if (!alreadyReserve) {
       const res = pot.reserve;
-      const toSecond = Math.floor(res * 0.6);
-      const toThird = res - toSecond;
-      s.settings.uclSecondPlacePot = (s.settings.uclSecondPlacePot || 0) + toSecond;
-      s.settings.uclThirdPlacePot = (s.settings.uclThirdPlacePot || 0) + toThird;
+      // Note: pot increments for 2nd/3rd removed here; pre-allocated on payment (600/400 per UCL paid mgr)
+      // to satisfy "reflect on manager pay before any settlement".
       s.ledger.push({
         id: generateId("ldg"),
         type: "ucl_runner_up_contribution",
@@ -1460,7 +1498,7 @@ async function settleWeeklyPot(comp, round) {
         competition: comp,
         round,
         amount: -res,
-        note: `Reserve from UCL MD ${round} to 2nd/3rd place pots`,
+        note: `Reserve from UCL MD ${round} to 2nd/3rd place pots (pre-funded on pay)`,
         at: nowISO()
       });
     }
@@ -1470,16 +1508,18 @@ async function settleWeeklyPot(comp, round) {
   await persistStore();
   await logEvent("pot_settled", { comp, round, winners: tiedWinners.map(w => w.managerId), amount: pot.winnerShare });
 
-  // Store history
-  s.settings.history = s.settings.history || {weekly: [], awards: [], beefs: [], standings: []};
-  s.settings.history.weekly.push({
-    round,
-    comp,
-    winners: tiedWinners.map(w => ({id: w.managerId, points: w.points})),
-    pot: pot.winnerShare,
-    split: tiedWinners.length > 1,
-    at: nowISO()
-  });
+  // Store history ONLY on first win record (inside guard) to preserve roll integrity. No dup entries or conflicting winners for same round.
+  if (!alreadyWin) {
+    s.settings.history = s.settings.history || {weekly: [], awards: [], beefs: [], standings: []};
+    s.settings.history.weekly.push({
+      round,
+      comp,
+      winners: tiedWinners.map(w => ({id: w.managerId, points: w.points})),
+      pot: pot.winnerShare,
+      split: tiedWinners.length > 1,
+      at: nowISO()
+    });
+  }
 
   return pot.winnerShare;
 }
@@ -2248,17 +2288,25 @@ async function syncFPL(roundsToSync = null) {
           // Always fetch live data for per-player breakdown (stats, bps etc). This is cheap and used for lineup viewer.
           live = await safeFetchJSON(`${FPL_BASE}/event/${r}/live/`);
 
-          if (picksData.entry_history && typeof picksData.entry_history.points === "number") {
-            // Prefer FPL's reported points from entry_history (what the official FPL site/app shows for the GW points)
+          // Points selection tuned for responsiveness:
+          // - On finished GW: prefer entry_history (official FPL final)
+          // - On live/ongoing: prefer compute from /live/ elements + picks (matches FPL site live updates faster; entry_history can lag until post-GW)
+          // This makes force-sync and regular sync show current FPL site numbers promptly without compromising settle (which re-fetches fresh for finals + guards finished).
+          if (eventFinished && picksData.entry_history && typeof picksData.entry_history.points === "number") {
             points = picksData.entry_history.points;
-            source = eventFinished ? "official-fpl" : "live-projection";
-            isFinal = eventFinished;
-          } else if (r === current) {
-            if (live && picksData.picks) {
-              points = computeLivePointsFromPicks(picksData.picks, live);
-              source = "live-projection";
-              isFinal = false;
-            }
+            source = "official-fpl";
+            isFinal = true;
+          }
+          if (points === null && live && picksData.picks) {
+            points = computeLivePointsFromPicks(picksData.picks, live);
+            source = eventFinished ? "live-final" : "live-projection";
+            isFinal = !!eventFinished;
+          }
+          if (points === null && picksData.entry_history && typeof picksData.entry_history.points === "number") {
+            // Fallback to entry_history if live calc unavailable
+            points = picksData.entry_history.points;
+            source = "official-fpl";
+            isFinal = !!eventFinished;
           }
 
           // Build per-player points map for lineup using live data
@@ -2325,6 +2373,10 @@ async function syncFPL(roundsToSync = null) {
 
   // H2H wiring on sync (now uses real fplH2h data, no fake pairs)
   try { await populateH2HFixtures(s); await persistStore(); } catch (e) { console.warn('[H2H] populate failed', e.message); }
+
+  // Sync cadence: initial on boot, /sync/run (force), periodic ~30min, + after some pay/settle triggers.
+  // Live points now prioritize computeLive for !finished (responsive to FPL site during GW).
+  // Finals + settle still use entry_history + bootstrap.finished guard. Reliable: no live used for payouts.
 
   // Only auto-settle previous GW once FPL has marked it finished (scores final, usually next day 09:00 per FPL rules).
   // This prevents settling on projections or before lockdown. Reduces need for admin intervention.
@@ -3364,6 +3416,8 @@ app.post("/api/admin/delete-manager", async (req, res) => {
   }
   try {
     s.managers.splice(idx, 1);
+    // Record for permanence across merges/reloads (prevents reappear from sidecar/db/backups)
+    s.settings.deletedManagerIds = Array.from(new Set([...(s.settings.deletedManagerIds || []), toDel.id]));
     await persistStore();
     await logEvent("manager_deleted_by_admin", { id: toDel.id, email: toDel.email, displayName: toDel.displayName });
     res.json({ ok: true, message: `Manager ${toDel.displayName} removed from active managers list. History preserved in ledger/payments/beefs.`, deleted: toDel.id });
@@ -3503,6 +3557,11 @@ app.post("/api/admin/mark-paid", async (req, res) => {
 
   if (competition === 'fpl') {
     s.settings.h2hOverallPot = (s.settings.h2hOverallPot || 0) + 1500; // current allocation model
+  }
+  if (competition === 'ucl') {
+    // Pre-alloc on manual mark-paid too (so pots for 2nd/3rd visible immediately without settle)
+    s.settings.uclSecondPlacePot = (s.settings.uclSecondPlacePot || 0) + 600;
+    s.settings.uclThirdPlacePot = (s.settings.uclThirdPlacePot || 0) + 400;
   }
 
   updateSeasonPots(s);  // ensure UCL overall pot (20%) and other derived pots update immediately
@@ -4384,6 +4443,45 @@ app.post("/api/admin/set-league-lock", async (req, res) => {
   await logEvent("league_lock_toggled", { leagueLocked: s.settings.leagueLocked });
   const msg = `FPL: ${s.settings.leagueLocked.fpl ? 'LOCKED' : 'OPEN'}, UCL: ${s.settings.leagueLocked.ucl ? 'LOCKED' : 'OPEN'}`;
   res.json({ ok: true, leagueLocked: s.settings.leagueLocked, message: msg });
+});
+
+// Admin edit service fees (houseFplAdmin / houseUclAdmin) to reflect actual collected.
+// Additional payments flow into house via normal confirm/mark-paid paths using COMP.adminFee split.
+// This allows correction/adjust without being limited to per-payment houseFee.
+app.post("/api/admin/set-service-fees", async (req, res) => {
+  if (!DEMO_MODE) {
+    const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+    let allowed = !!(SYNC_TOKEN && adminTok === SYNC_TOKEN);
+    if (!allowed) {
+      const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+      if (bearer) {
+        const decoded = verifyToken(bearer);
+        if (decoded && decoded.managerId) {
+          const mgr = getManagerById(decoded.managerId);
+          if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+            allowed = true;
+          }
+        }
+      }
+    }
+    if (!allowed) return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { fpl, ucl } = req.body || {};
+  const s = await loadStore();
+  if (typeof fpl !== 'undefined') {
+    s.settings.houseFplAdmin = Math.max(0, Math.floor(Number(fpl) || 0));
+  }
+  if (typeof ucl !== 'undefined') {
+    s.settings.houseUclAdmin = Math.max(0, Math.floor(Number(ucl) || 0));
+  }
+  await persistStore();
+  await logEvent("service_fees_updated", { fpl: s.settings.houseFplAdmin, ucl: s.settings.houseUclAdmin });
+  res.json({
+    ok: true,
+    serviceFees: { fpl: s.settings.houseFplAdmin || 0, ucl: s.settings.houseUclAdmin || 0 },
+    message: `Service fees updated. FPL: ₦${s.settings.houseFplAdmin || 0} / UCL: ₦${s.settings.houseUclAdmin || 0}`
+  });
 });
 
 // Manager requests payout from wallet to their bank (Paystack transfer)
