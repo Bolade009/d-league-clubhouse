@@ -813,10 +813,11 @@ function showLiveProjection() {
         for (const p of picksData.picks) {
           const el = liveData.elements.find(e => e.id === p.element);
           if (el && el.stats) {
-            const pts = (el.stats.total_points || 0) * (p.multiplier || 1);
+            const m = (typeof p.multiplier === 'number' ? p.multiplier : 1);
+            const pts = (el.stats.total_points || 0) * m;
             total += pts;
             const info = playerMap[p.element] || {};
-            const isCap = (p.multiplier || 1) > 1;
+            const isCap = m > 1;
             const bps = el.stats.bps || 0;
             const bonus = el.stats.bonus || 0;
 
@@ -2756,7 +2757,8 @@ async function loadAndRenderLineup(managerId, container) {
     const chip = recent.activeChip || (isUclMode ? data.recentUclChip : data.recentChip);
     const compLabel = isUclMode ? 'MD' : 'GW';
 
-    // Split: starters (multi > 0) on pitch, bench (multi === 0) below
+    // Split: starters (multi > 0) on pitch, bench (multi === 0) below.
+    // p.points is now RAW (from server). Apply mult for effective contrib.
     const starters = allPicks.filter(p => (p.multiplier || 0) > 0);
     const bench = allPicks.filter(p => (p.multiplier || 0) === 0);
 
@@ -2766,8 +2768,13 @@ async function loadAndRenderLineup(managerId, container) {
       if (groups[p.type]) groups[p.type].push(p);
     });
 
-    // Total points headline
-    const totalPts = starters.reduce((s, p) => s + (p.points != null ? p.points : 3 + ((p.element || 0) % 7)), 0);
+    // Total points headline: only active (starters + BB if active) using effective = raw * mult
+    const getEff = (p) => {
+      const raw = (p.points != null ? p.points : 0);
+      const m = (typeof p.multiplier === 'number' ? p.multiplier : 1);
+      return raw * m;
+    };
+    const totalPts = starters.reduce((s, p) => s + getEff(p), 0);
 
     // Lineup viewer now supports both FPL (exact match to official site) and UCL
     const capId = captainId;
@@ -2775,7 +2782,10 @@ async function loadAndRenderLineup(managerId, container) {
 
     const makeCard = (p, isBenchCard = false) => {
       const isCap = p.element === capId || (p.multiplier || 0) > 1;
-      let pts = p.points != null ? p.points : (isBenchCard ? 0 : 3 + Math.floor(Math.random() * 9));
+      const raw = (p.points != null ? p.points : (isBenchCard ? 0 : 3 + Math.floor(Math.random() * 9)));
+      const m = (typeof p.multiplier === 'number' ? p.multiplier : 1);
+      // Show effective for active slots (incl. cap x2), raw points earned for bench cards
+      let pts = isBenchCard ? raw : raw * m;
       const shortName = (p.name || 'Player').split(' ').pop().substring(0, 10);
       const team = p.team || '???';
       const teamColor = p.teamColor || '#2a2a2a';

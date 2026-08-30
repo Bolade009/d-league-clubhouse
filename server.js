@@ -2288,38 +2288,34 @@ async function syncFPL(roundsToSync = null) {
           // Always fetch live data for per-player breakdown (stats, bps etc). This is cheap and used for lineup viewer.
           live = await safeFetchJSON(`${FPL_BASE}/event/${r}/live/`);
 
-          // Points selection tuned for responsiveness:
-          // - On finished GW: prefer entry_history (official FPL final)
-          // - On live/ongoing: prefer compute from /live/ elements + picks (matches FPL site live updates faster; entry_history can lag until post-GW)
-          // This makes force-sync and regular sync show current FPL site numbers promptly without compromising settle (which re-fetches fresh for finals + guards finished).
-          if (eventFinished && picksData.entry_history && typeof picksData.entry_history.points === "number") {
+          // Prefer FPL's entry_history.points when present: this is exactly what the FPL site shows for the GW (handles autosubs, Bench Boost correctly or not, captain etc).
+          // Only fallback to our computeLive (fixed for multiplier=0 bench) when entry_history.points not yet available.
+          // This guarantees final scores match FPL exactly; live views also use FPL's numbers when provided (no spurious bench points).
+          if (picksData.entry_history && typeof picksData.entry_history.points === "number") {
             points = picksData.entry_history.points;
-            source = "official-fpl";
-            isFinal = true;
-          }
-          if (points === null && live && picksData.picks) {
+            source = eventFinished ? "official-fpl" : "fpl-entry";
+            isFinal = !!eventFinished;
+          } else if (live && picksData.picks) {
             points = computeLivePointsFromPicks(picksData.picks, live);
             source = eventFinished ? "live-final" : "live-projection";
             isFinal = !!eventFinished;
           }
-          if (points === null && picksData.entry_history && typeof picksData.entry_history.points === "number") {
-            // Fallback to entry_history if live calc unavailable
-            points = picksData.entry_history.points;
-            source = "official-fpl";
-            isFinal = !!eventFinished;
-          }
 
-          // Build per-player points map for lineup using live data
+          // Build per-player points map for lineup using live data.
+          // Store RAW player points here (p.points = raw). Multiplier is separate.
+          // This ensures:
+          // - Manager totals (when computed) correctly exclude bench (mult=0) unless Bench Boost.
+          // - Lineup viewer + beefs (e.g. bench-bandit) see actual points earned by players.
+          // - Final manager scores come from FPL's entry_history when available (exact match).
           let pickPoints = {};
           if (picksData.picks && live && live.elements) {
             for (const p of picksData.picks) {
               const el = live.elements.find(e => e.id === p.element);
               if (el && el.stats) {
-                pickPoints[p.element] = (el.stats.total_points || 0) * (p.multiplier || 1);
+                pickPoints[p.element] = (el.stats.total_points || 0);  // RAW
               }
             }
           } else if (DEMO_MODE && picksData.picks) {
-            // Demo projected points
             picksData.picks.forEach((p, i) => {
               pickPoints[p.element] = 2 + (i % 8) * 2 + Math.floor(Math.random() * 5);
             });
@@ -2398,7 +2394,8 @@ function computeLivePointsFromPicks(picks, liveData) {
   for (const pick of picks) {
     const el = liveData.elements.find(e => e.id === pick.element);
     if (!el || !el.stats) continue;
-    let pts = (el.stats.total_points || 0) * (pick.multiplier || 1);
+    const m = (typeof pick.multiplier === 'number' ? pick.multiplier : 1);
+    let pts = (el.stats.total_points || 0) * m;
     total += pts;
   }
   return Math.round(total);
