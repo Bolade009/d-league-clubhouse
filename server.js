@@ -2288,16 +2288,24 @@ async function syncFPL(roundsToSync = null) {
           // Always fetch live data for per-player breakdown (stats, bps etc). This is cheap and used for lineup viewer.
           live = await safeFetchJSON(`${FPL_BASE}/event/${r}/live/`);
 
-          // Prefer FPL's entry_history.points when present: this is exactly what the FPL site shows for the GW (handles autosubs, Bench Boost correctly or not, captain etc).
-          // Only fallback to our computeLive (fixed for multiplier=0 bench) when entry_history.points not yet available.
-          // This guarantees final scores match FPL exactly; live views also use FPL's numbers when provided (no spurious bench points).
-          if (picksData.entry_history && typeof picksData.entry_history.points === "number") {
+          // For finished GWs: prefer entry_history.points (exact official FPL final, incl. autosubs + correct BB handling).
+          // For ongoing (current): prefer our live compute from /live/ (responsive, matches what lineup viewer will sum from per-player data; avoids lag in entry_history).
+          // This makes GW overview totals match the lineup viewer's computed total, and keeps live fresh without spurious bench (mult=0).
+          let liveComputed = null;
+          if (live && picksData.picks) {
+            liveComputed = computeLivePointsFromPicks(picksData.picks, live);
+          }
+          if (eventFinished && picksData.entry_history && typeof picksData.entry_history.points === "number") {
             points = picksData.entry_history.points;
-            source = eventFinished ? "official-fpl" : "fpl-entry";
-            isFinal = !!eventFinished;
-          } else if (live && picksData.picks) {
-            points = computeLivePointsFromPicks(picksData.picks, live);
-            source = eventFinished ? "live-final" : "live-projection";
+            source = "official-fpl";
+            isFinal = true;
+          } else if (liveComputed != null) {
+            points = liveComputed;
+            source = "live-projection";
+            isFinal = false;
+          } else if (picksData.entry_history && typeof picksData.entry_history.points === "number") {
+            points = picksData.entry_history.points;
+            source = "fpl-entry";
             isFinal = !!eventFinished;
           }
 

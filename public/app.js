@@ -295,7 +295,6 @@ function showDashboard() {
     <button onclick="requestPayout()" class="text-xs px-3 py-1 bg-[#00ff85] text-black font-semibold rounded-lg active:scale-[0.985]">Request Payout to Bank</button>
     <button onclick="showUpdateBankModal()" class="text-xs px-3 py-1 border border-[#00ff85] text-[#00ff85] font-semibold rounded-lg active:scale-[0.985]">Update Bank Details</button>
     ${bankStatus}
-    <button onclick="showBeefModal()" class="text-xs px-3 py-1 bg-purple-600 text-white font-semibold rounded-lg active:scale-[0.985] ml-2">⚔️ Start a Beef</button>
     <button onclick="showSponsorModal()" class="text-xs px-3 py-1 bg-yellow-500 text-black font-semibold rounded-lg active:scale-[0.985]">🏆 Sponsor an Award</button>
     ${currentLeagueMode !== 'ucl' ? `<button onclick="showBeefModal()" class="text-xs px-3 py-1 bg-purple-600 text-white font-semibold rounded-lg active:scale-[0.985] ml-2">⚔️ Start a Beef</button>` : ''}
   `;
@@ -734,6 +733,7 @@ function createPotsContainer() {
 }
 
 function renderProminentFeatures() {
+  if (currentLeagueMode === 'ucl') return;
   // Make Start a Beef, Persona, and Share/Sim cards VERY prominent (top level quick actions)
   const anchor = document.getElementById('pots-top');
   if (!anchor || !currentManager) return;
@@ -749,7 +749,7 @@ function renderProminentFeatures() {
   bar.innerHTML = `
     <div class="font-black text-lg mb-2 text-[#00ff85]">⚡ QUICK ACTIONS</div>
     <div class="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
-      <button onclick="showBeefModal()" class="py-3 bg-purple-600 hover:bg-purple-700 text-white font-black rounded-2xl text-base active:scale-[0.98]">⚔️ Start a Beef</button>
+      ${currentLeagueMode !== 'ucl' ? `<button onclick="showBeefModal()" class="py-3 bg-purple-600 hover:bg-purple-700 text-white font-black rounded-2xl text-base active:scale-[0.98]">⚔️ Start a Beef</button>` : ''}
       <button onclick="showPersonaQuiz()" class="py-3 bg-[#003322] hover:bg-green-900 text-[#00ff85] font-black rounded-2xl text-base active:scale-[0.98]">Know Your Manager persona</button>
       <button onclick="showLineupAndSim()" class="py-3 bg-[#ffaa00] hover:bg-yellow-600 text-black font-black rounded-2xl text-base active:scale-[0.98]">Simulate next game week</button>
       <button onclick="showLiveProjection()" class="py-3 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl text-base active:scale-[0.98]">Live GW: ${liveProj}</button>
@@ -4117,6 +4117,10 @@ function showProposeAward() {
 }
 
 function showBeefModal() {
+  if (currentLeagueMode === 'ucl') {
+    alert('Beefs are an FPL-only feature (auto-resolved via FPL picks data). Switch to FPL mode to start a beef.');
+    return;
+  }
   const modal = $('modal');
   const c = $('modal-content');
   const paidFpl = (standingsData && standingsData.fpl || []).filter(m => m.fplPaid && m.id !== currentManager.id);
