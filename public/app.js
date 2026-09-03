@@ -495,6 +495,7 @@ async function loadAllData() {
   renderPayAccess();
   renderTopPotsAndActions();
   renderProminentFeatures();
+  renderPredictionWeek();
 
   // Handle direct WhatsApp deep link ?beef=ID for accept/decline
   handleBeefDeepLink();
@@ -523,10 +524,15 @@ function renderTopPotsAndActions() {
   if (!container) return;
 
   let proj = window.lastProjections || {};
-  // Fallback/refresh from current standingsData (which includes fresh projections from server) to ensure UCL pots (season/2nd/3rd) are not stale or zeroed by old cache.
-  if (standingsData && standingsData.projections && (!proj.ucl || !proj.ucl.overallWinnerPot)) {
-    proj = standingsData.projections;
-    window.lastProjections = proj;
+  // Prefer standings projections when they have fresher UCL 2nd/3rd (derived on pay) so pots aren't stuck at 0 from stale lastProjections.
+  if (standingsData && standingsData.projections) {
+    const su = standingsData.projections.ucl || {};
+    const pu = proj.ucl || {};
+    if (!proj.ucl || (su.secondPlacePot || 0) > (pu.secondPlacePot || 0) || (su.thirdPlacePot || 0) > (pu.thirdPlacePot || 0) || (su.overallWinnerPot || 0) > (pu.overallWinnerPot || 0)) {
+      proj = standingsData.projections;
+      window.lastProjections = proj;
+    }
+  }
   }
   const fpl = proj.fpl || {};
   const uclProj = (proj.ucl || {});
@@ -1158,6 +1164,7 @@ async function loadAdminOverview() {
           <button onclick="emergencySync()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">FORCE SYNC</button>
           <button onclick="adminManageH2HFixtures()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">H2H FIXTURES (enter matchups)</button>
           <button onclick="adminManageUclMdScores()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">UCL MD SCORES (manual + finalize)</button>
+          <button onclick="adminSetPrediction()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">PREDICTION OF THE WEEK</button>
         </div>
       </div>
 
@@ -1175,6 +1182,12 @@ async function loadAdminOverview() {
         <div class="text-xs text-[#ccc] mb-2">Manually enter points for each MD (admin only). Finalize to auto-settle the MD winner (90% to wallet) and accumulate reserves for end-of-season 2nd/3rd. Scores build totals for overall ranking. Saves immediately.</div>
         <button onclick="adminManageUclMdScores()" class="px-5 py-2 bg-[#00ff85] hover:bg-white text-black font-bold rounded-2xl text-sm active:scale-[0.985]">OPEN UCL MD SELECTOR — ENTER POINTS &amp; FINALIZE</button>
         <div class="text-[10px] mt-1.5 text-[#666]">Also available as "UCL MD SCORES (manual + finalize)" in the top button row.</div>
+      </div>
+
+      <div class="mb-4 p-4 bg-[#0a1a12] border-2 border-[#00ff85] rounded-3xl">
+        <div class="font-black text-[#00ff85] text-base mb-1 tracking-[-0.3px]">PREDICTION OF THE WEEK</div>
+        <div class="text-xs text-[#ccc] mb-2">Set this week's question + prize once the group decides. Managers submit open-ended answers. Lock to close entries. Then pick one or more correct managers and split the prize.</div>
+        <button onclick="adminSetPrediction()" class="px-5 py-2 bg-[#00ff85] hover:bg-white text-black font-bold rounded-2xl text-sm active:scale-[0.985]">SET / UPDATE THIS WEEK'S PREDICTION</button>
       </div>
 
       <!-- League Lock Control - separate for FPL and UCL -->
@@ -1825,6 +1838,147 @@ async function promptSetLeagues() {
   }
 }
 
+function escPred(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function isCommissionerClient() {
+  return !!(currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com');
+}
+
+function renderPredictionWeek() {
+  const el = $('prediction-week');
+  if (!el) return;
+  const pred = (standingsData && standingsData.currentPrediction) || null;
+  const admin = isCommissionerClient();
+  if (!pred) {
+    el.innerHTML = admin
+      ? `<div class="p-5 bg-[#0a1a12] border-2 border-[#00ff85] rounded-3xl">
+           <div class="font-black text-xl text-[#00ff85] tracking-[-0.5px]">PREDICTION OF THE WEEK</div>
+           <div class="text-sm text-[#ccc] mt-1">No live prediction yet. Set the title + prize after the group decides.</div>
+           <button onclick="adminSetPrediction()" class="mt-3 px-5 py-2 bg-[#00ff85] text-black font-bold rounded-2xl text-sm">SET THIS WEEK'S PREDICTION</button>
+         </div>`
+      : `<div class="p-5 bg-[#1c1c1c] border border-[#333] rounded-3xl">
+           <div class="font-black text-xl tracking-[-0.5px]">PREDICTION OF THE WEEK</div>
+           <div class="text-sm text-[#888] mt-1">Waiting for this week's question. Check back after the commissioner posts it.</div>
+         </div>`;
+    return;
+  }
+  const votes = pred.votes || [];
+  const myVote = currentManager ? votes.find(v => v.managerId === currentManager.id) : null;
+  const status = pred.status || 'open';
+  const open = status === 'open';
+  const locked = status === 'locked';
+  const settled = status === 'settled';
+  const statusLabel = open ? 'OPEN — submit now' : (locked ? 'LOCKED — no more entries' : 'SETTLED');
+  const voteRows = votes.map(v => {
+    const checked = settled && (pred.winners || []).some(w => w.managerId === v.managerId);
+    const box = admin && !settled
+      ? `<input type="checkbox" class="pred-win-cb mr-2" value="${escPred(v.managerId)}" ${checked ? 'checked' : ''}>`
+      : '';
+    return `<div class="flex items-start gap-2 py-1.5 border-b border-[#222] text-sm">
+      ${box}
+      <div class="flex-1 min-w-0"><span class="font-semibold">${escPred(v.displayName || 'Manager')}</span>
+        <span class="text-[#ccc]"> — ${escPred(v.text)}</span></div>
+    </div>`;
+  }).join('') || `<div class="text-xs text-[#666]">No predictions in yet.</div>`;
+  const winnersLine = settled && pred.winners && pred.winners.length
+    ? `<div class="mt-2 text-sm text-[#00ff85]">Winners: ${pred.winners.map(w => `${escPred(w.displayName)} (₦${(w.amount||0).toLocaleString()})`).join(' · ')}</div>`
+    : '';
+  el.innerHTML = `
+    <div class="p-5 bg-[#0a1a12] border-2 border-[#00ff85] rounded-3xl">
+      <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <div class="font-black text-xl text-[#00ff85] tracking-[-0.5px]">PREDICTION OF THE WEEK</div>
+        <div class="text-[10px] px-2 py-0.5 rounded font-mono ${open ? 'bg-[#003322] text-[#00ff85]' : (locked ? 'bg-[#332200] text-[#ffaa00]' : 'bg-[#222] text-[#888]')}">${statusLabel}</div>
+      </div>
+      <div class="text-lg font-bold mt-2">${escPred(pred.title)}</div>
+      <div class="text-sm text-[#aaa] mt-0.5">Prize: <span class="text-[#00ff85] font-black">₦${(pred.prize||0).toLocaleString()}</span> · ${votes.length} prediction${votes.length===1?'':'s'}
+        <button onclick="showSponsorModal()" class="ml-2 text-[10px] underline text-[#ffaa00]">Sponsor this prize</button>
+      </div>
+      ${winnersLine}
+      ${open ? `
+        <div class="mt-3">
+          <textarea id="pred-vote-text" rows="2" maxlength="280" placeholder="Your prediction (open-ended)…" class="w-full p-2 bg-[#111] border border-[#333] rounded-xl text-sm">${escPred(myVote ? myVote.text : '')}</textarea>
+          <button onclick="submitPredictionVote('${escPred(pred.id)}')" class="mt-2 px-5 py-2 bg-[#00ff85] text-black font-bold rounded-2xl text-sm">${myVote ? 'UPDATE MY PREDICTION' : 'SUBMIT PREDICTION'}</button>
+          <div class="text-[10px] text-[#666] mt-1">You can change it until the commissioner locks this week.</div>
+        </div>
+      ` : ''}
+      <div class="mt-3 max-h-48 overflow-auto">${voteRows}</div>
+      ${admin ? `
+        <div class="mt-3 flex flex-wrap gap-2">
+          <button onclick="adminSetPrediction()" class="px-3 py-1 bg-[#222] rounded-xl text-xs">EDIT TITLE / PRIZE</button>
+          ${open ? `<button onclick="adminLockPrediction('${escPred(pred.id)}', true)" class="px-3 py-1 bg-[#ffaa00] text-black font-bold rounded-xl text-xs">LOCK ENTRIES</button>` : ''}
+          ${locked ? `<button onclick="adminLockPrediction('${escPred(pred.id)}', false)" class="px-3 py-1 bg-[#222] rounded-xl text-xs">REOPEN</button>` : ''}
+          ${!settled ? `<button onclick="adminSettlePrediction('${escPred(pred.id)}')" class="px-3 py-1 bg-[#00ff85] text-black font-bold rounded-xl text-xs">SETTLE — SPLIT AMONG TICKED</button>` : ''}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+async function submitPredictionVote(id) {
+  const ta = $('pred-vote-text');
+  const text = ta ? ta.value.trim() : '';
+  if (!text) return alert('Write your prediction first.');
+  try {
+    await fetchJSON(`/api/predictions/${id}/vote`, { method: 'POST', body: JSON.stringify({ text }) });
+    await loadStandings();
+    renderPredictionWeek();
+  } catch (e) {
+    alert(e.message || 'Could not save prediction');
+  }
+}
+
+async function adminSetPrediction() {
+  if (!isCommissionerClient()) return alert('Admin only');
+  const cur = (standingsData && standingsData.currentPrediction) || {};
+  const title = prompt("This week's prediction (the question):", cur.title || '');
+  if (title === null) return;
+  if (!title.trim()) return alert('Need a title');
+  const prize = prompt('Prize to win (₦). Can be 0 now and sponsored later:', cur.prize != null ? String(cur.prize) : '5000');
+  if (prize === null) return;
+  try {
+    const res = await fetchJSON('/api/admin/prediction', {
+      method: 'POST',
+      body: JSON.stringify({ title: title.trim(), prize: Number(prize) })
+    });
+    alert(res.message || 'Live.');
+    await loadStandings();
+    renderPredictionWeek();
+    if (typeof loadAdminOverview === 'function') loadAdminOverview();
+  } catch (e) {
+    alert(e.message || 'Failed to set prediction');
+  }
+}
+
+async function adminLockPrediction(id, lock) {
+  try {
+    const res = await fetchJSON(`/api/admin/prediction/${id}/${lock ? 'lock' : 'unlock'}`, { method: 'POST', body: JSON.stringify({}) });
+    alert(res.message || 'Updated.');
+    await loadStandings();
+    renderPredictionWeek();
+  } catch (e) {
+    alert(e.message || 'Failed');
+  }
+}
+
+async function adminSettlePrediction(id) {
+  const boxes = Array.from(document.querySelectorAll('.pred-win-cb:checked')).map(b => b.value);
+  if (!boxes.length) return alert('Tick the correct manager(s) first. Prize splits equally.');
+  if (!confirm(`Split the prize among ${boxes.length} winner(s)?`)) return;
+  try {
+    const res = await fetchJSON(`/api/admin/prediction/${id}/settle`, {
+      method: 'POST',
+      body: JSON.stringify({ winnerIds: boxes })
+    });
+    alert(res.message || 'Settled.');
+    await loadStandings();
+    renderPredictionWeek();
+  } catch (e) {
+    alert(e.message || 'Settle failed');
+  }
+}
+
 async function promptEditServiceFees() {
   // Load fresh to get current actuals (serviceFees come from house*Admin)
   let cur = { fpl: 0, ucl: 0 };
@@ -2084,6 +2238,8 @@ async function loadStandings() {
   if (standingsData.projections) {
     window.lastProjections = standingsData.projections;
   }
+  if (typeof renderPredictionWeek === 'function') renderPredictionWeek();
+  if (typeof renderTopPotsAndActions === 'function') renderTopPotsAndActions();
 
   // Auto switch to current mode after load
   if (currentLeagueMode) switchLeague(currentLeagueMode);
@@ -3625,6 +3781,7 @@ const FPL_CHALLENGES = [
 ];
 
 const SPONSORED_AWARDS = [
+  { id: 'prediction-week', name: "Prediction of the Week", sponsor: "D League", desc: "Add prize money to this week's live prediction" },
   { id: 'cap-clutch', name: "Captain Clutch Award", sponsor: "Local Legend FC", desc: "Highest captain score this week" },
   { id: 'bench-bandit', name: "Bench Bandit", sponsor: "Mystery Manager", desc: "Most bench points" },
   { id: 'chip-wizard', name: "Chip Wizard", sponsor: "Fantasy Guru", desc: "Best chip performance" },

@@ -1040,6 +1040,31 @@ function getAuthenticatedManager(req) {
   return getManagerById(decoded.managerId);
 }
 
+function isAdminRequest(req) {
+  if (DEMO_MODE) return true;
+  const adminTok = req.headers['x-admin-token'] || req.headers['x-sync-token'] || req.query.token;
+  if (SYNC_TOKEN && adminTok === SYNC_TOKEN) return true;
+  const bearer = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+  if (bearer) {
+    const decoded = verifyToken(bearer);
+    if (decoded && decoded.managerId) {
+      const mgr = getManagerById(decoded.managerId);
+      if (mgr && mgr.email && mgr.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) return true;
+    }
+  }
+  return false;
+}
+
+function getPredictionsList(s) {
+  if (!s.settings) s.settings = {};
+  if (!Array.isArray(s.settings.predictions)) s.settings.predictions = [];
+  return s.settings.predictions;
+}
+
+function livePrediction(s) {
+  return getPredictionsList(s).find(p => p && (p.status === 'open' || p.status === 'locked')) || null;
+}
+
 function requireSyncAuth(req, res, next) {
   if (DEMO_MODE) return next();
   const token = req.headers["x-sync-token"] || req.query.token;
@@ -1279,6 +1304,15 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
         at: nowISO()
       });
     }
+    // If this sponsor is for Prediction of the Week, add 90% to the live prediction prize (10% already cut above).
+    const tgt = String(payment.sponsorTarget || '').toLowerCase();
+    if (tgt === 'prediction-week' || tgt.includes('prediction of the week')) {
+      const live = livePrediction(s);
+      if (live && live.status !== 'settled') {
+        const add = Math.max(0, Number(payment.amount) - (sponsorCut || 0));
+        live.prize = (live.prize || 0) + add;
+      }
+    }
     // Notify after confirmed payment
     const text = `Thank you! Your sponsorship of ₦${payment.amount} for "${payment.sponsorTarget}" via Paystack is confirmed and active.`;
     await sendEmail(mgr.email, 'Sponsorship Confirmed - D League', text);
@@ -1379,11 +1413,24 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
 }
 
 function updateSeasonPots(s) {
-  const fplRev = s.settings.totalFplRevenue || 0;
+  if (!s || !s.settings) return;
   const uclRev = s.settings.totalUclRevenue || 0;
   // fplOverallPot / fplCupPot are populated EXCLUSIVELY via settleWeeklyPot's 10% weekly reserve (75%/25%).
-  // UCL kept for now as-is (can be aligned later).
-  s.settings.uclOverallPot = Math.floor(0.2 * uclRev);
+  // UCL overall = 20% of paid revenue. 2nd/3rd = 600/400 per currently paid UCL manager.
+  // Derive every load (same as overall) so pots show immediately after pay — not only after MD settle.
+  // Stop deriving once end-of-season awards have been written (pots stay at settled/zero).
+  const uclSeasonAwarded = (s.ledger || []).some(l => l.type === 'ucl_season_win');
+  if (!uclSeasonAwarded) {
+    s.settings.uclOverallPot = Math.floor(0.2 * uclRev);
+    const paidIds = new Set(
+      (s.payments || [])
+        .filter(p => p && p.competition === 'ucl' && p.status === 'confirmed' && p.managerId)
+        .map(p => p.managerId)
+    );
+    const n = (s.managers || []).filter(m => m && paidIds.has(m.id)).length;
+    s.settings.uclSecondPlacePot = n * 600;
+    s.settings.uclThirdPlacePot = n * 400;
+  }
 }
 
 function calculateRoundPot(compKey, round, paidCount) {
@@ -4489,6 +4536,127 @@ app.post("/api/admin/set-service-fees", async (req, res) => {
   });
 });
 
+// ---- Prediction of the Week (admin sets title+prize; managers vote; admin locks + splits winners) ----
+app.get("/api/predictions", async (req, res) => {
+  const s = await loadStore();
+  const list = getPredictionsList(s);
+  res.json({ current: livePrediction(s), recent: list.slice(-8) });
+});
+
+app.post("/api/admin/prediction", async (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Unauthorized" });
+  const { title, prize } = req.body || {};
+  const t = String(title || '').trim();
+  const amt = Math.max(0, Math.floor(Number(prize) || 0));
+  if (!t) return res.status(400).json({ error: "Title required" });
+  const s = await loadStore();
+  const list = getPredictionsList(s);
+  let live = livePrediction(s);
+  if (live) {
+    live.title = t;
+    live.prize = amt;
+    live.updatedAt = nowISO();
+  } else {
+    live = {
+      id: generateId("pred"),
+      title: t,
+      prize: amt,
+      status: "open",
+      votes: [],
+      winners: [],
+      createdAt: nowISO()
+    };
+    list.push(live);
+  }
+  await persistStore();
+  await logEvent("prediction_set", { id: live.id, title: live.title, prize: live.prize });
+  res.json({ ok: true, prediction: live, message: `Prediction of the Week is live: ${live.title}` });
+});
+
+app.post("/api/predictions/:id/vote", async (req, res) => {
+  const mgr = getAuthenticatedManager(req);
+  if (!mgr) return res.status(401).json({ error: "Login required" });
+  const text = String((req.body && req.body.text) || '').trim();
+  if (!text) return res.status(400).json({ error: "Enter your prediction" });
+  if (text.length > 280) return res.status(400).json({ error: "Keep it under 280 characters" });
+  const s = await loadStore();
+  const pred = getPredictionsList(s).find(p => p.id === req.params.id);
+  if (!pred) return res.status(404).json({ error: "Prediction not found" });
+  if (pred.status !== "open") return res.status(400).json({ error: "Predictions are locked. No more entries." });
+  pred.votes = pred.votes || [];
+  const existing = pred.votes.find(v => v.managerId === mgr.id);
+  if (existing) {
+    existing.text = text;
+    existing.at = nowISO();
+  } else {
+    pred.votes.push({ managerId: mgr.id, displayName: mgr.displayName, text, at: nowISO() });
+  }
+  await persistStore();
+  res.json({ ok: true, prediction: pred, message: "Prediction saved." });
+});
+
+app.post("/api/admin/prediction/:id/lock", async (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Unauthorized" });
+  const s = await loadStore();
+  const pred = getPredictionsList(s).find(p => p.id === req.params.id);
+  if (!pred) return res.status(404).json({ error: "Prediction not found" });
+  if (pred.status === "settled") return res.status(400).json({ error: "Already settled" });
+  pred.status = "locked";
+  pred.lockedAt = nowISO();
+  await persistStore();
+  await logEvent("prediction_locked", { id: pred.id });
+  res.json({ ok: true, prediction: pred, message: "Locked. No more manager entries." });
+});
+
+app.post("/api/admin/prediction/:id/unlock", async (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Unauthorized" });
+  const s = await loadStore();
+  const pred = getPredictionsList(s).find(p => p.id === req.params.id);
+  if (!pred) return res.status(404).json({ error: "Prediction not found" });
+  if (pred.status === "settled") return res.status(400).json({ error: "Already settled" });
+  pred.status = "open";
+  pred.lockedAt = null;
+  await persistStore();
+  res.json({ ok: true, prediction: pred, message: "Reopened for entries." });
+});
+
+app.post("/api/admin/prediction/:id/settle", async (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Unauthorized" });
+  const winnerIds = Array.isArray((req.body || {}).winnerIds) ? (req.body || {}).winnerIds.filter(Boolean) : [];
+  if (!winnerIds.length) return res.status(400).json({ error: "Pick at least one winner" });
+  const s = await loadStore();
+  const pred = getPredictionsList(s).find(p => p.id === req.params.id);
+  if (!pred) return res.status(404).json({ error: "Prediction not found" });
+  if (pred.status === "settled") return res.status(400).json({ error: "Already settled" });
+  const unique = [...new Set(winnerIds)];
+  const pot = Math.max(0, Math.floor(Number(pred.prize) || 0));
+  const share = unique.length ? Math.floor(pot / unique.length) : 0;
+  let remainder = pot - share * unique.length;
+  pred.winners = [];
+  unique.forEach((id, i) => {
+    const amt = share + (i === 0 ? remainder : 0);
+    const m = (s.managers || []).find(x => x.id === id);
+    pred.winners.push({ managerId: id, displayName: m ? m.displayName : id, amount: amt });
+    if (amt > 0) {
+      s.ledger.push({
+        id: generateId("ldg"),
+        type: "prediction_win",
+        managerId: id,
+        competition: "fpl",
+        round: (s.settings.currentRound && s.settings.currentRound.fpl) || null,
+        amount: amt,
+        note: `Prediction of the Week: ${pred.title} (split ${unique.length})`,
+        at: nowISO()
+      });
+    }
+  });
+  pred.status = "settled";
+  pred.settledAt = nowISO();
+  await persistStore();
+  await logEvent("prediction_settled", { id: pred.id, winners: unique, pot });
+  res.json({ ok: true, prediction: pred, message: `Settled. ₦${pot} split among ${unique.length} winner(s).` });
+});
+
 // Manager requests payout from wallet to their bank (Paystack transfer)
 app.post("/api/wallet/request-payout", async (req, res) => {
   const { amount, fee: clientFee } = req.body || {};
@@ -4668,6 +4836,13 @@ app.post("/api/sponsor", async (req, res) => {
       at: nowISO()
     });
     writeAtomicCollection('settings', s.settings);
+  }
+  const tgtW = String(target || '').toLowerCase();
+  if (tgtW === 'prediction-week' || tgtW.includes('prediction of the week')) {
+    const live = livePrediction(s);
+    if (live && live.status !== 'settled') {
+      live.prize = (live.prize || 0) + Math.max(0, Number(amount) - (sponsorCutW || 0));
+    }
   }
   writeAtomicSidecar(s);
   writeAtomicCollection('sponsorships', s.sponsorships);
@@ -5271,7 +5446,9 @@ app.get("/api/standings", async (req, res) => {
     // Expose GW win history for public "GW Winners Roll" leaderboard (only weekly wins)
     history: {
       weekly: (s.settings.history && s.settings.history.weekly) || []
-    }
+    },
+    currentPrediction: livePrediction(s),
+    predictions: (s.settings.predictions || []).slice(-8)
   });
 });
 
