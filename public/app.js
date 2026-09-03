@@ -1870,14 +1870,20 @@ function renderPredictionWeek() {
   const settled = status === 'settled';
   const statusLabel = open ? 'OPEN — submit now' : (locked ? 'LOCKED — no more entries' : 'SETTLED');
   const voteRows = votes.map(v => {
+    const own = currentManager && v.managerId === currentManager.id;
+    const reveal = locked || settled;
     const checked = settled && (pred.winners || []).some(w => w.managerId === v.managerId);
-    const box = admin && !settled
+    const box = admin && locked && !settled
       ? `<input type="checkbox" class="pred-win-cb mr-2" value="${escPred(v.managerId)}" ${checked ? 'checked' : ''}>`
       : '';
+    let detail;
+    if (reveal && v.text) detail = ` — ${escPred(v.text)}`;
+    else if (own) detail = ` — in (hidden until lock)`;
+    else detail = ` — entered`;
     return `<div class="flex items-start gap-2 py-1.5 border-b border-[#222] text-sm">
       ${box}
       <div class="flex-1 min-w-0"><span class="font-semibold">${escPred(v.displayName || 'Manager')}</span>
-        <span class="text-[#ccc]"> — ${escPred(v.text)}</span></div>
+        <span class="text-[#ccc]">${detail}</span></div>
     </div>`;
   }).join('') || `<div class="text-xs text-[#666]">No predictions in yet.</div>`;
   const winnersLine = settled && pred.winners && pred.winners.length
@@ -1898,7 +1904,7 @@ function renderPredictionWeek() {
         <div class="mt-3">
           <textarea id="pred-vote-text" rows="2" maxlength="280" placeholder="Your prediction (open-ended)…" class="w-full p-2 bg-[#111] border border-[#333] rounded-xl text-sm">${escPred(myVote ? myVote.text : '')}</textarea>
           <button onclick="submitPredictionVote('${escPred(pred.id)}')" class="mt-2 px-5 py-2 bg-[#00ff85] text-black font-bold rounded-2xl text-sm">${myVote ? 'UPDATE MY PREDICTION' : 'SUBMIT PREDICTION'}</button>
-          <div class="text-[10px] text-[#666] mt-1">You can change it until the commissioner locks this week.</div>
+          <div class="text-[10px] text-[#666] mt-1">Blind pool: others only see that you entered. All predictions are revealed when the commissioner locks.</div>
         </div>
       ` : ''}
       <div class="mt-3 max-h-48 overflow-auto">${voteRows}</div>
@@ -1907,7 +1913,7 @@ function renderPredictionWeek() {
           <button onclick="adminSetPrediction()" class="px-3 py-1 bg-[#222] rounded-xl text-xs">EDIT TITLE / PRIZE</button>
           ${open ? `<button onclick="adminLockPrediction('${escPred(pred.id)}', true)" class="px-3 py-1 bg-[#ffaa00] text-black font-bold rounded-xl text-xs">LOCK ENTRIES</button>` : ''}
           ${locked ? `<button onclick="adminLockPrediction('${escPred(pred.id)}', false)" class="px-3 py-1 bg-[#222] rounded-xl text-xs">REOPEN</button>` : ''}
-          ${!settled ? `<button onclick="adminSettlePrediction('${escPred(pred.id)}')" class="px-3 py-1 bg-[#00ff85] text-black font-bold rounded-xl text-xs">SETTLE — SPLIT AMONG TICKED</button>` : ''}
+          ${locked && !settled ? `<button onclick="adminSettlePrediction('${escPred(pred.id)}')" class="px-3 py-1 bg-[#00ff85] text-black font-bold rounded-xl text-xs">SETTLE — SPLIT AMONG TICKED</button>` : ''}
         </div>
       ` : ''}
     </div>

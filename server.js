@@ -1065,6 +1065,20 @@ function livePrediction(s) {
   return getPredictionsList(s).find(p => p && (p.status === 'open' || p.status === 'locked')) || null;
 }
 
+// Blind pool: hide vote text until locked/settled. Viewer still sees their own text while open.
+function predictionForViewer(pred, viewerId) {
+  if (!pred) return null;
+  const reveal = pred.status === 'locked' || pred.status === 'settled';
+  return {
+    ...pred,
+    votes: (pred.votes || []).map(v => {
+      const own = viewerId && v.managerId === viewerId;
+      if (reveal || own) return { ...v };
+      return { managerId: v.managerId, displayName: v.displayName, at: v.at, submitted: true };
+    })
+  };
+}
+
 function requireSyncAuth(req, res, next) {
   if (DEMO_MODE) return next();
   const token = req.headers["x-sync-token"] || req.query.token;
@@ -4539,8 +4553,13 @@ app.post("/api/admin/set-service-fees", async (req, res) => {
 // ---- Prediction of the Week (admin sets title+prize; managers vote; admin locks + splits winners) ----
 app.get("/api/predictions", async (req, res) => {
   const s = await loadStore();
+  const viewer = getAuthenticatedManager(req);
+  const vid = viewer ? viewer.id : null;
   const list = getPredictionsList(s);
-  res.json({ current: livePrediction(s), recent: list.slice(-8) });
+  res.json({
+    current: predictionForViewer(livePrediction(s), vid),
+    recent: list.slice(-8).map(p => predictionForViewer(p, vid))
+  });
 });
 
 app.post("/api/admin/prediction", async (req, res) => {
@@ -4592,7 +4611,7 @@ app.post("/api/predictions/:id/vote", async (req, res) => {
     pred.votes.push({ managerId: mgr.id, displayName: mgr.displayName, text, at: nowISO() });
   }
   await persistStore();
-  res.json({ ok: true, prediction: pred, message: "Prediction saved." });
+  res.json({ ok: true, prediction: predictionForViewer(pred, mgr.id), message: "Prediction saved." });
 });
 
 app.post("/api/admin/prediction/:id/lock", async (req, res) => {
@@ -5427,6 +5446,7 @@ app.get("/api/standings", async (req, res) => {
     realLeagues.ucl = { note: "UCL league tracking via configured ID or external adapter", id: ids.ucl };
   }
 
+  const predViewerId = (getAuthenticatedManager(req) || {}).id;
   res.json({
     currentRound: s.settings.currentRound,
     roundAverages: s.settings.roundAverages,
@@ -5448,8 +5468,8 @@ app.get("/api/standings", async (req, res) => {
     history: {
       weekly: (s.settings.history && s.settings.history.weekly) || []
     },
-    currentPrediction: livePrediction(s),
-    predictions: (s.settings.predictions || []).slice(-8)
+    currentPrediction: predictionForViewer(livePrediction(s), predViewerId),
+    predictions: (s.settings.predictions || []).slice(-8).map(p => predictionForViewer(p, predViewerId))
   });
 });
 
