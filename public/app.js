@@ -413,7 +413,6 @@ async function loadAllData() {
   const loads = [
     loadStandings().catch(e => console.warn('standings load failed', e)),
     loadH2H().catch(e => console.warn('h2h failed', e)),
-    loadProjections().catch(e => console.warn('projections failed', e)),
     // Fetch server beefs so user-generated beefs survive restarts (localStorage is UI cache only now)
     // Also set for prominent top display
     fetchJSON('/api/beefs').then(d => {
@@ -532,7 +531,6 @@ function renderTopPotsAndActions() {
       proj = standingsData.projections;
       window.lastProjections = proj;
     }
-  }
   }
   const fpl = proj.fpl || {};
   const uclProj = (proj.ucl || {});
@@ -2551,6 +2549,8 @@ async function loadH2H() {
 
 
 async function loadProjections() {
+  // Standings already includes projections. Skip extra /api/payouts unless we have nothing yet.
+  if (window.lastProjections && (window.lastProjections.fpl || window.lastProjections.ucl)) return;
   const proj = await fetchJSON('/api/payouts');
   window.lastProjections = proj;
   const wrap = $('payout-projections');

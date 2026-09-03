@@ -2680,8 +2680,9 @@ async function getProjectedPayouts() {
   const sponsored = (s.sponsorships || []).reduce((sum, sp) => sum + (sp.amount || 0), 0);
   const uclReserve = 0;
 
-  // Pull real UCL data for projections
-  const uclStats = await getUCLStats();
+  // Do not block page load on football-data.org. Use cache if warm; refresh in background.
+  const uclStats = uclStatsCache || { matches: [] };
+  if (!uclStatsCache) getUCLStats().catch(() => {});
   const upcomingMatches = (uclStats.matches || []).filter(m => m.status === 'SCHEDULED' || m.status === 'TIMED');
   const upcomingUCLMatches = upcomingMatches.length;
   const uclFormBoost = Math.min(upcomingUCLMatches * 0.5, 5);
@@ -2819,6 +2820,9 @@ function getH2HForManager(managerId) {
 
 // ============ SAFE FETCH ============
 
+const fplLeagueCache = new Map(); // key -> { at, data }
+const FPL_LEAGUE_CACHE_MS = 60 * 1000;
+
 function safeFetchJSON(url, timeoutMs = 8000, extraHeaders = null) {
   return new Promise((resolve) => {
     const headers = {
@@ -2883,33 +2887,29 @@ async function fetchWithFootballAuth(url) {
 
 async function fetchFplLeagueStandings(leagueId, isH2h = false) {
   if (!leagueId) return null;
+  const cacheKey = `${isH2h ? 'h2h' : 'classic'}:${leagueId}`;
+  const hit = fplLeagueCache.get(cacheKey);
+  if (hit && (Date.now() - hit.at) < FPL_LEAGUE_CACHE_MS) return hit.data;
   try {
     const path = isH2h ? "leagues-h2h" : "leagues-classic";
     const url = `${FPL_BASE}/${path}/${leagueId}/standings/`;
     // Use a browser-like UA — FPL can be strict on plain node requests for league data
-    const data = await safeFetchJSON(url, 10000, {
+    const data = await safeFetchJSON(url, 8000, {
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'Accept': 'application/json'
     });
+    if (data) fplLeagueCache.set(cacheKey, { at: Date.now(), data });
     return data;
   } catch (e) {
     console.warn("[FPL League] Failed to fetch standings:", e.message);
-    return null;
+    return hit ? hit.data : null;
   }
 }
 
-// H2H wiring (from previous): on sync/load fetch using fplH2h, map by teamId, derive pairings, store in s.h2h
+// H2H wiring: do NOT fetch FPL here on every page load (that was a major stall).
+// Fake pairings stay cleared; the H2H box uses realLeagues.fplH2h from standings.
 async function populateH2HFixtures(s) {
-  const lids = s.settings.leagueIds || {};
-  if (!lids.fplH2h) {
-    s.h2h = [];
-    return;
-  }
-  // Fetch the H2H standings (used in realLeagues.fplH2h for accurate data).
-  // Do NOT create fake pairings here — that caused mismatch with actual FPL H2H fixtures.
-  // The H2H box will display correct rank from FPL data.
-  await fetchFplLeagueStandings(lids.fplH2h, true);
-  s.h2h = [];  // clear fake/derived data
+  s.h2h = [];
 }
 
 async function fetchUCLStats() {
@@ -5408,19 +5408,20 @@ app.get("/api/standings", async (req, res) => {
   if (DEMO_MODE) await seedDemoData();
   const lb = getFullLeaderboard();
   const s = getStore();
-  // H2H on load
   try { await populateH2HFixtures(s); } catch (e) {}
   const projections = await getProjectedPayouts();
 
-  // If admin has configured real league IDs, fetch and attach for accurate tracking
+  // Fetch configured FPL leagues in parallel (cached ~60s) so dashboard is not blocked 10s+10s
   const realLeagues = {};
   const ids = s.settings.leagueIds || {};
+  const leagueFetches = [];
   if (ids.fplClassic) {
-    realLeagues.fplClassic = await fetchFplLeagueStandings(ids.fplClassic, false);
+    leagueFetches.push(fetchFplLeagueStandings(ids.fplClassic, false).then(d => { realLeagues.fplClassic = d; }));
   }
   if (ids.fplH2h) {
-    realLeagues.fplH2h = await fetchFplLeagueStandings(ids.fplH2h, true);
+    leagueFetches.push(fetchFplLeagueStandings(ids.fplH2h, true).then(d => { realLeagues.fplH2h = d; }));
   }
+  if (leagueFetches.length) await Promise.all(leagueFetches);
   // UCL league if provided (placeholder for now; use template or future API)
   if (ids.ucl) {
     realLeagues.ucl = { note: "UCL league tracking via configured ID or external adapter", id: ids.ucl };
