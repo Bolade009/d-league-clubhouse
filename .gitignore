@@ -22,5 +22,6 @@ data/dleague.db-*
 # Misc
 *.tmp
 npm-debug.log*
+grok-session*.md
 yarn-debug.log*
 yarn-error.log*
