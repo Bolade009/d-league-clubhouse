@@ -6101,6 +6101,52 @@ app.get("/api/admin/persistence-status", async (req, res) => {
   });
 });
 
+// WhatsApp / OG landing for Prediction of the Week — crawlers get title+prize; humans go to the app card.
+app.get("/share/prediction", async (req, res) => {
+  try {
+    const s = await loadStore();
+    const p = livePrediction(s);
+    const origin = (process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+    const id = (p && p.id) || "live";
+    const dest = `${origin}/?prediction=${encodeURIComponent(id)}`;
+    const title = p ? p.title : "Prediction of the Week";
+    const prize = p ? Number(p.prize || 0) : 0;
+    const esc = (t) => String(t || "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>D League • Prediction of the Week</title>
+  <meta name="description" content="${esc(title)} — Prize ₦${prize.toLocaleString()}">
+  <meta property="og:title" content="D League • Prediction of the Week">
+  <meta property="og:description" content="${esc(title)} — Prize ₦${prize.toLocaleString()} • Blind pool until lock">
+  <meta property="og:url" content="${esc(dest)}">
+  <meta property="og:type" content="website">
+  <meta http-equiv="refresh" content="0;url=${esc(dest)}">
+  <style>
+    body { margin:0; font-family: system-ui, sans-serif; background:#111; color:#fff; display:flex; min-height:100vh; align-items:center; justify-content:center; }
+    a { color:#00ff85; font-weight:800; text-decoration:none; }
+    .c { max-width:28rem; padding:2rem; border:2px solid #00ff85; border-radius:1.5rem; background:#0a1a12; }
+    .p { color:#00ff85; font-size:2rem; font-weight:900; }
+  </style>
+</head>
+<body>
+  <div class="c">
+    <div style="color:#ffaa00; font-weight:800; letter-spacing:.08em; font-size:.75rem;">PREDICTION OF THE WEEK</div>
+    <h1 style="font-size:1.5rem; margin:.5rem 0 1rem;">${esc(title)}</h1>
+    <div class="p">₦${prize.toLocaleString()}</div>
+    <p style="color:#aaa;">Blind pool. Login and drop your answer in the Clubhouse.</p>
+    <p><a href="${esc(dest)}">ENTER THE CLUBHOUSE →</a></p>
+  </div>
+</body>
+</html>`);
+  } catch (e) {
+    res.redirect("/?prediction=live");
+  }
+});
+
 // Catch all for SPA
 app.get("*", (req, res) => {
   res.sendFile(path.join(BASE_DIR, "public", "index.html"));

@@ -191,7 +191,7 @@ async function performLogin() {
     showDashboard();
     loadAllData();
     // Re-check deep link after login in case they opened the WA link unauthenticated
-    setTimeout(handleBeefDeepLink, 400);
+    setTimeout(() => { handleBeefDeepLink(); handlePredictionDeepLink(); }, 400);
   } catch (e) {
     alert('Login failed: ' + e.message + '\n\nTip: New managers must be added by the commissioner first. Use the "REQUEST ACCESS" button or message the group admin.');
   }
@@ -498,6 +498,7 @@ async function loadAllData() {
 
   // Handle direct WhatsApp deep link ?beef=ID for accept/decline
   handleBeefDeepLink();
+  handlePredictionDeepLink();
 
   // Always provide an easy way to clear session from dashboard (for post-restore wrong account issues)
   const topRight = $('topbar-right');
@@ -1908,6 +1909,9 @@ function renderPredictionWeek() {
         </div>
       ` : ''}
       <div class="mt-3 max-h-48 overflow-auto">${voteRows}</div>
+      <div class="mt-3">
+        <button onclick="sharePredictionCard()" class="px-5 py-2 bg-[#25D366] text-white font-bold rounded-2xl text-sm active:scale-[0.985]">📲 SHARE ON WHATSAPP</button>
+      </div>
       ${admin ? `
         <div class="mt-3 flex flex-wrap gap-2">
           <button onclick="adminSetPrediction()" class="px-3 py-1 bg-[#222] rounded-xl text-xs">EDIT TITLE / PRIZE</button>
@@ -1918,6 +1922,168 @@ function renderPredictionWeek() {
       ` : ''}
     </div>
   `;
+}
+
+function wrapCanvasLines(ctx, text, maxWidth, maxLines) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = '';
+  for (const w of words) {
+    const test = line ? line + ' ' + w : w;
+    if (ctx.measureText(test).width > maxWidth && line) {
+      lines.push(line);
+      line = w;
+      if (lines.length >= maxLines - 1) break;
+    } else {
+      line = test;
+    }
+  }
+  if (lines.length < maxLines && line) lines.push(line);
+  const used = lines.join(' ').length;
+  if (used < String(text || '').length && lines.length) {
+    let last = lines[lines.length - 1];
+    while (ctx.measureText(last + '…').width > maxWidth && last.length > 1) last = last.slice(0, -1);
+    lines[lines.length - 1] = last + '…';
+  }
+  return lines;
+}
+
+function predictionShareUrl(pred) {
+  const id = (pred && pred.id) ? pred.id : 'live';
+  return `${location.origin}/share/prediction?id=${encodeURIComponent(id)}`;
+}
+
+function sharePredictionCard() {
+  const pred = (standingsData && standingsData.currentPrediction) || null;
+  if (!pred) return alert('No live prediction to share yet.');
+  const prize = Number(pred.prize || 0);
+  const status = pred.status === 'open' ? 'OPEN • BLIND POOL' : (pred.status === 'locked' ? 'LOCKED • REVEALED' : 'SETTLED');
+  const link = predictionShareUrl(pred);
+  const waText = `D LEAGUE CLUBHOUSE\n\nPREDICTION OF THE WEEK\n\n${pred.title}\n\nPrize: ₦${prize.toLocaleString()}\n${status}\n\nBlind pool — drop your answer in the Clubhouse (hidden until lock).\n\nEnter here:\n${link}`;
+
+  const W = 1080, H = 1080;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#070707';
+  ctx.fillRect(0, 0, W, H);
+  const g = ctx.createLinearGradient(0, 0, W, H);
+  g.addColorStop(0, '#0a1a12');
+  g.addColorStop(0.55, '#0a0a0a');
+  g.addColorStop(1, '#111111');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.strokeStyle = '#00ff85';
+  ctx.lineWidth = 10;
+  ctx.strokeRect(36, 36, W - 72, H - 72);
+  ctx.strokeStyle = 'rgba(255,170,0,0.55)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(56, 56, W - 112, H - 112);
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(90, 90, 96, 96);
+  ctx.strokeStyle = '#00ff85';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(90, 90, 96, 96);
+  ctx.fillStyle = '#00ff85';
+  ctx.font = 'bold 52px sans-serif';
+  ctx.fillText('DL', 108, 156);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 42px sans-serif';
+  ctx.fillText('D LEAGUE', 210, 128);
+  ctx.fillStyle = '#00ff85';
+  ctx.font = '600 22px sans-serif';
+  ctx.fillText('CLUBHOUSE  •  SEASON 26/27', 210, 168);
+
+  ctx.fillStyle = '#ffaa00';
+  ctx.font = 'bold 28px sans-serif';
+  ctx.fillText('PREDICTION OF THE WEEK', 90, 280);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 52px sans-serif';
+  const titleLines = wrapCanvasLines(ctx, pred.title, W - 180, 4);
+  titleLines.forEach((ln, i) => ctx.fillText(ln, 90, 360 + i * 64));
+
+  const prizeY = 360 + titleLines.length * 64 + 70;
+  ctx.fillStyle = '#888';
+  ctx.font = '600 24px sans-serif';
+  ctx.fillText('PRIZE', 90, prizeY);
+  ctx.fillStyle = '#00ff85';
+  ctx.font = 'bold 88px sans-serif';
+  ctx.fillText('₦' + prize.toLocaleString(), 90, prizeY + 90);
+
+  ctx.fillStyle = pred.status === 'open' ? '#003322' : '#332200';
+  const badge = status;
+  ctx.font = 'bold 22px sans-serif';
+  const bw = ctx.measureText(badge).width + 40;
+  ctx.fillRect(90, prizeY + 130, bw, 48);
+  ctx.fillStyle = pred.status === 'open' ? '#00ff85' : '#ffaa00';
+  ctx.fillText(badge, 110, prizeY + 162);
+
+  ctx.fillStyle = '#aaaaaa';
+  ctx.font = '22px sans-serif';
+  ctx.fillText('Blind pool. Your pick stays hidden until lock.', 90, H - 200);
+  ctx.fillStyle = '#00ff85';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('Open the link → login → drop your prediction', 90, H - 150);
+  ctx.fillStyle = '#666';
+  ctx.font = '20px sans-serif';
+  const urlShow = location.host || 'd-league-clubhouse.onrender.com';
+  ctx.fillText(urlShow, 90, H - 100);
+
+  const modal = $('modal');
+  const content = $('modal-content');
+  content.innerHTML = `
+    <div class="text-center">
+      <div class="font-black text-xl mb-2 text-[#00ff85]">Share Prediction of the Week</div>
+      <div class="text-xs text-[#888] mb-3">WhatsApp opens with the question, prize, and a link that lands on this card after login.</div>
+      <div id="pred-card-wrap" class="flex justify-center overflow-auto"></div>
+      <div class="mt-4 flex flex-wrap gap-2 justify-center">
+        <button type="button" class="pred-wa px-4 py-2 bg-[#25D366] text-white font-bold rounded-2xl text-sm">Open WhatsApp</button>
+        <button type="button" class="pred-dl px-4 py-2 bg-[#00ff85] text-black font-bold rounded-2xl text-sm">Download PNG</button>
+        <button type="button" class="pred-copy px-4 py-2 border border-[#333] rounded-2xl text-sm">Copy link</button>
+        <button type="button" onclick="closeModal()" class="px-4 py-2 border border-[#333] rounded-2xl text-sm">Close</button>
+      </div>
+    </div>
+  `;
+  const wrap = content.querySelector('#pred-card-wrap');
+  canvas.style.maxWidth = '100%';
+  canvas.style.height = 'auto';
+  canvas.style.borderRadius = '16px';
+  wrap.appendChild(canvas);
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+
+  const dataUrl = canvas.toDataURL('image/png');
+  content.querySelector('.pred-wa').onclick = () => {
+    window.open('https://wa.me/?text=' + encodeURIComponent(waText), '_blank');
+  };
+  content.querySelector('.pred-dl').onclick = () => downloadCanvas(dataUrl, 'dleague-prediction-week.png');
+  content.querySelector('.pred-copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(link); alert('Link copied.'); }
+    catch { prompt('Copy this link:', link); }
+  };
+}
+
+function handlePredictionDeepLink() {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.get('prediction')) return;
+  const jump = () => {
+    const el = document.getElementById('prediction-week');
+    if (!el || el.children.length === 0) return false;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.remove('pred-deep-link-flash');
+    void el.offsetWidth;
+    el.classList.add('pred-deep-link-flash');
+    history.replaceState(null, '', location.pathname);
+    return true;
+  };
+  if (!currentManager) return;
+  setTimeout(() => { if (!jump()) setTimeout(jump, 700); }, 350);
 }
 
 async function submitPredictionVote(id) {
