@@ -269,6 +269,16 @@ function findBestBackupData() {
 function writeAtomicSidecar(data) {
   try {
     const statePath = path.join(DATA_DIR, 'current-state.json');
+    const incomingN = (data && Array.isArray(data.managers)) ? data.managers.length : 0;
+    if (incomingN === 0 && fsSync.existsSync(statePath)) {
+      try {
+        const prev = JSON.parse(fsSync.readFileSync(statePath, 'utf8'));
+        if (prev && Array.isArray(prev.managers) && prev.managers.length > 0) {
+          console.warn(`[sidecar] REFUSE empty sidecar write over ${prev.managers.length} managers`);
+          return false;
+        }
+      } catch {}
+    }
     const tmpPath = statePath + '.tmp';
     const json = JSON.stringify(data, null, 2);
     fsSync.writeFileSync(tmpPath, json);
@@ -288,6 +298,19 @@ function writeAtomicSidecar(data) {
 function writeAtomicCollection(name, data) {
   try {
     const p = path.join(DATA_DIR, `current-${name}.json`);
+    if (Array.isArray(data)) {
+      const existing = loadAtomicCollection(name);
+      if (Array.isArray(existing) && existing.length > 0) {
+        if (data.length === 0) {
+          console.warn(`[atomic] REFUSE empty write for ${name} (keep ${existing.length})`);
+          return;
+        }
+        if (data.length + 1 < existing.length) {
+          console.warn(`[atomic] REFUSE shrink ${name} ${existing.length} -> ${data.length}`);
+          return;
+        }
+      }
+    }
     const tmp = p + '.tmp';
     fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2));
     fsSync.renameSync(tmp, p);
@@ -299,6 +322,79 @@ function writeAtomicCollection(name, data) {
   } catch (e) {
     console.warn(`[atomic] Failed to write ${name}:`, e.message);
   }
+}
+
+function readSidecarData() {
+  try {
+    const p = path.join(DATA_DIR, 'current-state.json');
+    if (fsSync.existsSync(p)) {
+      const data = JSON.parse(fsSync.readFileSync(p, 'utf8'));
+      if (data && Array.isArray(data.managers)) return data;
+    }
+  } catch {}
+  return null;
+}
+
+function preferRicherArray(name, current, incoming) {
+  if (!Array.isArray(incoming)) return Array.isArray(current) ? current : incoming;
+  if (!Array.isArray(current) || current.length === 0) return incoming;
+  if (incoming.length === 0) {
+    console.warn(`[store] skip empty ${name} override (keep ${current.length})`);
+    return current;
+  }
+  if (incoming.length + 1 < current.length) {
+    console.warn(`[store] skip shrink ${name} ${current.length} -> ${incoming.length}`);
+    return current;
+  }
+  return incoming;
+}
+
+function unionFromBackup(primary, extra) {
+  if (!extra) return primary;
+  if (!primary) return extra;
+  const result = primary;
+  const mgrById = new Map((result.managers || []).map(m => [m.id, m]));
+  (extra.managers || []).forEach(m => {
+    if (m && m.id && !mgrById.has(m.id)) mgrById.set(m.id, m);
+  });
+  result.managers = Array.from(mgrById.values());
+  ['payments', 'ledger', 'scores', 'beefs', 'sponsorships', 'challenges', 'potBoosts', 'events', 'complaints'].forEach(key => {
+    const byId = new Map((result[key] || []).map(item => [item.id || JSON.stringify(item), item]));
+    (extra[key] || []).forEach(item => {
+      const iid = item.id || JSON.stringify(item);
+      if (!byId.has(iid)) byId.set(iid, item);
+    });
+    result[key] = Array.from(byId.values());
+  });
+  if (extra.settings && result.settings) {
+    ['totalFplRevenue', 'totalUclRevenue', 'houseFplAdmin', 'houseUclAdmin',
+     'fplOverallPot', 'fplCupPot', 'uclOverallPot', 'uclSecondPlacePot', 'uclThirdPlacePot',
+     'h2hOverallPot', 'firstRunnerUpPot', 'secondRunnerUpPot'].forEach(k => {
+      const a = Number(result.settings[k] || 0);
+      const b = Number(extra.settings[k] || 0);
+      if (b > a) result.settings[k] = b;
+    });
+    if (Array.isArray(extra.settings.predictions) && extra.settings.predictions.length) {
+      const have = new Set((result.settings.predictions || []).map(p => p && p.id));
+      result.settings.predictions = result.settings.predictions || [];
+      extra.settings.predictions.forEach(p => { if (p && p.id && !have.has(p.id)) result.settings.predictions.push(p); });
+    }
+  }
+  return result;
+}
+
+function autoHealIfWiped(s) {
+  if (!s) s = createEmptyStore();
+  const side = readSidecarData();
+  const best = findBestBackupData();
+  const curN = (s.managers || []).length;
+  const diskN = Math.max((side && side.managers || []).length, (best && best.managers || []).length);
+  if (diskN > curN + 1 || (curN === 0 && diskN > 0)) {
+    console.warn(`[store] AUTO-HEAL: in-memory managers=${curN}, disk best=${diskN} — merging sidecar/best backup (no empty persist)`);
+    if (side) s = unionFromBackup(s, side);
+    if (best) s = unionFromBackup(s, best);
+  }
+  return s;
 }
 
 // Reconstruct any beef records referenced by beef_stake payments but missing from beefs list.
@@ -455,6 +551,7 @@ function initSQLite(retries = 2) {
 
 async function loadStore() {
   if (storeCache) {
+    storeCache = autoHealIfWiped(storeCache);
     // Even on cached/short-circuit return (common after restore sets storeCache directly),
     // always sanitize the admin record. This ensures that no matter what mangled data came from a user JSON restore,
     // the admin email entry always has canonical displayName "Bolade Oladejo", empty teams, correct code.
@@ -561,13 +658,14 @@ async function loadStore() {
     }
 
     // Override/merge with per-collection atomics — these are freshest because they are written on every beef/payment/sponsor etc.
-    if (atomicManagers && Array.isArray(atomicManagers)) loaded.managers = atomicManagers;
-    if (atomicPayments && Array.isArray(atomicPayments)) loaded.payments = atomicPayments;
-    if (atomicLedger && Array.isArray(atomicLedger)) loaded.ledger = atomicLedger;
-    if (atomicBeefs && Array.isArray(atomicBeefs) && atomicBeefs.length > 0) loaded.beefs = atomicBeefs;
-    if (atomicSponsorships && Array.isArray(atomicSponsorships)) loaded.sponsorships = atomicSponsorships;
-    if (atomicChallenges && Array.isArray(atomicChallenges)) loaded.challenges = atomicChallenges;
-    if (atomicComplaints && Array.isArray(atomicComplaints)) loaded.complaints = atomicComplaints;
+    // NEVER let an empty/wiped atomic replace a richer loaded source (this is how "all data gone" happens on Render).
+    if (atomicManagers && Array.isArray(atomicManagers)) loaded.managers = preferRicherArray('managers', loaded.managers, atomicManagers);
+    if (atomicPayments && Array.isArray(atomicPayments)) loaded.payments = preferRicherArray('payments', loaded.payments, atomicPayments);
+    if (atomicLedger && Array.isArray(atomicLedger)) loaded.ledger = preferRicherArray('ledger', loaded.ledger, atomicLedger);
+    if (atomicBeefs && Array.isArray(atomicBeefs) && atomicBeefs.length > 0) loaded.beefs = preferRicherArray('beefs', loaded.beefs, atomicBeefs);
+    if (atomicSponsorships && Array.isArray(atomicSponsorships)) loaded.sponsorships = preferRicherArray('sponsorships', loaded.sponsorships, atomicSponsorships);
+    if (atomicChallenges && Array.isArray(atomicChallenges)) loaded.challenges = preferRicherArray('challenges', loaded.challenges, atomicChallenges);
+    if (atomicComplaints && Array.isArray(atomicComplaints)) loaded.complaints = preferRicherArray('complaints', loaded.complaints, atomicComplaints);
     if (atomicSettings && typeof atomicSettings === 'object') loaded.settings = { ...(loaded.settings || {}), ...atomicSettings };
 
     // Apply delete filter early on overrides too (deletedManagerIds may be in settings)
@@ -682,8 +780,12 @@ async function loadStore() {
     // This is what makes the system "self-healing" on every restart.
     needsPersist = true;
 
-    // Only fall back to full best-backup replace as absolute last resort (if primary sources had 0 managers)
-    if (beforeCount === 0 && afterCount === 0 && bestBackup && (bestBackup.managers || []).length > 0) {
+    // Last resort: empty OR wiped (e.g. only admin left) vs a richer backup — auto-heal, don't wait for the restore button.
+    if (bestBackup && (bestBackup.managers || []).length > (storeCache.managers || []).length + 1) {
+      storeCache = unionFromBackup(storeCache, bestBackup);
+      console.log(`[store] AUTO-HEAL from best backup: managers now ${(storeCache.managers || []).length}`);
+      needsPersist = true;
+    } else if (beforeCount === 0 && afterCount === 0 && bestBackup && (bestBackup.managers || []).length > 0) {
       storeCache = bestBackup;
       console.log(`[store] Last-resort full restore from best backup (no data in DB or sidecar).`);
       needsPersist = true;
@@ -859,27 +961,33 @@ async function persistStore() {
   try {
     if (!db) initSQLite();
 
+    storeCache = autoHealIfWiped(storeCache || createEmptyStore());
+
     // Safety guard: never clobber good data with empty managers on a persist
-    // Strong guard: if current has fewer managers than best on disk, restore the best
     const currentMgrCount = (storeCache.managers || []).length;
     const bestMgrs = loadAtomicCollection('managers') || [];
     if (bestMgrs.length > currentMgrCount) {
       console.warn(`[persist] Guard: current has ${currentMgrCount} managers, best atomic has ${bestMgrs.length} — restoring best`);
-      storeCache.managers = bestMgrs;
+      storeCache.managers = preferRicherArray('managers', storeCache.managers, bestMgrs);
       const bestPays = loadAtomicCollection('payments');
-      if (bestPays) storeCache.payments = bestPays;
+      if (bestPays) storeCache.payments = preferRicherArray('payments', storeCache.payments, bestPays);
       const bestLed = loadAtomicCollection('ledger');
-      if (bestLed) storeCache.ledger = bestLed;
+      if (bestLed) storeCache.ledger = preferRicherArray('ledger', storeCache.ledger, bestLed);
       const bestBeefs = loadAtomicCollection('beefs');
-      if (bestBeefs) storeCache.beefs = bestBeefs;
+      if (bestBeefs) storeCache.beefs = preferRicherArray('beefs', storeCache.beefs, bestBeefs);
       const bestSpon = loadAtomicCollection('sponsorships');
-      if (bestSpon) storeCache.sponsorships = bestSpon;
+      if (bestSpon) storeCache.sponsorships = preferRicherArray('sponsorships', storeCache.sponsorships, bestSpon);
       const bestChallenges = loadAtomicCollection('challenges');
-      if (bestChallenges) storeCache.challenges = bestChallenges;
+      if (bestChallenges) storeCache.challenges = preferRicherArray('challenges', storeCache.challenges, bestChallenges);
       const bestPotBoosts = loadAtomicCollection('potBoosts');
-      if (bestPotBoosts) storeCache.potBoosts = bestPotBoosts;
+      if (bestPotBoosts) storeCache.potBoosts = preferRicherArray('potBoosts', storeCache.potBoosts, bestPotBoosts);
       const bestSet = loadAtomicCollection('settings');
       if (bestSet) storeCache.settings = { ...(storeCache.settings || {}), ...bestSet };
+    }
+
+    if ((storeCache.managers || []).length === 0) {
+      console.error('[persist] ABORT persist of 0 managers — refusing to wipe disk');
+      return;
     }
 
     const insert = db.prepare("INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)");
@@ -920,8 +1028,18 @@ async function persistStore() {
       const tsPath = path.join(backupsDir, `store-${new Date().toISOString().replace(/[:.]/g,'-')}.json`);
       fsSync.writeFileSync(tsPath, JSON.stringify(storeCache, null, 2));
 
-      // 2. Always overwrite store-latest.json (quick stable fallback)
-      fsSync.writeFileSync(path.join(backupsDir, 'store-latest.json'), JSON.stringify(storeCache, null, 2));
+      // 2. store-latest.json — never replace a richer latest with an empty/wiped snapshot
+      const latestPath = path.join(backupsDir, 'store-latest.json');
+      let latestCount = 0;
+      try {
+        const prevL = JSON.parse(fsSync.readFileSync(latestPath, 'utf8'));
+        latestCount = (prevL.managers || []).length;
+      } catch {}
+      if (currentCount > 0 && currentCount + 1 >= latestCount) {
+        fsSync.writeFileSync(latestPath, JSON.stringify(storeCache, null, 2));
+      } else {
+        console.warn(`[backup] skip store-latest.json write (would ${currentCount} over ${latestCount})`);
+      }
 
       // 3. Only promote to store-best.json when we see a new high (or equal on first)
       const bestPath = path.join(backupsDir, 'store-best.json');
@@ -987,6 +1105,8 @@ function getStore() {
       return createEmptyStore();
     }
   }
+
+  storeCache = autoHealIfWiped(storeCache);
 
   // Heal admin on any getStore access too (defensive for direct calls after restores)
   try {
@@ -6188,9 +6308,10 @@ async function boot() {
     });
     if (bestState.managers && bestState.managers.length > 0) {
       storeCache = { ...createEmptyStore(), ...bestState };
-      if (atomicP) storeCache.payments = atomicP;
-      if (atomicL) storeCache.ledger = atomicL;
-      if (atomicB) storeCache.beefs = atomicB;
+      if (atomicP) storeCache.payments = preferRicherArray('payments', storeCache.payments, atomicP);
+      if (atomicL) storeCache.ledger = preferRicherArray('ledger', storeCache.ledger, atomicL);
+      if (atomicB) storeCache.beefs = preferRicherArray('beefs', storeCache.beefs, atomicB);
+      storeCache = autoHealIfWiped(storeCache);
       writeAtomicSidecar(storeCache);
       console.log(`[BOOT EARLY PROMOTE] Loaded best state with ${storeCache.managers.length} managers from disk`);
     }
