@@ -1960,9 +1960,15 @@ function sharePredictionCard() {
   const pred = (standingsData && standingsData.currentPrediction) || null;
   if (!pred) return alert('No live prediction to share yet.');
   const prize = Number(pred.prize || 0);
+  const revealed = pred.status === 'locked' || pred.status === 'settled';
   const status = pred.status === 'open' ? 'OPEN • BLIND POOL' : (pred.status === 'locked' ? 'LOCKED • REVEALED' : 'SETTLED');
   const link = predictionShareUrl(pred);
-  const waText = `D LEAGUE CLUBHOUSE\n\nPREDICTION OF THE WEEK\n\n${pred.title}\n\nPrize: ₦${prize.toLocaleString()}\n${status}\n\nBlind pool — drop your answer in the Clubhouse (hidden until lock).\n\nEnter here:\n${link}`;
+  const pickLines = revealed
+    ? (pred.votes || []).filter(v => v.text).map(v => `• ${v.displayName || 'Manager'}: ${v.text}`)
+    : [];
+  const waText = revealed
+    ? `D LEAGUE CLUBHOUSE\n\nPREDICTION OF THE WEEK — LOCKED\n\n${pred.title}\n\nPrize: ₦${prize.toLocaleString()}\n\nTHE PICKS:\n${pickLines.length ? pickLines.join('\n') : '(no entries)'}\n\nSee them in the Clubhouse:\n${link}`
+    : `D LEAGUE CLUBHOUSE\n\nPREDICTION OF THE WEEK\n\n${pred.title}\n\nPrize: ₦${prize.toLocaleString()}\n${status}\n\nBlind pool — drop your answer in the Clubhouse (hidden until lock).\n\nEnter here:\n${link}`;
 
   const W = 1080, H = 1080;
   const canvas = document.createElement('canvas');
@@ -2029,10 +2035,26 @@ function sharePredictionCard() {
 
   ctx.fillStyle = '#aaaaaa';
   ctx.font = '22px sans-serif';
-  ctx.fillText('Blind pool. Your pick stays hidden until lock.', 90, H - 200);
-  ctx.fillStyle = '#00ff85';
-  ctx.font = 'bold 26px sans-serif';
-  ctx.fillText('Open the link → login → drop your prediction', 90, H - 150);
+  if (revealed && pickLines.length) {
+    ctx.fillStyle = '#ffaa00';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.fillText('THE PICKS', 90, prizeY + 220);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '20px sans-serif';
+    let y = prizeY + 255;
+    pickLines.slice(0, 12).forEach(ln => {
+      const wrapped = wrapCanvasLines(ctx, ln, W - 180, 2);
+      wrapped.forEach(w => {
+        if (y < H - 120) { ctx.fillText(w, 90, y); y += 28; }
+      });
+    });
+    if (pickLines.length > 12) ctx.fillText('…and more in the Clubhouse', 90, Math.min(y, H - 120));
+  } else {
+    ctx.fillText('Blind pool. Your pick stays hidden until lock.', 90, H - 200);
+    ctx.fillStyle = '#00ff85';
+    ctx.font = 'bold 26px sans-serif';
+    ctx.fillText('Open the link → login → drop your prediction', 90, H - 150);
+  }
   ctx.fillStyle = '#666';
   ctx.font = '20px sans-serif';
   const urlShow = location.host || 'd-league-clubhouse.onrender.com';
@@ -2043,7 +2065,7 @@ function sharePredictionCard() {
   content.innerHTML = `
     <div class="text-center">
       <div class="font-black text-xl mb-2 text-[#00ff85]">Share Prediction of the Week</div>
-      <div class="text-xs text-[#888] mb-3">WhatsApp opens with the question, prize, and a link that lands on this card after login.</div>
+      <div class="text-xs text-[#888] mb-3">${revealed ? 'Locked — WhatsApp text includes every manager and their prediction.' : 'Open — WhatsApp stays a blind pool (no picks shown).'}</div>
       <div id="pred-card-wrap" class="flex justify-center overflow-auto"></div>
       <div class="mt-4 flex flex-wrap gap-2 justify-center">
         <button type="button" class="pred-wa px-4 py-2 bg-[#25D366] text-white font-bold rounded-2xl text-sm">Open WhatsApp</button>
