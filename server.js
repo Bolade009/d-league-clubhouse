@@ -215,14 +215,14 @@ let db = null;
 let lastHealthPing = null;
 let healthPingCount = 0;
 
-// Module-level best-backup finder (usable from boot, recover, etc). Scans for max managers.
+// Module-level best-backup finder. Only store-best + store-latest (never scan every timestamped dump — that stalled login).
+let bestBackupCache = { at: 0, data: null };
 function findBestBackupData() {
   try {
+    if (bestBackupCache.data && (Date.now() - bestBackupCache.at) < 60 * 1000) return bestBackupCache.data;
     const backupsDir = path.join(DATA_DIR, "backups");
     if (!fsSync.existsSync(backupsDir)) return null;
     const candidates = [];
-
-    // Stable non-pruned first
     for (const stable of ['store-best.json', 'store-latest.json']) {
       const p = path.join(backupsDir, stable);
       if (fsSync.existsSync(p)) {
@@ -233,32 +233,10 @@ function findBestBackupData() {
         } catch {}
       }
     }
-
-    const files = fsSync.readdirSync(backupsDir)
-      .filter(f => f.startsWith('store-') && f.endsWith('.json') && !f.includes('best') && !f.includes('latest'));
-    for (const f of files) {
-      try {
-        const p = path.join(backupsDir, f);
-        const data = JSON.parse(fsSync.readFileSync(p, "utf8"));
-        const count = (data && Array.isArray(data.managers)) ? data.managers.length : 0;
-        if (count > 0) candidates.push({ file: f, count, data });
-      } catch {}
-    }
-
     if (candidates.length === 0) return null;
-
-    const looksDemo = (m) => !m || !m.email || String(m.email).includes("@dleague.ng") || String(m.displayName || "").toLowerCase().includes("demo");
-    // Score: real count (exclude obvious demo) + tiny recency bonus. Sort prefers highest real count then newer file name.
-    candidates.forEach(c => {
-      const mgrs = c.data.managers || [];
-      const demoCount = mgrs.filter(looksDemo).length;
-      c.realCount = Math.max(0, mgrs.length - demoCount);
-      c.isRecent = /2026-07-(1[0-9]|0[5-9])/.test(c.file); // bias recent month-ish
-    });
-    candidates.sort((a, b) => (b.realCount - a.realCount) || (b.file.localeCompare(a.file)) || (b.count - a.count) );
-
+    candidates.sort((a, b) => b.count - a.count);
     const best = candidates[0];
-    console.log(`[store] Best backup found: ${best.file} (total ${best.count}, real-ish ${best.realCount} managers)`);
+    bestBackupCache = { at: Date.now(), data: best.data };
     return best.data;
   } catch (e) { /* ignore */ }
   return null;
@@ -385,9 +363,11 @@ function unionFromBackup(primary, extra) {
 
 function autoHealIfWiped(s) {
   if (!s) s = createEmptyStore();
+  const curN = (s.managers || []).length;
+  // Healthy live set — do not touch disk on every API call (was the login stall).
+  if (curN >= 2) return s;
   const side = readSidecarData();
   const best = findBestBackupData();
-  const curN = (s.managers || []).length;
   const diskN = Math.max((side && side.managers || []).length, (best && best.managers || []).length);
   if (diskN > curN + 1 || (curN === 0 && diskN > 0)) {
     console.warn(`[store] AUTO-HEAL: in-memory managers=${curN}, disk best=${diskN} — merging sidecar/best backup (no empty persist)`);
@@ -1053,6 +1033,7 @@ async function persistStore() {
       } catch {}
       if (currentCount >= bestCount && currentCount > 0) {
         fsSync.writeFileSync(bestPath, JSON.stringify(storeCache, null, 2));
+        bestBackupCache = { at: Date.now(), data: storeCache };
         if (currentCount > bestCount) console.log(`[backup] New best snapshot: ${currentCount} managers -> store-best.json`);
       }
 
@@ -1112,8 +1093,6 @@ function getStore() {
       return createEmptyStore();
     }
   }
-
-  storeCache = autoHealIfWiped(storeCache);
 
   // Heal admin on any getStore access too (defensive for direct calls after restores)
   try {
@@ -2821,9 +2800,8 @@ async function getProjectedPayouts() {
   const sponsored = (s.sponsorships || []).reduce((sum, sp) => sum + (sp.amount || 0), 0);
   const uclReserve = 0;
 
-  // Do not block page load on football-data.org. Use cache if warm; refresh in background.
+  // Never open outbound TLS on a page-load path (FPL/football-data TLS drops were stalling login).
   const uclStats = uclStatsCache || { matches: [] };
-  if (!uclStatsCache) getUCLStats().catch(() => {});
   const upcomingMatches = (uclStats.matches || []).filter(m => m.status === 'SCHEDULED' || m.status === 'TIMED');
   const upcomingUCLMatches = upcomingMatches.length;
   const uclFormBoost = Math.min(upcomingUCLMatches * 0.5, 5);
@@ -2871,7 +2849,8 @@ async function getProjectedPayouts() {
 
 // ============ LEADERBOARDS & VIEWS ============
 
-function buildManagerView(mgr) {
+function buildManagerView(mgr, opts = {}) {
+  const slim = !!opts.slim;
   const s = getStore();
 
   // Hard force for admin by email: always return canonical data (prevents "admin shows as Obed" even if the record in DB/JSON is mangled)
@@ -2928,13 +2907,13 @@ function buildManagerView(mgr) {
     recentCaptain: recentFpl.captain || null,
     recentCaptainName: recentFpl.captainName || null,
     recentChip: recentFpl.activeChip || null,
-    recentPicks: recentFpl.picks || [],
+    recentPicks: slim ? [] : (recentFpl.picks || []),
     recentTransfers: recentFpl.transfers || 0,
     // UCL equivalent data (now wired via template or demo)
     recentUclCaptain: recentUcl.captain || null,
     recentUclCaptainName: recentUcl.captainName || null,
     recentUclChip: recentUcl.activeChip || null,
-    recentUclPicks: recentUcl.picks || []
+    recentUclPicks: slim ? [] : (recentUcl.picks || [])
   };
 }
 
@@ -2943,7 +2922,7 @@ function getFullLeaderboard() {
   // Never surface the commissioner/admin account in public lists (spotlight, leaderboards, selects etc.).
   // Keyed by email so it never appears even if data is temporarily mangled after restore.
   const allManagers = s.managers.filter(m => !(m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com'))
-    .map(m => buildManagerView(m));
+    .map(m => buildManagerView(m, { slim: true }));
 
   const managers = allManagers;
   // Only show fully eligible in main tables? Show all but mark paid status. Leaderboards filter paid.
@@ -3395,7 +3374,6 @@ app.get("/api/config", (req, res) => {
 });
 
 app.post("/api/auth/login", async (req, res) => {
-  if (DEMO_MODE) await seedDemoData();
   const { email, code } = req.body || {};
   const s = await loadStore();
 
@@ -4752,6 +4730,69 @@ app.post("/api/predictions/:id/vote", async (req, res) => {
   res.json({ ok: true, prediction: predictionForViewer(pred, mgr.id), message: "Prediction saved." });
 });
 
+// Admin records/restores a manager's prediction (lost entries after a wipe). Works while open or locked, not after settle.
+app.post("/api/admin/prediction/:id/vote-for", async (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Unauthorized" });
+  const managerId = (req.body && req.body.managerId) || '';
+  const text = String((req.body && req.body.text) || '').trim();
+  if (!managerId || !text) return res.status(400).json({ error: "managerId and text required" });
+  const s = await loadStore();
+  const pred = getPredictionsList(s).find(p => p.id === req.params.id);
+  if (!pred) return res.status(404).json({ error: "Prediction not found" });
+  if (pred.status === "settled") return res.status(400).json({ error: "Already settled" });
+  const who = (s.managers || []).find(m => m.id === managerId);
+  if (!who) return res.status(404).json({ error: "Manager not found" });
+  pred.votes = pred.votes || [];
+  const existing = pred.votes.find(v => v.managerId === managerId);
+  if (existing) {
+    existing.text = text;
+    existing.at = nowISO();
+    existing.enteredByAdmin = true;
+  } else {
+    pred.votes.push({ managerId, displayName: who.displayName, text, at: nowISO(), enteredByAdmin: true });
+  }
+  await persistStore();
+  await logEvent("prediction_admin_vote", { id: pred.id, managerId });
+  res.json({ ok: true, prediction: pred, message: `Recorded prediction for ${who.displayName}.` });
+});
+
+app.post("/api/admin/reconstruct-beef", async (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Unauthorized" });
+  const { proposerId, opponentIds, category, stake, status } = req.body || {};
+  const opp = Array.isArray(opponentIds) ? opponentIds.filter(Boolean) : (opponentIds ? [opponentIds] : []);
+  if (!proposerId || !opp.length || !category) return res.status(400).json({ error: "proposer, opponent(s) and category required" });
+  const s = await loadStore();
+  const proposer = (s.managers || []).find(m => m.id === proposerId);
+  if (!proposer) return res.status(404).json({ error: "Proposer not found" });
+  const stakeAmt = Math.max(0, Math.floor(Number(stake) || 0));
+  const st = ['proposed', 'accepted', 'settled'].includes(status) ? status : 'accepted';
+  const currentGW = (s.settings.currentRound && s.settings.currentRound.fpl) || 1;
+  const beef = {
+    id: generateId("beef"),
+    proposerId,
+    proposerName: proposer.displayName,
+    opponentIds: opp,
+    participants: [proposerId, ...opp],
+    category: String(category).trim(),
+    stake: stakeAmt,
+    status: st,
+    paidFromWallet: false,
+    at: nowISO(),
+    paidBy: {},
+    locked: st !== 'proposed',
+    joinDeadline: currentGW,
+    reconstructed: true,
+    reconstructedByAdmin: true,
+    autoSettle: !!BEEF_LOGIC_MAP[String(category).trim()]
+  };
+  s.beefs = s.beefs || [];
+  s.beefs.push(beef);
+  writeAtomicCollection('beefs', s.beefs);
+  await persistStore();
+  await logEvent("beef_reconstructed", { beefId: beef.id, proposerId, category: beef.category });
+  res.json({ ok: true, beef, message: `Beef restored: ${proposer.displayName} vs ${opp.length} opponent(s).` });
+});
+
 app.post("/api/admin/prediction/:id/lock", async (req, res) => {
   if (!isAdminRequest(req)) return res.status(401).json({ error: "Unauthorized" });
   const s = await loadStore();
@@ -5562,7 +5603,6 @@ app.get("/api/me", async (req, res) => {
 });
 
 app.get("/api/standings", async (req, res) => {
-  if (DEMO_MODE) await seedDemoData();
   const lb = getFullLeaderboard();
   const s = getStore();
   try { await populateH2HFixtures(s); } catch (e) {}
@@ -5574,12 +5614,10 @@ app.get("/api/standings", async (req, res) => {
   if (ids.fplClassic) {
     const cached = fplLeagueCache.get(`classic:${ids.fplClassic}`);
     if (cached && cached.data) realLeagues.fplClassic = cached.data;
-    fetchFplLeagueStandings(ids.fplClassic, false).catch(() => {});
   }
   if (ids.fplH2h) {
     const cached = fplLeagueCache.get(`h2h:${ids.fplH2h}`);
     if (cached && cached.data) realLeagues.fplH2h = cached.data;
-    fetchFplLeagueStandings(ids.fplH2h, true).catch(() => {});
   }
   // UCL league if provided (placeholder for now; use template or future API)
   if (ids.ucl) {
@@ -5610,6 +5648,10 @@ app.get("/api/standings", async (req, res) => {
     },
     currentPrediction: predictionForViewer(livePrediction(s), predViewerId),
     predictions: (s.settings.predictions || []).slice(-8).map(p => predictionForViewer(p, predViewerId))
+  });
+  setImmediate(() => {
+    if (ids.fplClassic) fetchFplLeagueStandings(ids.fplClassic, false).catch(() => {});
+    if (ids.fplH2h) fetchFplLeagueStandings(ids.fplH2h, true).catch(() => {});
   });
 });
 

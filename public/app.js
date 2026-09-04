@@ -410,7 +410,9 @@ function renderPayAccess() {
 }
 
 async function loadAllData() {
-  // Standings first (local pots/scores). Beefs in background so they don't stall first paint.
+  // Paint what we already have from login so the dashboard isn't blank while standings load.
+  if (typeof renderPayAccess === 'function') renderPayAccess();
+  if (typeof renderManagerHero === 'function') renderManagerHero();
   await loadStandings().catch(e => console.warn('standings load failed', e));
   fetchJSON('/api/beefs').then(d => {
       if (d && Array.isArray(d.beefs)) {
@@ -1180,8 +1182,15 @@ async function loadAdminOverview() {
 
       <div class="mb-4 p-4 bg-[#0a1a12] border-2 border-[#00ff85] rounded-3xl">
         <div class="font-black text-[#00ff85] text-base mb-1 tracking-[-0.3px]">PREDICTION OF THE WEEK</div>
-        <div class="text-xs text-[#ccc] mb-2">Set this week's question + prize once the group decides. Managers submit open-ended answers. Lock to close entries. Then pick one or more correct managers and split the prize.</div>
+        <div class="text-xs text-[#ccc] mb-2">Set this week's question + prize once the group decides. Managers submit open-ended answers. Lock to close entries. Then pick one or more correct managers and split the prize. Use ENTER FOR MANAGER if someone lost their pick after a restore.</div>
         <button onclick="adminSetPrediction()" class="px-5 py-2 bg-[#00ff85] hover:bg-white text-black font-bold rounded-2xl text-sm active:scale-[0.985]">SET / UPDATE THIS WEEK'S PREDICTION</button>
+        <button onclick="adminEnterPredictionForManager()" class="ml-2 px-5 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm">ENTER PICK FOR A MANAGER</button>
+      </div>
+
+      <div class="mb-4 p-4 bg-[#0a1a12] border-2 border-[#00ff85] rounded-3xl">
+        <div class="font-black text-[#00ff85] text-base mb-1 tracking-[-0.3px]">RECONSTRUCT A BEEF</div>
+        <div class="text-xs text-[#ccc] mb-2">If a beef disappeared after a restore, recreate it here (proposer + opponents + category + stake). Does not move money — only restores the matchup record.</div>
+        <button onclick="adminReconstructBeef()" class="px-5 py-2 bg-[#00ff85] hover:bg-white text-black font-bold rounded-2xl text-sm active:scale-[0.985]">REBUILD BEEF BETWEEN MANAGERS</button>
       </div>
 
       <!-- League Lock Control - separate for FPL and UCL -->
@@ -2122,6 +2131,67 @@ async function adminLockPrediction(id, lock) {
     alert(res.message || 'Updated.');
     await loadStandings();
     renderPredictionWeek();
+  } catch (e) {
+    alert(e.message || 'Failed');
+  }
+}
+
+async function adminEnterPredictionForManager() {
+  if (!isCommissionerClient()) return alert('Admin only');
+  const pred = (standingsData && standingsData.currentPrediction) || null;
+  if (!pred) return alert('Set this week\'s prediction first.');
+  if (pred.status === 'settled') return alert('Already settled.');
+  const mgrs = (standingsData.all || []).filter(m => m && m.id);
+  if (!mgrs.length) return alert('No managers loaded.');
+  const names = mgrs.map((m, i) => `${i + 1}. ${m.displayName}`).join('\n');
+  const pick = prompt(`Who is this pick for? Type the number:\n${names}`);
+  if (pick === null) return;
+  const idx = parseInt(pick, 10) - 1;
+  if (!mgrs[idx]) return alert('Invalid number');
+  const text = prompt(`Prediction text for ${mgrs[idx].displayName}:`, '');
+  if (text === null || !String(text).trim()) return;
+  try {
+    const res = await fetchJSON(`/api/admin/prediction/${pred.id}/vote-for`, {
+      method: 'POST',
+      body: JSON.stringify({ managerId: mgrs[idx].id, text: String(text).trim() })
+    });
+    alert(res.message || 'Saved.');
+    await loadStandings();
+    renderPredictionWeek();
+  } catch (e) {
+    alert(e.message || 'Failed');
+  }
+}
+
+async function adminReconstructBeef() {
+  if (!isCommissionerClient()) return alert('Admin only');
+  const mgrs = (standingsData && standingsData.all) || [];
+  if (mgrs.length < 2) return alert('Need managers loaded (wait for dashboard, then try again).');
+  const names = mgrs.map((m, i) => `${i + 1}. ${m.displayName}`).join('\n');
+  const p = prompt(`Proposer number:\n${names}`);
+  if (p === null) return;
+  const proposer = mgrs[parseInt(p, 10) - 1];
+  if (!proposer) return alert('Invalid proposer');
+  const o = prompt(`Opponent number(s), comma-separated:\n${names}`);
+  if (o === null) return;
+  const opponents = String(o).split(',').map(x => mgrs[parseInt(x.trim(), 10) - 1]).filter(Boolean);
+  if (!opponents.length) return alert('Need at least one opponent');
+  const category = prompt('Category (e.g. Captain Clutch or custom):', 'Highest GW points');
+  if (!category) return;
+  const stake = prompt('Stake ₦ each (record only — no wallet move):', '5000');
+  try {
+    const res = await fetchJSON('/api/admin/reconstruct-beef', {
+      method: 'POST',
+      body: JSON.stringify({
+        proposerId: proposer.id,
+        opponentIds: opponents.map(m => m.id),
+        category: category.trim(),
+        stake: Number(stake) || 0,
+        status: 'accepted'
+      })
+    });
+    alert(res.message || 'Beef restored.');
+    if (typeof loadAllData === 'function') loadAllData();
   } catch (e) {
     alert(e.message || 'Failed');
   }
