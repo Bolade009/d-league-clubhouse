@@ -410,12 +410,9 @@ function renderPayAccess() {
 }
 
 async function loadAllData() {
-  const loads = [
-    loadStandings().catch(e => console.warn('standings load failed', e)),
-    loadH2H().catch(e => console.warn('h2h failed', e)),
-    // Fetch server beefs so user-generated beefs survive restarts (localStorage is UI cache only now)
-    // Also set for prominent top display
-    fetchJSON('/api/beefs').then(d => {
+  // Standings first (local pots/scores). Beefs in background so they don't stall first paint.
+  await loadStandings().catch(e => console.warn('standings load failed', e));
+  fetchJSON('/api/beefs').then(d => {
       if (d && Array.isArray(d.beefs)) {
         const serverBeefs = d.beefs;
         let localBeefs = [];
@@ -461,9 +458,7 @@ async function loadAllData() {
           window.activeBeefs = backup;
         }
       } catch {}
-    })
-  ];
-  await Promise.allSettled(loads);
+    }).then(() => { if (typeof renderActiveBeefs === 'function') renderActiveBeefs(); });
   renderManagerHero();
   renderSpotlight();
   renderSquadChips();

@@ -776,9 +776,7 @@ async function loadStore() {
       console.log(`[store] Reconciled extra managers: ${beforeCount} -> ${afterCount}. All ledger entries preserved.`);
     }
 
-    // ALWAYS persist after loading so the richest possible state becomes the new sidecar + DB.
-    // This is what makes the system "self-healing" on every restart.
-    needsPersist = true;
+    // Persist only when we actually healed/merged — a full persist on every boot rewrites JSON backups and stalls the first page load.
 
     // Last resort: empty OR wiped (e.g. only admin left) vs a richer backup — auto-heal, don't wait for the restore button.
     if (bestBackup && (bestBackup.managers || []).length > (storeCache.managers || []).length + 1) {
@@ -1024,9 +1022,14 @@ async function persistStore() {
       if (!fsSync.existsSync(backupsDir)) fsSync.mkdirSync(backupsDir, { recursive: true });
       const currentCount = (storeCache.managers || []).length;
 
-      // 1. Timestamped for history
-      const tsPath = path.join(backupsDir, `store-${new Date().toISOString().replace(/[:.]/g,'-')}.json`);
-      fsSync.writeFileSync(tsPath, JSON.stringify(storeCache, null, 2));
+      // 1. Timestamped snapshot at most every 5 minutes (full JSON + prune was stalling every persist)
+      const nowMs = Date.now();
+      const doHeavyBackup = (nowMs - lastTimestampedBackupAt) > 5 * 60 * 1000;
+      if (doHeavyBackup) {
+        lastTimestampedBackupAt = nowMs;
+        const tsPath = path.join(backupsDir, `store-${new Date().toISOString().replace(/[:.]/g,'-')}.json`);
+        fsSync.writeFileSync(tsPath, JSON.stringify(storeCache, null, 2));
+      }
 
       // 2. store-latest.json — never replace a richer latest with an empty/wiped snapshot
       const latestPath = path.join(backupsDir, 'store-latest.json');
@@ -1054,7 +1057,10 @@ async function persistStore() {
       }
 
       // 4. (Sidecar already written at start of persist for max durability before DB tx)
-      // 5. Smart prune: keep last ~12 + any that match or exceed current bestCount (protect history of good states)
+      // 5. Smart prune only when we took a timestamped snapshot (parsing every backup on every persist is slow)
+      if (!doHeavyBackup) {
+        // skip prune this persist
+      } else {
       const all = fsSync.readdirSync(backupsDir)
         .filter(f => f.startsWith('store-') && f.endsWith('.json'))
         .map(f => {
@@ -1080,6 +1086,7 @@ async function persistStore() {
         }
       }
       toDelete.forEach(f => { try { fsSync.unlinkSync(path.join(backupsDir, f)); } catch {} });
+      }
     } catch (bErr) { console.warn("[backup] failed", bErr.message); }
   } catch (e) {
     console.error("[store] Persist failed:", e.message);
@@ -2955,7 +2962,8 @@ function getH2HForManager(managerId) {
 // ============ SAFE FETCH ============
 
 const fplLeagueCache = new Map(); // key -> { at, data }
-const FPL_LEAGUE_CACHE_MS = 60 * 1000;
+const FPL_LEAGUE_CACHE_MS = 5 * 60 * 1000;
+let lastTimestampedBackupAt = 0;
 
 function safeFetchJSON(url, timeoutMs = 8000, extraHeaders = null) {
   return new Promise((resolve) => {
@@ -3023,21 +3031,31 @@ async function fetchFplLeagueStandings(leagueId, isH2h = false) {
   if (!leagueId) return null;
   const cacheKey = `${isH2h ? 'h2h' : 'classic'}:${leagueId}`;
   const hit = fplLeagueCache.get(cacheKey);
-  if (hit && (Date.now() - hit.at) < FPL_LEAGUE_CACHE_MS) return hit.data;
-  try {
-    const path = isH2h ? "leagues-h2h" : "leagues-classic";
-    const url = `${FPL_BASE}/${path}/${leagueId}/standings/`;
-    // Use a browser-like UA — FPL can be strict on plain node requests for league data
-    const data = await safeFetchJSON(url, 8000, {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'application/json'
-    });
-    if (data) fplLeagueCache.set(cacheKey, { at: Date.now(), data });
-    return data;
-  } catch (e) {
-    console.warn("[FPL League] Failed to fetch standings:", e.message);
-    return hit ? hit.data : null;
+  const fresh = hit && (Date.now() - hit.at) < FPL_LEAGUE_CACHE_MS;
+  if (fresh) return hit.data;
+
+  const doFetch = async () => {
+    try {
+      const path = isH2h ? "leagues-h2h" : "leagues-classic";
+      const url = `${FPL_BASE}/${path}/${leagueId}/standings/`;
+      const data = await safeFetchJSON(url, 4000, {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json'
+      });
+      if (data) fplLeagueCache.set(cacheKey, { at: Date.now(), data });
+      return data;
+    } catch (e) {
+      console.warn("[FPL League] Failed to fetch standings:", e.message);
+      return hit ? hit.data : null;
+    }
+  };
+
+  // Stale-while-revalidate: never block the dashboard on FPL. Serve last good payload, refresh in background.
+  if (hit && hit.data) {
+    doFetch().catch(() => {});
+    return hit.data;
   }
+  return doFetch();
 }
 
 // H2H wiring: do NOT fetch FPL here on every page load (that was a major stall).
@@ -5550,17 +5568,19 @@ app.get("/api/standings", async (req, res) => {
   try { await populateH2HFixtures(s); } catch (e) {}
   const projections = await getProjectedPayouts();
 
-  // Fetch configured FPL leagues in parallel (cached ~60s) so dashboard is not blocked 10s+10s
+  // FPL leagues: use cache immediately. Never wait on fantasy.premierleague.com for the page to render.
   const realLeagues = {};
   const ids = s.settings.leagueIds || {};
-  const leagueFetches = [];
   if (ids.fplClassic) {
-    leagueFetches.push(fetchFplLeagueStandings(ids.fplClassic, false).then(d => { realLeagues.fplClassic = d; }));
+    const cached = fplLeagueCache.get(`classic:${ids.fplClassic}`);
+    if (cached && cached.data) realLeagues.fplClassic = cached.data;
+    fetchFplLeagueStandings(ids.fplClassic, false).catch(() => {});
   }
   if (ids.fplH2h) {
-    leagueFetches.push(fetchFplLeagueStandings(ids.fplH2h, true).then(d => { realLeagues.fplH2h = d; }));
+    const cached = fplLeagueCache.get(`h2h:${ids.fplH2h}`);
+    if (cached && cached.data) realLeagues.fplH2h = cached.data;
+    fetchFplLeagueStandings(ids.fplH2h, true).catch(() => {});
   }
-  if (leagueFetches.length) await Promise.all(leagueFetches);
   // UCL league if provided (placeholder for now; use template or future API)
   if (ids.ucl) {
     realLeagues.ucl = { note: "UCL league tracking via configured ID or external adapter", id: ids.ucl };
