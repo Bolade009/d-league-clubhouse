@@ -1020,8 +1020,7 @@ async function loadAdminOverview() {
     // Join requests + adds: always show recent ones (historical, never hide previous)
     // join_request stay as PENDING until manager_added / approved. Previous ones visible forever.
     const joinRelated = events
-      .filter(e => e.type === 'join_request' || e.type === 'manager_added')
-      .slice(0, 25);
+      .filter(e => e.type === 'join_request' || e.type === 'manager_added');
 
     let joinsHtml = '';
     if (joinRelated.length) {
@@ -2103,26 +2102,71 @@ async function submitPredictionVote(id) {
   }
 }
 
+async function loadAllManagersForAdmin() {
+  let list = [];
+  if (window.lastAdminData && Array.isArray(window.lastAdminData.managers)) list = window.lastAdminData.managers;
+  if (list.length < 2) {
+    try {
+      const data = await fetchJSON('/api/admin/overview');
+      window.lastAdminData = data;
+      list = data.managers || [];
+    } catch (e) {}
+  }
+  const fromStandings = (standingsData && standingsData.all) || [];
+  const byId = new Map();
+  [...list, ...fromStandings].forEach(m => {
+    if (m && m.id) byId.set(m.id, m);
+  });
+  return Array.from(byId.values())
+    .filter(m => !(m.email && m.email.toLowerCase() === 'bolade.oladejo@gmail.com'))
+    .sort((a, b) => String(a.displayName || '').localeCompare(String(b.displayName || '')));
+}
+
+function openAdminSheet(htmlInner) {
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:100;display:flex;align-items:center;justify-content:center;';
+  modal.innerHTML = `<div style="background:#1c1c1c;border:1px solid #333;padding:16px;border-radius:12px;max-width:720px;width:94%;max-height:90vh;overflow:auto;">${htmlInner}</div>`;
+  document.body.appendChild(modal);
+  return modal;
+}
+
+function managerSelectHtml(id, managers, extraOpt) {
+  const opts = [`<option value="">${extraOpt || '-- select manager --'}</option>`]
+    .concat(managers.map(m => `<option value="${escPred(m.id)}">${escPred(m.displayName)}${m.fplClubName ? ' (' + escPred(m.fplClubName) + ')' : ''}</option>`));
+  return `<select id="${id}" style="flex:1;font-size:13px;background:#f8f8f8;color:#111;border:1px solid #555;padding:6px 8px;border-radius:6px;width:100%;">${opts.join('')}</select>`;
+}
+
 async function adminSetPrediction() {
   if (!isCommissionerClient()) return alert('Admin only');
   const cur = (standingsData && standingsData.currentPrediction) || {};
-  const title = prompt("This week's prediction (the question):", cur.title || '');
-  if (title === null) return;
-  if (!title.trim()) return alert('Need a title');
-  const prize = prompt('Prize to win (₦). Can be 0 now and sponsored later:', cur.prize != null ? String(cur.prize) : '5000');
-  if (prize === null) return;
-  try {
-    const res = await fetchJSON('/api/admin/prediction', {
-      method: 'POST',
-      body: JSON.stringify({ title: title.trim(), prize: Number(prize) })
-    });
-    alert(res.message || 'Live.');
-    await loadStandings();
-    renderPredictionWeek();
-    if (typeof loadAdminOverview === 'function') loadAdminOverview();
-  } catch (e) {
-    alert(e.message || 'Failed to set prediction');
-  }
+  const modal = openAdminSheet(`
+    <div style="font-weight:bold;font-size:15px;margin-bottom:4px;color:#00ff85;">Prediction of the Week</div>
+    <div style="font-size:11px;color:#888;margin-bottom:10px;">Set the question and prize. Form stays open. Then use Enter picks to fill managers from dropdowns.</div>
+    <label style="font-size:11px;color:#aaa;">Question</label>
+    <input id="pred-title" value="${escPred(cur.title || '')}" placeholder="e.g. Who scores first vs Arsenal?" style="width:100%;background:#111;border:1px solid #444;color:#fff;padding:8px;border-radius:6px;margin:4px 0 10px;">
+    <label style="font-size:11px;color:#aaa;">Prize ₦</label>
+    <input id="pred-prize" type="number" value="${cur.prize != null ? Number(cur.prize) : 5000}" style="width:100%;background:#111;border:1px solid #444;color:#fff;padding:8px;border-radius:6px;margin:4px 0 12px;">
+    <button id="pred-save" style="background:#00ff85;color:#111;padding:8px 14px;border-radius:6px;font-weight:700;margin-right:8px;">SAVE / GO LIVE</button>
+    <button id="pred-picks" style="background:#222;color:#fff;padding:8px 14px;border-radius:6px;margin-right:8px;">ENTER PICKS FOR MANAGERS</button>
+    <button id="pred-cancel" style="padding:8px 14px;border-radius:6px;border:1px solid #444;">CLOSE</button>
+  `);
+  modal.querySelector('#pred-cancel').onclick = () => document.body.removeChild(modal);
+  modal.querySelector('#pred-picks').onclick = () => { document.body.removeChild(modal); adminEnterPredictionForManager(); };
+  modal.querySelector('#pred-save').onclick = async () => {
+    const title = modal.querySelector('#pred-title').value.trim();
+    const prize = Number(modal.querySelector('#pred-prize').value) || 0;
+    if (!title) return alert('Need a question');
+    try {
+      const res = await fetchJSON('/api/admin/prediction', { method: 'POST', body: JSON.stringify({ title, prize }) });
+      await loadStandings();
+      renderPredictionWeek();
+      if (typeof loadAdminOverview === 'function') loadAdminOverview();
+      const msg = document.createElement('div');
+      msg.style.cssText = 'color:#00ff85;font-size:12px;margin-top:8px;';
+      msg.textContent = res.message || 'Live. Form still open — edit again or enter picks.';
+      modal.querySelector('div').appendChild(msg);
+    } catch (e) { alert(e.message || 'Failed'); }
+  };
 }
 
 async function adminLockPrediction(id, lock) {
@@ -2141,60 +2185,102 @@ async function adminEnterPredictionForManager() {
   const pred = (standingsData && standingsData.currentPrediction) || null;
   if (!pred) return alert('Set this week\'s prediction first.');
   if (pred.status === 'settled') return alert('Already settled.');
-  const mgrs = (standingsData.all || []).filter(m => m && m.id);
-  if (!mgrs.length) return alert('No managers loaded.');
-  const names = mgrs.map((m, i) => `${i + 1}. ${m.displayName}`).join('\n');
-  const pick = prompt(`Who is this pick for? Type the number:\n${names}`);
-  if (pick === null) return;
-  const idx = parseInt(pick, 10) - 1;
-  if (!mgrs[idx]) return alert('Invalid number');
-  const text = prompt(`Prediction text for ${mgrs[idx].displayName}:`, '');
-  if (text === null || !String(text).trim()) return;
-  try {
-    const res = await fetchJSON(`/api/admin/prediction/${pred.id}/vote-for`, {
-      method: 'POST',
-      body: JSON.stringify({ managerId: mgrs[idx].id, text: String(text).trim() })
-    });
-    alert(res.message || 'Saved.');
-    await loadStandings();
-    renderPredictionWeek();
-  } catch (e) {
-    alert(e.message || 'Failed');
-  }
+  const mgrs = await loadAllManagersForAdmin();
+  if (!mgrs.length) return alert('No managers found.');
+  const voteById = {};
+  (pred.votes || []).forEach(v => { if (v.managerId) voteById[v.managerId] = v.text || ''; });
+  const rows = mgrs.map(m => {
+    const existing = voteById[m.id] || '';
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px;">
+      <span style="width:180px;flex-shrink:0;">${escPred(m.displayName)}</span>
+      <input class="pred-admin-text" data-mid="${escPred(m.id)}" value="${escPred(existing)}" placeholder="their prediction…" style="flex:1;background:#f8f8f8;color:#111;border:1px solid #555;padding:6px 8px;border-radius:6px;">
+    </div>`;
+  }).join('');
+  const modal = openAdminSheet(`
+    <div style="font-weight:bold;font-size:15px;margin-bottom:4px;color:#00ff85;">Enter predictions — ${escPred(pred.title)}</div>
+    <div style="font-size:11px;color:#888;margin-bottom:8px;">All ${mgrs.length} managers. Fill any rows, SAVE. Form stays so you can keep editing. Blind for others until you lock.</div>
+    <div id="pred-admin-rows" style="max-height:420px;overflow:auto;">${rows}</div>
+    <div style="margin-top:12px;">
+      <button id="pred-admin-save" style="background:#00ff85;color:#111;padding:8px 14px;border-radius:6px;font-weight:700;margin-right:8px;">SAVE PICKS</button>
+      <button id="pred-admin-close" style="padding:8px 14px;border-radius:6px;border:1px solid #444;">CLOSE</button>
+      <span id="pred-admin-status" style="margin-left:8px;font-size:12px;color:#00ff85;"></span>
+    </div>
+  `);
+  modal.querySelector('#pred-admin-close').onclick = () => document.body.removeChild(modal);
+  modal.querySelector('#pred-admin-save').onclick = async () => {
+    const votes = Array.from(modal.querySelectorAll('.pred-admin-text')).map(inp => ({
+      managerId: inp.getAttribute('data-mid'),
+      text: inp.value.trim()
+    })).filter(v => v.managerId && v.text);
+    try {
+      const res = await fetchJSON(`/api/admin/prediction/${pred.id}/votes-bulk`, {
+        method: 'POST',
+        body: JSON.stringify({ votes })
+      });
+      modal.querySelector('#pred-admin-status').textContent = res.message || 'Saved.';
+      await loadStandings();
+      renderPredictionWeek();
+    } catch (e) { alert(e.message || 'Failed'); }
+  };
 }
 
 async function adminReconstructBeef() {
   if (!isCommissionerClient()) return alert('Admin only');
-  const mgrs = (standingsData && standingsData.all) || [];
-  if (mgrs.length < 2) return alert('Need managers loaded (wait for dashboard, then try again).');
-  const names = mgrs.map((m, i) => `${i + 1}. ${m.displayName}`).join('\n');
-  const p = prompt(`Proposer number:\n${names}`);
-  if (p === null) return;
-  const proposer = mgrs[parseInt(p, 10) - 1];
-  if (!proposer) return alert('Invalid proposer');
-  const o = prompt(`Opponent number(s), comma-separated:\n${names}`);
-  if (o === null) return;
-  const opponents = String(o).split(',').map(x => mgrs[parseInt(x.trim(), 10) - 1]).filter(Boolean);
-  if (!opponents.length) return alert('Need at least one opponent');
-  const category = prompt('Category (e.g. Captain Clutch or custom):', 'Highest GW points');
-  if (!category) return;
-  const stake = prompt('Stake ₦ each (record only — no wallet move):', '5000');
-  try {
-    const res = await fetchJSON('/api/admin/reconstruct-beef', {
-      method: 'POST',
-      body: JSON.stringify({
-        proposerId: proposer.id,
-        opponentIds: opponents.map(m => m.id),
-        category: category.trim(),
-        stake: Number(stake) || 0,
-        status: 'accepted'
-      })
-    });
-    alert(res.message || 'Beef restored.');
-    if (typeof loadAllData === 'function') loadAllData();
-  } catch (e) {
-    alert(e.message || 'Failed');
-  }
+  const mgrs = await loadAllManagersForAdmin();
+  if (mgrs.length < 2) return alert('Need at least two managers.');
+  const catOpts = (typeof BEEF_PRESETS !== 'undefined' ? BEEF_PRESETS : [])
+    .map(c => `<option value="${escPred(c.id)}">${escPred(c.name)}</option>`).join('') +
+    `<option value="custom">Custom category…</option>`;
+  const modal = openAdminSheet(`
+    <div style="font-weight:bold;font-size:15px;margin-bottom:4px;color:#00ff85;">Rebuild a beef</div>
+    <div style="font-size:11px;color:#888;margin-bottom:10px;">${mgrs.length} managers. Pick proposer and opponent from the lists. Save keeps this form open so you can add another.</div>
+    <label style="font-size:11px;color:#aaa;">Proposer</label>
+    <div style="margin:4px 0 10px;">${managerSelectHtml('beef-proposer', mgrs, '-- proposer --')}</div>
+    <label style="font-size:11px;color:#aaa;">Opponent</label>
+    <div style="margin:4px 0 10px;">${managerSelectHtml('beef-opponent', mgrs, '-- opponent --')}</div>
+    <label style="font-size:11px;color:#aaa;">Category</label>
+    <select id="beef-cat" style="width:100%;font-size:13px;background:#f8f8f8;color:#111;border:1px solid #555;padding:6px 8px;border-radius:6px;margin:4px 0 8px;">${catOpts}</select>
+    <input id="beef-cat-custom" placeholder="Custom category" style="display:none;width:100%;background:#111;border:1px solid #444;color:#fff;padding:8px;border-radius:6px;margin-bottom:8px;">
+    <label style="font-size:11px;color:#aaa;">Stake ₦ (record only — no wallet move)</label>
+    <input id="beef-stake" type="number" value="5000" style="width:100%;background:#111;border:1px solid #444;color:#fff;padding:8px;border-radius:6px;margin:4px 0 10px;">
+    <label style="font-size:11px;color:#aaa;">Status</label>
+    <select id="beef-status" style="width:100%;font-size:13px;background:#f8f8f8;color:#111;border:1px solid #555;padding:6px 8px;border-radius:6px;margin:4px 0 12px;">
+      <option value="accepted" selected>Accepted (active)</option>
+      <option value="proposed">Proposed</option>
+    </select>
+    <button id="beef-save" style="background:#00ff85;color:#111;padding:8px 14px;border-radius:6px;font-weight:700;margin-right:8px;">SAVE BEEF</button>
+    <button id="beef-close" style="padding:8px 14px;border-radius:6px;border:1px solid #444;">CLOSE</button>
+    <div id="beef-status-msg" style="margin-top:8px;font-size:12px;color:#00ff85;"></div>
+  `);
+  const catSel = modal.querySelector('#beef-cat');
+  const catCustom = modal.querySelector('#beef-cat-custom');
+  catSel.onchange = () => { catCustom.style.display = catSel.value === 'custom' ? 'block' : 'none'; };
+  modal.querySelector('#beef-close').onclick = () => document.body.removeChild(modal);
+  modal.querySelector('#beef-save').onclick = async () => {
+    const proposerId = modal.querySelector('#beef-proposer').value;
+    const opponentId = modal.querySelector('#beef-opponent').value;
+    if (!proposerId || !opponentId) return alert('Pick proposer and opponent');
+    if (proposerId === opponentId) return alert('Pick two different managers');
+    let category = catSel.value;
+    if (category === 'custom') category = catCustom.value.trim();
+    if (!category) return alert('Pick a category');
+    const preset = (typeof BEEF_PRESETS !== 'undefined' ? BEEF_PRESETS : []).find(c => c.id === category);
+    const catName = preset ? preset.name : category;
+    try {
+      const res = await fetchJSON('/api/admin/reconstruct-beef', {
+        method: 'POST',
+        body: JSON.stringify({
+          proposerId,
+          opponentIds: [opponentId],
+          category: catName,
+          stake: Number(modal.querySelector('#beef-stake').value) || 0,
+          status: modal.querySelector('#beef-status').value
+        })
+      });
+      modal.querySelector('#beef-status-msg').textContent = (res.message || 'Saved.') + ' Add another if needed.';
+      modal.querySelector('#beef-opponent').value = '';
+    } catch (e) { alert(e.message || 'Failed'); }
+  };
 }
 
 async function adminSettlePrediction(id) {
@@ -4750,11 +4836,12 @@ async function settleBeefWithSelected(beefId, selectElId) {
 }
 
 async function adminManageH2HFixtures() {
-  if (!standingsData || !standingsData.fpl || !standingsData.fpl.length) {
-    alert('Load FPL data first (refresh admin or switch to FPL)');
+  let dleague = await loadAllManagersForAdmin();
+  if (!dleague.length && standingsData && standingsData.fpl) dleague = standingsData.fpl;
+  if (!dleague.length) {
+    alert('Load managers first (refresh admin).');
     return;
   }
-  const dleague = standingsData.fpl;
   let gw = parseInt(prompt('H2H FIXTURES: Enter the GW number to set matchups for (2-38, GW1 concluded):', '2'));
   if (!gw || gw < 2 || gw > 38) return;
 

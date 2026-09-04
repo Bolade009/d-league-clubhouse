@@ -364,7 +364,13 @@ function unionFromBackup(primary, extra) {
 function autoHealIfWiped(s) {
   if (!s) s = createEmptyStore();
   const curN = (s.managers || []).length;
-  // Healthy live set — do not touch disk on every API call (was the login stall).
+  // Use in-memory best cache only (no disk scan). If backup has many more managers, merge them in.
+  const cachedBest = bestBackupCache && bestBackupCache.data;
+  const cachedN = (cachedBest && cachedBest.managers || []).length;
+  if (cachedN > curN + 1) {
+    console.warn(`[store] AUTO-HEAL from cached best: ${curN} -> merge ${cachedN}`);
+    return unionFromBackup(s, cachedBest);
+  }
   if (curN >= 2) return s;
   const side = readSidecarData();
   const best = findBestBackupData();
@@ -4754,6 +4760,36 @@ app.post("/api/admin/prediction/:id/vote-for", async (req, res) => {
   await persistStore();
   await logEvent("prediction_admin_vote", { id: pred.id, managerId });
   res.json({ ok: true, prediction: pred, message: `Recorded prediction for ${who.displayName}.` });
+});
+
+app.post("/api/admin/prediction/:id/votes-bulk", async (req, res) => {
+  if (!isAdminRequest(req)) return res.status(401).json({ error: "Unauthorized" });
+  const votes = Array.isArray((req.body || {}).votes) ? req.body.votes : [];
+  const s = await loadStore();
+  const pred = getPredictionsList(s).find(p => p.id === req.params.id);
+  if (!pred) return res.status(404).json({ error: "Prediction not found" });
+  if (pred.status === "settled") return res.status(400).json({ error: "Already settled" });
+  pred.votes = pred.votes || [];
+  let n = 0;
+  votes.forEach(v => {
+    const managerId = v && v.managerId;
+    const text = String((v && v.text) || '').trim();
+    if (!managerId || !text) return;
+    const who = (s.managers || []).find(m => m.id === managerId);
+    if (!who) return;
+    const existing = pred.votes.find(x => x.managerId === managerId);
+    if (existing) {
+      existing.text = text;
+      existing.at = nowISO();
+      existing.enteredByAdmin = true;
+    } else {
+      pred.votes.push({ managerId, displayName: who.displayName, text, at: nowISO(), enteredByAdmin: true });
+    }
+    n++;
+  });
+  await persistStore();
+  await logEvent("prediction_admin_votes_bulk", { id: pred.id, count: n });
+  res.json({ ok: true, prediction: pred, message: `Saved ${n} prediction(s).` });
 });
 
 app.post("/api/admin/reconstruct-beef", async (req, res) => {
