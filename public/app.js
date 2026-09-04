@@ -4617,24 +4617,28 @@ function showBeefModal() {
         ${catOptions}
       </select>
       <input id="beef-stake" type="number" value="5000" class="w-full p-1 bg-[#111] border border-[#333] mb-1 text-sm">
-      <button id="beef-submit" class="w-full py-1 bg-[#00ff85] text-[#111] rounded text-sm mt-1">PROPOSE (deduct from wallet if balance; Paystack on accept)</button>
+      <div class="text-xs text-[#aaa] mt-1 mb-1">Wallet: ₦${Number(currentManager.wallet || 0).toLocaleString()} — you choose how to pay the stake.</div>
+      <button id="beef-submit-wallet" class="w-full py-2 bg-[#00ff85] text-[#111] font-bold rounded text-sm mt-1">PROPOSE — PAY STAKE FROM WALLET</button>
+      <button id="beef-submit-paystack" class="w-full py-2 bg-[#222] border border-[#00ff85] text-[#00ff85] font-bold rounded text-sm mt-2">PROPOSE — PAY WITH PAYSTACK</button>
       <div class="text-[10px] mt-1">Select one or more paid FPL managers. Stake per person. 10% house cut (50/30/20 split); 90% to winner. <strong>Joins close before FPL GW deadline (admin can lock early).</strong></div>
     </div>
   `;
   modal.classList.remove('hidden');
   modal.classList.add('flex');
-  document.getElementById('beef-submit').onclick = async () => {
+  const submitBeef = async (useWallet) => {
     const oppSel = document.getElementById('beef-opp');
     const selectedIds = Array.from(oppSel.selectedOptions).map(o => o.value);
     const catId = document.getElementById('beef-cat').value;
     const stake = parseInt(document.getElementById('beef-stake').value) || 5000;
     if (selectedIds.length === 0) return alert('Select opponents');
-    closeModal();
     const total = stake * selectedIds.length;
-    const paid = tryPayWithWallet(total, 'beef stakes');
+    if (useWallet && Number(currentManager.wallet || 0) < total) {
+      return alert(`Wallet ₦${Number(currentManager.wallet || 0).toLocaleString()} is less than ₦${total.toLocaleString()}. Use Paystack or add funds.`);
+    }
+    closeModal();
+    const paid = !!useWallet;
     let mainBeefId = null;
     try {
-      // Send as one group beef so all are equal
       const resp = await fetchJSON('/api/beef/propose', {
         method: 'POST',
         body: JSON.stringify({ opponentIds: selectedIds, category: catId, stake, paidFromWallet: paid, joinDeadline: (standingsData && standingsData.currentRound && standingsData.currentRound.fpl) || null })
@@ -4663,6 +4667,8 @@ function showBeefModal() {
     const waText = `D League Beef Challenge!\n\n${currentManager.displayName} challenges ${selectedIds.map(id => paidFpl.find(m=>m.id===id)?.displayName || '').join(', ')} to "${catName}" for ₦${stake} each.\n\nTap here to Accept or Decline: ${deepLink}`;
     showWhatsAppShare(waText, 'Share this beef - direct link included');
   };
+  document.getElementById('beef-submit-wallet').onclick = () => submitBeef(true);
+  document.getElementById('beef-submit-paystack').onclick = () => submitBeef(false);
 }
 
 // Show pending beefs banner for awareness (in-app notification, no config needed)
@@ -5132,11 +5138,47 @@ async function adminLockBeef(beefId) {
 
 async function payBeefStake(beefId, stake) {
   if (!beefId || !stake || !currentManager) return alert('Cannot pay stake');
-  try {
-    await initiatePayment(null, null, { beefId, amount: Number(stake) });
-  } catch (e) {
-    alert('Failed to start beef stake payment: ' + (e.message || e));
+  const amt = Number(stake);
+  const bal = Number(currentManager.wallet || 0);
+  const modal = $('modal');
+  const c = $('modal-content');
+  c.innerHTML = `
+    <div>
+      <div class="font-semibold mb-2">Pay beef stake ₦${amt.toLocaleString()}</div>
+      <div class="text-xs text-[#aaa] mb-3">Wallet balance: ₦${bal.toLocaleString()}. Choose how to pay — wallet is never taken unless you pick it.</div>
+      <button id="beef-pay-wallet" class="w-full py-2 bg-[#00ff85] text-black font-bold rounded-2xl text-sm mb-2">PAY FROM WALLET</button>
+      <button id="beef-pay-paystack" class="w-full py-2 bg-[#222] border border-[#00ff85] text-[#00ff85] font-bold rounded-2xl text-sm">PAY WITH PAYSTACK</button>
+      <button onclick="closeModal()" class="w-full py-2 mt-2 border border-[#333] rounded-2xl text-sm">CANCEL</button>
+    </div>
+  `;
+  modal.classList.remove('hidden');
+  modal.classList.add('flex');
+  const wBtn = document.getElementById('beef-pay-wallet');
+  if (bal < amt) {
+    wBtn.disabled = true;
+    wBtn.className = 'w-full py-2 bg-[#333] text-[#888] font-bold rounded-2xl text-sm mb-2';
+    wBtn.textContent = 'WALLET TOO LOW';
+  } else {
+    wBtn.onclick = async () => {
+      try {
+        const res = await fetchJSON('/api/beef/pay-stake', { method: 'POST', body: JSON.stringify({ beefId }) });
+        closeModal();
+        if (typeof currentManager.wallet === 'number' && typeof res.wallet === 'number') currentManager.wallet = res.wallet;
+        alert(res.message || 'Paid from wallet.');
+        if (typeof loadAllData === 'function') loadAllData();
+      } catch (e) {
+        alert(e.message || 'Wallet pay failed');
+      }
+    };
   }
+  document.getElementById('beef-pay-paystack').onclick = async () => {
+    closeModal();
+    try {
+      await initiatePayment(null, null, { beefId, amount: amt });
+    } catch (e) {
+      alert('Failed to start Paystack: ' + (e.message || e));
+    }
+  };
 }
 
 async function markManagerPaid() {

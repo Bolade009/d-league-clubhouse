@@ -5201,6 +5201,75 @@ app.post("/api/beef/propose", async (req, res) => {
   res.json({ ok: true, beef });
 });
 
+app.post("/api/beef/pay-stake", async (req, res) => {
+  const mgr = getAuthenticatedManager(req);
+  if (!mgr) return res.status(401).json({ error: "Login required" });
+  const { beefId } = req.body || {};
+  if (!beefId) return res.status(400).json({ error: "beefId required" });
+  const s = await loadStore();
+  const beef = (s.beefs || []).find(b => b.id === beefId);
+  if (!beef) return res.status(404).json({ error: "Beef not found" });
+  if (beef.locked) return res.status(400).json({ error: "Beef is locked" });
+  const parts = beef.participants || [beef.proposerId, ...(beef.opponentIds || [])];
+  if (!parts.includes(mgr.id)) return res.status(403).json({ error: "Not a participant" });
+  beef.paidBy = beef.paidBy || {};
+  if (beef.paidBy[mgr.id]) {
+    return res.json({ ok: true, alreadyPaid: true, message: "Stake already paid." });
+  }
+  const paidAmt = Number(beef.stake) || 0;
+  if (paidAmt <= 0) return res.status(400).json({ error: "Invalid stake" });
+  const balance = getWalletBalance(mgr.id);
+  if (balance < paidAmt) {
+    return res.status(400).json({ error: `Wallet ₦${balance.toLocaleString()} is less than stake ₦${paidAmt.toLocaleString()}` });
+  }
+  const ref = `WALLET-BEEF-${Date.now()}-${mgr.id.slice(-6)}`;
+  s.ledger.push({
+    id: generateId("ldg"),
+    type: "beef_stake_wallet",
+    managerId: mgr.id,
+    amount: -paidAmt,
+    note: `Beef stake from wallet for "${beef.category}"`,
+    at: nowISO()
+  });
+  s.payments.push({
+    id: generateId("pay"),
+    managerId: mgr.id,
+    type: "beef_stake",
+    beefId: beef.id,
+    amount: paidAmt,
+    reference: ref,
+    status: "confirmed",
+    confirmedAt: nowISO(),
+    paystackData: { wallet: true }
+  });
+  beef.paidBy[mgr.id] = { amount: paidAmt, ref, paidAt: nowISO() };
+  beef.stakePaid = true;
+  beef.stakePaymentRef = ref;
+  beef.totalStaked = (beef.totalStaked || 0) + paidAmt;
+  const cut = Math.floor(paidAmt * 0.1);
+  const first = Math.floor(cut * 0.5);
+  const second = Math.floor(cut * 0.3);
+  const house = cut - first - second;
+  s.settings.firstRunnerUpPot = (s.settings.firstRunnerUpPot || 0) + first;
+  s.settings.secondRunnerUpPot = (s.settings.secondRunnerUpPot || 0) + second;
+  s.settings.houseFplAdmin = (s.settings.houseFplAdmin || 0) + house;
+  s.ledger.push({
+    id: generateId("ldg"),
+    type: "runner_up_fund",
+    managerId: "system",
+    amount: -cut,
+    note: `House cut 50/30/20 from beef stake (wallet) for "${beef.category}"`,
+    at: nowISO()
+  });
+  beef.prizePot = (beef.prizePot || 0) + (paidAmt - cut);
+  writeAtomicCollection('beefs', s.beefs);
+  writeAtomicCollection('ledger', s.ledger);
+  writeAtomicCollection('payments', s.payments);
+  writeAtomicCollection('settings', s.settings);
+  await persistStore();
+  res.json({ ok: true, message: `₦${paidAmt.toLocaleString()} paid from wallet.`, wallet: getWalletBalance(mgr.id) });
+});
+
 app.post("/api/beef/accept", async (req, res) => {
   const mgr = getAuthenticatedManager(req);
   if (!mgr) return res.status(401).json({ error: "Login required" });
