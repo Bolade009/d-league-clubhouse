@@ -4857,7 +4857,6 @@ app.post("/api/admin/prediction/:id/unlock", async (req, res) => {
 app.post("/api/admin/prediction/:id/settle", async (req, res) => {
   if (!isAdminRequest(req)) return res.status(401).json({ error: "Unauthorized" });
   const winnerIds = Array.isArray((req.body || {}).winnerIds) ? (req.body || {}).winnerIds.filter(Boolean) : [];
-  if (!winnerIds.length) return res.status(400).json({ error: "Pick at least one winner" });
   const s = await loadStore();
   const pred = getPredictionsList(s).find(p => p.id === req.params.id);
   if (!pred) return res.status(404).json({ error: "Prediction not found" });
@@ -4865,7 +4864,7 @@ app.post("/api/admin/prediction/:id/settle", async (req, res) => {
   const unique = [...new Set(winnerIds)];
   const pot = Math.max(0, Math.floor(Number(pred.prize) || 0));
   const share = unique.length ? Math.floor(pot / unique.length) : 0;
-  let remainder = pot - share * unique.length;
+  let remainder = unique.length ? pot - share * unique.length : 0;
   pred.winners = [];
   unique.forEach((id, i) => {
     const amt = share + (i === 0 ? remainder : 0);
@@ -4886,9 +4885,13 @@ app.post("/api/admin/prediction/:id/settle", async (req, res) => {
   });
   pred.status = "settled";
   pred.settledAt = nowISO();
+  pred.noWinner = unique.length === 0;
   await persistStore();
-  await logEvent("prediction_settled", { id: pred.id, winners: unique, pot });
-  res.json({ ok: true, prediction: pred, message: `Settled. ₦${pot} split among ${unique.length} winner(s).` });
+  await logEvent("prediction_settled", { id: pred.id, winners: unique, pot, noWinner: unique.length === 0 });
+  const msg = unique.length
+    ? `Settled. ₦${pot} split among ${unique.length} winner(s).`
+    : `Settled with no winner. Prize not paid out.`;
+  res.json({ ok: true, prediction: pred, message: msg });
 });
 
 // Manager requests payout from wallet to their bank (Paystack transfer)

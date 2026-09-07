@@ -1892,7 +1892,7 @@ function renderPredictionWeek() {
   }).join('') || `<div class="text-xs text-[#666]">No predictions in yet.</div>`;
   const winnersLine = settled && pred.winners && pred.winners.length
     ? `<div class="mt-2 text-sm text-[#00ff85]">Winners: ${pred.winners.map(w => `${escPred(w.displayName)} (₦${(w.amount||0).toLocaleString()})`).join(' · ')}</div>`
-    : '';
+    : (settled ? `<div class="mt-2 text-sm text-[#888]">Settled — no winner. Prize not paid out.</div>` : '');
   el.innerHTML = `
     <div class="p-5 bg-[#0a1a12] border-2 border-[#00ff85] rounded-3xl">
       <div class="flex flex-wrap items-baseline justify-between gap-2">
@@ -1920,7 +1920,7 @@ function renderPredictionWeek() {
           <button onclick="adminSetPrediction()" class="px-3 py-1 bg-[#222] rounded-xl text-xs">EDIT TITLE / PRIZE</button>
           ${open ? `<button onclick="adminLockPrediction('${escPred(pred.id)}', true)" class="px-3 py-1 bg-[#ffaa00] text-black font-bold rounded-xl text-xs">LOCK ENTRIES</button>` : ''}
           ${locked ? `<button onclick="adminLockPrediction('${escPred(pred.id)}', false)" class="px-3 py-1 bg-[#222] rounded-xl text-xs">REOPEN</button>` : ''}
-          ${locked && !settled ? `<button onclick="adminSettlePrediction('${escPred(pred.id)}')" class="px-3 py-1 bg-[#00ff85] text-black font-bold rounded-xl text-xs">SETTLE — SPLIT AMONG TICKED</button>` : ''}
+          ${locked && !settled ? `<button onclick="adminSettlePrediction('${escPred(pred.id)}')" class="px-3 py-1 bg-[#00ff85] text-black font-bold rounded-xl text-xs">SETTLE (ticked winners, or none)</button>` : ''}
         </div>
       ` : ''}
     </div>
@@ -2307,8 +2307,10 @@ async function adminReconstructBeef() {
 
 async function adminSettlePrediction(id) {
   const boxes = Array.from(document.querySelectorAll('.pred-win-cb:checked')).map(b => b.value);
-  if (!boxes.length) return alert('Tick the correct manager(s) first. Prize splits equally.');
-  if (!confirm(`Split the prize among ${boxes.length} winner(s)?`)) return;
+  const ok = boxes.length
+    ? confirm(`Split the prize among ${boxes.length} winner(s)?`)
+    : confirm('Settle with NO winner? Prize will not be paid to anyone. The week will close.');
+  if (!ok) return;
   try {
     const res = await fetchJSON(`/api/admin/prediction/${id}/settle`, {
       method: 'POST',
