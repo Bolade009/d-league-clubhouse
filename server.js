@@ -143,10 +143,18 @@ const COMPETITIONS = {
     name: "UCL Fantasy",
     roundLabel: "MD",
     rounds: 17,
+    // Closed ₦15,000 — house never tops up.
+    //   House                         ₦2,500
+    //   MD contrib ₦600 × 17         ₦10,200  (90% = ₦9,180 to MD winners)
+    //   2nd ₦600 + 3rd ₦400          ₦1,000  (the MD 10% reserve, NOT extra)
+    //   Season winner (residual)     ₦2,320  (₦2,300 leftover + ₦20 crumbs)
+    //   2,500+10,200+1,000+2,500 was ₦16,200 and would have required house to subsidise.
     seasonFee: 15000,
-    contributionPerRound: 600,  // ~10,200 total for weekly/matchday pots over 17 MDs
+    contributionPerRound: 600,
     extraReserve: 0,
-    adminFee: 2500,  // house fee for UCL (consistent with revenue tracking)
+    adminFee: 2500,
+    secondPlacePerManager: 600,
+    thirdPlacePerManager: 400,
     reserveSplit: [
       { label: "League Phase", pct: 70 },
       { label: "Knockout Phase", pct: 30 }
@@ -1538,25 +1546,58 @@ async function confirmPayment(managerId, competition, reference, amount, paystac
   return payment;
 }
 
+function countPaidManagersInStore(s, competition) {
+  const paidIds = new Set(
+    (s.payments || [])
+      .filter(p => p && p.competition === competition && p.status === 'confirmed' && p.managerId)
+      .map(p => p.managerId)
+  );
+  return (s.managers || []).filter(m => m && paidIds.has(m.id)).length;
+}
+
+// Closed UCL books: prizes over the season + house = n × ₦15,000. 2nd/3rd are the MD 10%, not extra.
+function deriveUclClosedPots(n, extraPrizeRevenue) {
+  n = Math.max(0, Math.floor(Number(n) || 0));
+  extraPrizeRevenue = Math.max(0, Math.floor(Number(extraPrizeRevenue) || 0));
+  const ucl = COMPETITIONS.ucl;
+  const rounds = ucl.rounds || 17;
+  const mdContrib = ucl.contributionPerRound || 600;
+  const feePer = ucl.seasonFee || 15000;
+  const housePer = ucl.adminFee || 2500;
+  const prize = n * Math.max(0, feePer - housePer) + extraPrizeRevenue;
+  const mdWeek = Math.floor(n * mdContrib * 0.9);
+  const mdSeason = mdWeek * rounds;
+  const second = n * (ucl.secondPlacePerManager || 600);
+  const third = n * (ucl.thirdPlacePerManager || 400);
+  const first = Math.max(0, prize - mdSeason - second - third);
+  return {
+    n,
+    house: n * housePer,
+    prize,
+    mdWeek,
+    mdSeason,
+    first,
+    second,
+    third
+  };
+}
+
 function updateSeasonPots(s) {
   if (!s || !s.settings) return;
-  const uclRev = s.settings.totalUclRevenue || 0;
   // fplOverallPot / fplCupPot are populated EXCLUSIVELY via settleWeeklyPot's 10% weekly reserve (75%/25%).
-  // UCL overall = 20% of paid revenue. 2nd/3rd = 600/400 per currently paid UCL manager.
-  // Derive every load (same as overall) so pots show immediately after pay — not only after MD settle.
   // Stop deriving once end-of-season awards have been written (pots stay at settled/zero).
   const uclSeasonAwarded = (s.ledger || []).some(l => l.type === 'ucl_season_win');
-  if (!uclSeasonAwarded) {
-    s.settings.uclOverallPot = Math.floor(0.2 * uclRev);
-    const paidIds = new Set(
-      (s.payments || [])
-        .filter(p => p && p.competition === 'ucl' && p.status === 'confirmed' && p.managerId)
-        .map(p => p.managerId)
-    );
-    const n = (s.managers || []).filter(m => m && paidIds.has(m.id)).length;
-    s.settings.uclSecondPlacePot = n * 600;
-    s.settings.uclThirdPlacePot = n * 400;
-  }
+  if (uclSeasonAwarded) return;
+
+  const n = countPaidManagersInStore(s, 'ucl');
+  const ucl = COMPETITIONS.ucl;
+  const derivedPrize = n * Math.max(0, (ucl.seasonFee || 0) - (ucl.adminFee || 0));
+  // Only real surplus above n × ₦12,500 prize revenue can raise the season winner. Never invent house money.
+  const extra = Math.max(0, (s.settings.totalUclRevenue || 0) - derivedPrize);
+  const pots = deriveUclClosedPots(n, extra);
+  s.settings.uclOverallPot = pots.first;
+  s.settings.uclSecondPlacePot = pots.second;
+  s.settings.uclThirdPlacePot = pots.third;
 }
 
 function calculateRoundPot(compKey, round, paidCount) {
@@ -2784,7 +2825,10 @@ async function getProjectedPayouts() {
   const uclPaid = getEligibleManagers("ucl").length;
 
   const fplPotPerWeekBase = fplPaid * COMPETITIONS.fpl.contributionPerRound * 0.9;
-  const uclPotPerMD = uclPaid * COMPETITIONS.ucl.contributionPerRound * 0.9;
+  const uclDerivedPrize = uclPaid * Math.max(0, (COMPETITIONS.ucl.seasonFee || 0) - (COMPETITIONS.ucl.adminFee || 0));
+  const uclExtra = Math.max(0, (s.settings.totalUclRevenue || 0) - uclDerivedPrize);
+  const uclPots = deriveUclClosedPots(uclPaid, uclExtra);
+  const uclPotPerMD = uclPots.mdWeek;
 
   // Voluntary manager boosts (add 100% to chosen pot)
   const potBoosts = s.potBoosts || [];
@@ -2810,7 +2854,6 @@ async function getProjectedPayouts() {
   const uclStats = uclStatsCache || { matches: [] };
   const upcomingMatches = (uclStats.matches || []).filter(m => m.status === 'SCHEDULED' || m.status === 'TIMED');
   const upcomingUCLMatches = upcomingMatches.length;
-  const uclFormBoost = Math.min(upcomingUCLMatches * 0.5, 5);
 
   const overallFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.75) + voluntaryOverall + (fplPaid * extraToOverall);
   const cupFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.25) + voluntaryCup + (fplPaid * extraToCup);
@@ -2821,9 +2864,9 @@ async function getProjectedPayouts() {
 
   const h2hTotal = h2hFromExtra + voluntaryH2H;
 
-  const uclOverall = s.settings.uclOverallPot || 0;
-  const uclSecond = s.settings.uclSecondPlacePot || 0;
-  const uclThird = s.settings.uclThirdPlacePot || 0;
+  const uclOverall = uclPots.first;
+  const uclSecond = uclPots.second;
+  const uclThird = uclPots.third;
 
   return {
     fpl: {
@@ -2835,7 +2878,8 @@ async function getProjectedPayouts() {
       secondRunnerUpPot: secondRunnerUpPot
     },
     ucl: {
-      mdPot90: Math.floor(uclPotPerMD + uclFormBoost * 100),
+      mdPot90: Math.floor(uclPotPerMD),
+      paidManagers: uclPaid,
       phaseReserve: 0,
       upcomingMatches: upcomingUCLMatches,
       lastStatsUpdate: uclStats.lastUpdated || null,

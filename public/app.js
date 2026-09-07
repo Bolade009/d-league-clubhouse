@@ -3356,11 +3356,14 @@ async function loadAndRenderLineup(managerId, container) {
     simBtn.onclick = () => simulateNextGW(data, recent, container);
     container.appendChild(simBtn);
 
-    // Bragging rights: Winning card
+    // Bragging rights: actual GW/MD league winner for the mode the manager is in (FPL vs UCL)
     const bragBtn = document.createElement('button');
     bragBtn.className = 'mt-2 ml-2 px-3 py-1 text-xs bg-[#ffaa00] text-black rounded';
-    bragBtn.textContent = '🏆 Generate Winning Card to Share';
-    bragBtn.onclick = () => generateWinningCard(data, recent);
+    const cardMode = currentLeagueMode === 'ucl' ? 'ucl' : 'fpl';
+    bragBtn.textContent = cardMode === 'ucl'
+      ? '🏆 Generate MD Winning Card to Share'
+      : '🏆 Generate GW Winning Card to Share';
+    bragBtn.onclick = () => generateWinningCard(cardMode);
     container.appendChild(bragBtn);
   } catch (e) {
     container.innerHTML = `<div class="text-center text-red-400 text-xs py-4">Could not load lineup. Sync scores first.</div>`;
@@ -3416,57 +3419,169 @@ function simulateNextGW(managerData, recent, container) {
   container.appendChild(waBtn);
 }
 
-function generateWinningCard(managerData, recent) {
-  const pts = recent.points || '?';
-  const gw = recent.round || '?';
-  const text = `🏆 D LEAGUE WINNER GW${gw}!\n\n${managerData.displayName} scored ${pts} pts.\n\nBragging rights! Join at d-league-clubhouse\n#DLeague #FPL`;
-  const cardText = `D LEAGUE\nGW${gw} CHAMP\n\n${managerData.displayName}\n${pts} PTS\n\n🔥 Bragging Card`;
+function clubNameForCard(m, isUcl) {
+  if (!m) return '';
+  if (isUcl) {
+    return m.uclClubName || (m.uclTeam && (m.uclTeam.teamName || m.uclTeam.name)) || m.fplClubName || '';
+  }
+  return m.fplClubName || (m.fplTeam && (m.fplTeam.teamName || m.fplTeam.name)) || '';
+}
 
-  // Canvas visual card (5-min extension for nice shareable image)
+function getLeagueRoundWinners(mode) {
+  const isUcl = mode === 'ucl';
+  const label = isUcl ? 'MD' : 'GW';
+  const data = window.standingsData || standingsData;
+  const round = (data && data.currentRound && data.currentRound[isUcl ? 'ucl' : 'fpl']) || 1;
+  const list = (data && (isUcl ? data.ucl : data.fpl)) || [];
+  const scoreKey = isUcl ? 'currentUcl' : 'currentFpl';
+  const byId = {};
+  ((data && data.all) || []).forEach(m => { if (m && m.id) byId[m.id] = m; });
+  list.forEach(m => { if (m && m.id) byId[m.id] = m; });
+
+  const mapHistWinner = (w, gw) => {
+    const m = byId[w.id] || byId[w.managerId] || {};
+    return {
+      id: w.id || w.managerId,
+      name: m.displayName || w.displayName || 'Winner',
+      team: clubNameForCard(m, isUcl),
+      points: w.points,
+      gw,
+      label
+    };
+  };
+
+  const weekly = ((data && data.history && data.history.weekly) || []).filter(h => h && h.comp === (isUcl ? 'ucl' : 'fpl'));
+  const histThisRound = weekly.filter(h => Number(h.round) === Number(round) && Array.isArray(h.winners) && h.winners.length);
+  if (histThisRound.length) {
+    const h = histThisRound[histThisRound.length - 1];
+    return { gw: h.round || round, label, winners: h.winners.map(w => mapHistWinner(w, h.round || round)), settled: true, mode: isUcl ? 'ucl' : 'fpl' };
+  }
+
+  const scored = list.filter(m => m && m[scoreKey] != null && isFinite(Number(m[scoreKey])));
+  if (scored.length) {
+    const max = Math.max(...scored.map(m => Number(m[scoreKey]) || 0));
+    if (max > 0) {
+      const winners = scored.filter(m => Number(m[scoreKey]) === max).map(m => ({
+        id: m.id,
+        name: m.displayName || 'Winner',
+        team: clubNameForCard(m, isUcl),
+        points: Number(m[scoreKey]),
+        gw: round,
+        label
+      }));
+      return { gw: round, label, winners, settled: false, mode: isUcl ? 'ucl' : 'fpl' };
+    }
+  }
+
+  const histLatest = weekly.filter(h => Array.isArray(h.winners) && h.winners.length).sort((a, b) => (b.round || 0) - (a.round || 0))[0];
+  if (histLatest) {
+    return { gw: histLatest.round || round, label, winners: histLatest.winners.map(w => mapHistWinner(w, histLatest.round || round)), settled: true, mode: isUcl ? 'ucl' : 'fpl' };
+  }
+
+  return { gw: round, label, winners: [], settled: false, mode: isUcl ? 'ucl' : 'fpl' };
+}
+
+function fitCardText(ctx, text, maxWidth, fontSpec) {
+  ctx.font = fontSpec;
+  const str = String(text || '');
+  if (ctx.measureText(str).width <= maxWidth) return str;
+  let s = str;
+  while (s.length > 1 && ctx.measureText(s + '…').width > maxWidth) s = s.slice(0, -1);
+  return s + '…';
+}
+
+async function generateWinningCard(mode) {
+  const cardMode = (mode === 'ucl' || mode === 'fpl')
+    ? mode
+    : (currentLeagueMode === 'ucl' ? 'ucl' : 'fpl');
+  if (!standingsData) {
+    try { standingsData = await fetchJSON('/api/standings'); } catch (e) {}
+  }
+  const result = getLeagueRoundWinners(cardMode);
+  const isUcl = result.mode === 'ucl';
+  const compName = isUcl ? 'UCL' : 'FPL';
+  const roundTag = `${result.label}${result.gw}`;
+
+  if (!result.winners.length) {
+    alert(`No ${compName} ${result.label} scores yet — nothing to share as a winner.`);
+    return;
+  }
+
+  const tied = result.winners.length > 1;
+  const titleLine = tied ? `${roundTag} WINNERS (TIE)` : `${roundTag} WINNER`;
+  const status = result.settled ? 'Official winner' : 'Current leader';
+  const lines = result.winners.map(w => {
+    const team = w.team ? ` (${w.team})` : '';
+    return `${w.name}${team} — ${w.points} pts`;
+  });
+  const text = `🏆 D LEAGUE ${compName} ${titleLine}!\n\n${lines.join('\n')}\n\n${status}. Join at d-league-clubhouse\n#DLeague #${compName}`;
+  const cardText = `D LEAGUE ${compName}\n${titleLine}\n\n${lines.join('\n')}`;
+
+  const extra = Math.max(0, result.winners.length - 1) * 80;
   const canvas = document.createElement('canvas');
-  canvas.width = 400;
-  canvas.height = 220;
+  canvas.width = 420;
+  canvas.height = 230 + extra;
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#0a0a0a';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle = '#00ff85';
+  ctx.strokeStyle = isUcl ? '#4da3ff' : '#00ff85';
   ctx.lineWidth = 4;
   ctx.strokeRect(10, 10, canvas.width - 20, canvas.height - 20);
 
   ctx.fillStyle = '#ffaa00';
-  ctx.font = 'bold 20px sans-serif';
-  ctx.fillText('D LEAGUE', 30, 50);
+  ctx.font = 'bold 18px sans-serif';
+  ctx.fillText('D LEAGUE', 28, 44);
+  ctx.fillStyle = isUcl ? '#4da3ff' : '#00ff85';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillText(compName, 150, 44);
+
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 16px sans-serif';
-  ctx.fillText(`GW${gw} WINNER`, 30, 80);
-  ctx.fillStyle = '#00ff85';
-  ctx.font = 'bold 28px sans-serif';
-  ctx.fillText(managerData.displayName, 30, 120);
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 36px sans-serif';
-  ctx.fillText(`${pts} PTS`, 30, 165);
-  ctx.fillStyle = '#ffaa00';
-  ctx.font = '14px sans-serif';
-  ctx.fillText('🔥 BRAGGING RIGHTS', 30, 195);
+  ctx.fillText(fitCardText(ctx, titleLine, 360, 'bold 16px sans-serif'), 28, 72);
 
-  // Show canvas + share options
+  let y = 112;
+  result.winners.forEach(w => {
+    ctx.fillStyle = '#00ff85';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.fillText(fitCardText(ctx, w.name, 360, 'bold 22px sans-serif'), 28, y);
+    y += 22;
+    ctx.fillStyle = '#aaa';
+    ctx.font = '13px sans-serif';
+    ctx.fillText(fitCardText(ctx, w.team || 'Team TBC', 360, '13px sans-serif'), 28, y);
+    y += 26;
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillText(`${w.points} PTS`, 28, y);
+    y += 28;
+  });
+
+  ctx.fillStyle = '#ffaa00';
+  ctx.font = '12px sans-serif';
+  ctx.fillText(result.settled ? 'Official result' : 'Live / current round', 28, canvas.height - 22);
+
   const modal = $('modal');
   const content = $('modal-content');
+  const fileSlug = `dleague-${compName.toLowerCase()}-${roundTag.toLowerCase()}-winner.png`;
   content.innerHTML = `
     <div class="text-center">
-      <div class="font-bold mb-2">🏆 Winning Card (canvas)</div>
+      <div class="font-bold mb-2">🏆 ${compName} ${titleLine}</div>
       <div id="card-canvas-wrap"></div>
-      <div class="mt-3 flex gap-2 justify-center">
-        <button onclick="downloadCanvas('${canvas.toDataURL()}', 'dleague-win-gw${gw}.png')" class="px-3 py-1 bg-[#00ff85] text-black rounded text-sm">Download PNG</button>
-        <button onclick="shareWinningCardWA('${encodeURIComponent(text)}', '${encodeURIComponent(cardText)}')" class="px-3 py-1 bg-[#25D366] text-white rounded text-sm">📲 Share on WA</button>
+      <div class="mt-3 flex gap-2 justify-center flex-wrap">
+        <button id="win-card-dl" class="px-3 py-1 bg-[#00ff85] text-black rounded text-sm">Download PNG</button>
+        <button id="win-card-wa" class="px-3 py-1 bg-[#25D366] text-white rounded text-sm">📲 Share on WA</button>
         <button onclick="closeModal()" class="px-3 py-1 border border-[#333] rounded text-sm">Close</button>
       </div>
-      <div class="text-xs mt-2 text-[#888]">Screenshot or download for brag. WA share uses text + link.</div>
+      <div class="text-xs mt-2 text-[#888]">${status} · ${compName} ${roundTag} · name + team. Screenshot or download to share.</div>
     </div>
   `;
   const wrap = content.querySelector('#card-canvas-wrap');
   canvas.style.border = '1px solid #333';
+  canvas.style.maxWidth = '100%';
   wrap.appendChild(canvas);
+  const dl = content.querySelector('#win-card-dl');
+  if (dl) dl.onclick = () => downloadCanvas(canvas.toDataURL('image/png'), fileSlug);
+  const wa = content.querySelector('#win-card-wa');
+  if (wa) wa.onclick = () => shareWinningCardWA(encodeURIComponent(text), encodeURIComponent(cardText));
   modal.classList.remove('hidden');
   modal.classList.add('flex');
 }
