@@ -4477,63 +4477,57 @@ function renderFplTailored() {
 }
 
 function renderGWWinLeaders() {
-  if (currentLeagueMode === 'ucl') {
-    // Blank for UCL (no MD winners yet); FPL winners only in FPL mode
-    const col = document.getElementById('gw-winners-col');
-    if (col) col.innerHTML = `<div class="text-xs text-[#888]">MD Winners roll appears here after UCL MD settles begin.</div>`;
-    return;
-  }
-  const container = $('fpl-tailored');
-  if (!container || !standingsData) return;
+  const isUcl = currentLeagueMode === 'ucl';
+  const container = isUcl ? $('ucl-tailored') : $('fpl-tailored');
+  let winnersCol = document.getElementById('gw-winners-col');
+  if (!standingsData) return;
 
-  // Remove old if exists
   const old = $('gw-winners-roll');
   if (old) old.remove();
-
-  // Always clear the dedicated col to prevent duplicate renders (was causing 6x repeat on multiple renderFpl calls)
-  let winnersCol = document.getElementById('gw-winners-col');
   if (winnersCol) winnersCol.innerHTML = '';
 
   const weekly = (standingsData.history && standingsData.history.weekly) || [];
-  // Global dedup by round in case of any legacy dup history entries (different winners would be caught at source now).
   const seenRound = new Set();
-  const fplWins = weekly.filter(w => {
-    if (w.comp !== 'fpl' || !w.winners || !w.winners.length) return false;
+  const wantComp = isUcl ? 'ucl' : 'fpl';
+  const wins = weekly.filter(w => {
+    const c = w.comp || w.competition;
+    if (c !== wantComp || !w.winners || !w.winners.length) return false;
     if (seenRound.has(w.round)) return false;
     seenRound.add(w.round);
     return true;
   });
 
-  if (!fplWins.length) {
-    // Don't show empty section early season
+  const roundLabel = isUcl ? 'MD' : 'GW';
+  if (!wins.length) {
+    if (winnersCol && isUcl) {
+      winnersCol.innerHTML = `<div class="text-xs text-[#888]">No MD winners yet. Finalize &amp; settle a matchday to fill this roll.</div>`;
+    }
     return;
   }
 
-  // Group by manager: only those with at least 1 win
   const managerWins = {};
-  fplWins.forEach(win => {
+  wins.forEach(win => {
     win.winners.forEach(w => {
-      if (!managerWins[w.id]) managerWins[w.id] = { id: w.id, rounds: [], name: null };
-      managerWins[w.id].rounds.push(win.round);
+      const id = w.id || w.managerId;
+      if (!id) return;
+      if (!managerWins[id]) managerWins[id] = { id, rounds: [], name: null };
+      managerWins[id].rounds.push(win.round);
     });
   });
 
-  // Resolve names from standings
-  const allMgrs = standingsData.all || standingsData.fpl || [];
+  const allMgrs = (isUcl ? (standingsData.ucl || standingsData.all) : (standingsData.all || standingsData.fpl)) || [];
   Object.keys(managerWins).forEach(id => {
     const m = allMgrs.find(x => x.id === id);
     managerWins[id].name = m ? m.displayName : 'Manager';
   });
 
-  // Dedup rounds (in case history had duplicate entries from repeated settles)
   Object.keys(managerWins).forEach(id => {
     managerWins[id].rounds = [...new Set(managerWins[id].rounds)];
   });
 
-  // Filter to only those with wins, sort by #wins desc then name
-  let winnersList = Object.values(managerWins)
+  const winnersList = Object.values(managerWins)
     .filter(m => m.rounds.length > 0)
-    .sort((a, b) => b.rounds.length - a.rounds.length || a.name.localeCompare(b.name));
+    .sort((a, b) => b.rounds.length - a.rounds.length || String(a.name).localeCompare(String(b.name)));
 
   if (!winnersList.length) return;
 
@@ -4543,15 +4537,15 @@ function renderGWWinLeaders() {
   section.innerHTML = `
     <div class="flex items-baseline justify-between mb-2">
       <div>
-        <div class="font-black text-lg tracking-[-0.5px]">GW WINNERS ROLL</div>
-        <div class="text-[9px] text-[#888]">Season champs (weekly pots)</div>
+        <div class="font-black text-lg tracking-[-0.5px]">${roundLabel} WINNERS ROLL</div>
+        <div class="text-[9px] text-[#888]">Season champs (${isUcl ? 'matchday' : 'weekly'} pots)</div>
       </div>
       <div class="text-xs px-2 py-0.5 bg-[#003322] text-[#00ff85] rounded font-mono">${winnersList.length} CHAMP${winnersList.length > 1 ? 'S' : ''}</div>
     </div>
     <div class="divide-y divide-[#222]">
       ${winnersList.map(mgr => {
         const gwBadges = mgr.rounds.sort((a,b)=>a-b).map(r => 
-          `<span class="inline-flex items-center justify-center min-w-[2.25rem] h-5 px-1 text-[10px] bg-[#0a2a1f] text-[#00ff85] rounded font-mono tracking-tighter border border-[#003322]">GW${r}</span>`
+          `<span class="inline-flex items-center justify-center min-w-[2.25rem] h-5 px-1 text-[10px] bg-[#0a2a1f] text-[#00ff85] rounded font-mono tracking-tighter border border-[#003322]">${roundLabel}${r}</span>`
         ).join('');
         return `
           <div class="flex items-center justify-between py-2 text-sm">
@@ -4564,11 +4558,9 @@ function renderGWWinLeaders() {
     </div>
   `;
 
-  // Share width by appending inside ledger col if present (as per request)
-  // (cleared at start of function to avoid duplicates from repeated renders)
   if (winnersCol) {
     winnersCol.appendChild(section);
-  } else {
+  } else if (container) {
     container.appendChild(section);
   }
 }
@@ -4702,6 +4694,7 @@ function renderUclTailored() {
 
   // Make sure lineup viewer can show UCL data
   if (typeof renderLineupViewer === 'function') setTimeout(renderLineupViewer, 100);
+  if (typeof renderGWWinLeaders === 'function') renderGWWinLeaders();
 }
 
 function showManagerSquadWithInsight(managerId) {
@@ -5471,9 +5464,7 @@ function switchLeague(mode) {
     renderUclTailored();
     // Re-render pots as UCL-only (current MD pot)
     if (typeof renderTopPotsAndActions === 'function') renderTopPotsAndActions();
-    // Clear FPL GW winners in UCL mode (blank until MD winners)
-    const gwCol = document.getElementById('gw-winners-col');
-    if (gwCol) gwCol.innerHTML = `<div class="text-xs text-[#888]">MD Winners roll appears here after UCL MD settles begin.</div>`;
+    if (typeof renderGWWinLeaders === 'function') renderGWWinLeaders();
     const lineupTitle = $('lineup-title');
     if (lineupTitle) lineupTitle.innerHTML = 'LINEUP VIEWER <span class="text-xs text-[#00ff85]">(UCL data when loaded from UCL list)</span>';
     if (typeof renderSpotlight === 'function') renderSpotlight();

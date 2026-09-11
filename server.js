@@ -1756,24 +1756,73 @@ async function settleWeeklyPot(comp, round) {
     }
   }
 
+  // History must be written BEFORE persist — previously it was appended after persistStore,
+  // so MD/GW winners rolls could stay empty even after a successful settle.
+  if (!alreadyWin) {
+    s.settings.history = s.settings.history || {weekly: [], awards: [], beefs: [], standings: []};
+    if (!Array.isArray(s.settings.history.weekly)) s.settings.history.weekly = [];
+    const histKey = `${comp}:${round}`;
+    const alreadyHist = s.settings.history.weekly.some(h => `${h.comp || h.competition || ''}:${h.round}` === histKey);
+    if (!alreadyHist) {
+      s.settings.history.weekly.push({
+        round,
+        comp,
+        winners: tiedWinners.map(w => ({id: w.managerId, points: w.points})),
+        pot: pot.winnerShare,
+        split: tiedWinners.length > 1,
+        at: nowISO()
+      });
+    }
+  }
+  backfillWeeklyHistoryFromLedger(s);
+
   writeAtomicSidecar(s);
+  writeAtomicCollection('settings', s.settings || {});
+  writeAtomicCollection('ledger', s.ledger || []);
   await persistStore();
   await logEvent("pot_settled", { comp, round, winners: tiedWinners.map(w => w.managerId), amount: pot.winnerShare });
 
-  // Store history ONLY on first win record (inside guard) to preserve roll integrity. No dup entries or conflicting winners for same round.
-  if (!alreadyWin) {
-    s.settings.history = s.settings.history || {weekly: [], awards: [], beefs: [], standings: []};
+  return pot.winnerShare;
+}
+
+function backfillWeeklyHistoryFromLedger(s) {
+  if (!s) return 0;
+  s.settings = s.settings || {};
+  s.settings.history = s.settings.history || { weekly: [], awards: [], beefs: [], standings: [] };
+  if (!Array.isArray(s.settings.history.weekly)) s.settings.history.weekly = [];
+  const have = new Set(
+    s.settings.history.weekly.map(h => `${h.comp || h.competition || ''}:${h.round}`)
+  );
+  const wins = (s.ledger || []).filter(l => l && l.type === 'weekly_win' && l.managerId && l.round != null);
+  const byKey = new Map();
+  wins.forEach(l => {
+    const key = `${l.competition || ''}:${l.round}`;
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(l);
+  });
+  let added = 0;
+  byKey.forEach((entries, key) => {
+    if (have.has(key)) return;
+    const sep = key.indexOf(':');
+    const comp = key.slice(0, sep);
+    const round = Number(key.slice(sep + 1));
+    if (!comp || !Number.isFinite(round)) return;
+    const winners = entries.map(l => {
+      const sc = (s.scores || []).find(row => row.managerId === l.managerId && row.competition === comp && Number(row.round) === round);
+      return { id: l.managerId, points: sc && typeof sc.points === 'number' ? sc.points : null };
+    });
     s.settings.history.weekly.push({
       round,
       comp,
-      winners: tiedWinners.map(w => ({id: w.managerId, points: w.points})),
-      pot: pot.winnerShare,
-      split: tiedWinners.length > 1,
-      at: nowISO()
+      winners,
+      pot: entries.reduce((sum, l) => sum + (Number(l.amount) || 0), 0),
+      split: entries.length > 1,
+      at: entries[0].at || nowISO(),
+      backfilled: true
     });
-  }
-
-  return pot.winnerShare;
+    added += 1;
+  });
+  return added;
 }
 
 async function settleUclEndOfSeason() {
@@ -5749,6 +5798,11 @@ app.get("/api/standings", async (req, res) => {
   }
 
   const predViewerId = (getAuthenticatedManager(req) || {}).id;
+  const histAdded = backfillWeeklyHistoryFromLedger(s);
+  if (histAdded) {
+    writeAtomicCollection('settings', s.settings || {});
+    setImmediate(() => { persistStore().catch(() => {}); });
+  }
   res.json({
     currentRound: s.settings.currentRound,
     roundAverages: s.settings.roundAverages,
