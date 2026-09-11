@@ -25,8 +25,6 @@ const PAYSTACK_PUBLIC = process.env.PAYSTACK_PUBLIC_KEY || "";
 const PAYSTACK_CALLBACK = process.env.PAYSTACK_CALLBACK_URL || "";
 const LIVE_FPL_TEMPLATE = process.env.LIVE_FPL_API_TEMPLATE || "";
 const UCL_TEMPLATE = process.env.UCL_FANTASY_API_TEMPLATE || "";
-const FOOTBALL_API_KEY = process.env.FOOTBALL_DATA_KEY || process.env.API_FOOTBALL_KEY || ""; // football-data.org or API-Football style
-const FOOTBALL_API_BASE = "https://api.football-data.org/v4"; // using football-data.org as example third-party (free tier available)
 
 // Live admin (only this email can see backend admin view + trigger protected actions)
 const ADMIN_EMAIL = "bolade.oladejo@gmail.com";
@@ -335,6 +333,39 @@ function preferRicherArray(name, current, incoming) {
   return incoming;
 }
 
+function scoreRowKey(sc) {
+  return `${sc && sc.managerId}|${sc && sc.competition}|${sc && sc.round}`;
+}
+
+function mergeScoresPreferNumeric(primary, incoming) {
+  const map = new Map();
+  const consider = (sc) => {
+    if (!sc || !sc.managerId || !sc.competition || sc.round == null) return;
+    const k = scoreRowKey(sc);
+    const prev = map.get(k);
+    if (!prev) {
+      map.set(k, sc);
+      return;
+    }
+    const prevN = typeof prev.points === "number";
+    const curN = typeof sc.points === "number";
+    if (curN && !prevN) {
+      map.set(k, sc);
+      return;
+    }
+    if (!curN && prevN) return;
+    if (sc.source === "manual-admin" && prev.source !== "manual-admin" && curN) {
+      map.set(k, sc);
+      return;
+    }
+    if (prev.source === "manual-admin" && sc.source !== "manual-admin") return;
+    if ((sc.updatedAt || "") > (prev.updatedAt || "")) map.set(k, sc);
+  };
+  (primary || []).forEach(consider);
+  (incoming || []).forEach(consider);
+  return Array.from(map.values());
+}
+
 function unionFromBackup(primary, extra) {
   if (!extra) return primary;
   if (!primary) return extra;
@@ -607,6 +638,7 @@ async function loadStore() {
     const atomicSponsorships = loadAtomicCollection('sponsorships');
     const atomicChallenges = loadAtomicCollection('challenges');
     const atomicComplaints = loadAtomicCollection('complaints');
+    const atomicScores = loadAtomicCollection('scores');
     const atomicSettings = loadAtomicCollection('settings');
 
     // Full sources for fallback
@@ -660,6 +692,7 @@ async function loadStore() {
     if (atomicSponsorships && Array.isArray(atomicSponsorships)) loaded.sponsorships = preferRicherArray('sponsorships', loaded.sponsorships, atomicSponsorships);
     if (atomicChallenges && Array.isArray(atomicChallenges)) loaded.challenges = preferRicherArray('challenges', loaded.challenges, atomicChallenges);
     if (atomicComplaints && Array.isArray(atomicComplaints)) loaded.complaints = preferRicherArray('complaints', loaded.complaints, atomicComplaints);
+    if (atomicScores && Array.isArray(atomicScores)) loaded.scores = mergeScoresPreferNumeric(loaded.scores, atomicScores);
     if (atomicSettings && typeof atomicSettings === 'object') loaded.settings = { ...(loaded.settings || {}), ...atomicSettings };
 
     // Apply delete filter early on overrides too (deletedManagerIds may be in settings)
@@ -760,6 +793,7 @@ async function loadStore() {
     const sidecar = sidecarData;
     const bestBackup = bestBackupData;
     storeCache = mergeSources(storeCache, sidecar, bestBackup);
+    storeCache.scores = mergeScoresPreferNumeric(storeCache.scores, []);
     const afterCount = (storeCache.managers || []).length;
 
     // Reconstruct any beefs that have payment records but lost their beef doc. Critical for "beefs never disappear".
@@ -872,6 +906,7 @@ async function loadStore() {
     writeAtomicCollection('challenges', storeCache.challenges || []);
     writeAtomicCollection('potBoosts', storeCache.potBoosts || []);
     writeAtomicCollection('complaints', storeCache.complaints || []);
+    writeAtomicCollection('scores', storeCache.scores || []);
     if (storeCache.settings) writeAtomicCollection('settings', storeCache.settings);
     // force promote beefs atomic to ensure never lost
     writeAtomicCollection('beefs', storeCache.beefs || []);
@@ -973,6 +1008,8 @@ async function persistStore() {
       if (bestChallenges) storeCache.challenges = preferRicherArray('challenges', storeCache.challenges, bestChallenges);
       const bestPotBoosts = loadAtomicCollection('potBoosts');
       if (bestPotBoosts) storeCache.potBoosts = preferRicherArray('potBoosts', storeCache.potBoosts, bestPotBoosts);
+      const bestScores = loadAtomicCollection('scores');
+      if (bestScores) storeCache.scores = mergeScoresPreferNumeric(storeCache.scores, bestScores);
       const bestSet = loadAtomicCollection('settings');
       if (bestSet) storeCache.settings = { ...(storeCache.settings || {}), ...bestSet };
     }
@@ -999,6 +1036,7 @@ async function persistStore() {
     writeAtomicCollection('sponsorships', storeCache.sponsorships || []);
     writeAtomicCollection('challenges', storeCache.challenges || []);
     writeAtomicCollection('potBoosts', storeCache.potBoosts || []);
+    writeAtomicCollection('scores', storeCache.scores || []);
     writeAtomicCollection('settings', storeCache.settings || {});
 
     tx(storeCache);
@@ -2636,36 +2674,50 @@ function getTeamColor(code) {
 }
 
 function upsertScore(store, managerId, comp, round, points, source, isFinal, extra = {}) {
+  if (!Array.isArray(store.scores)) store.scores = [];
   let existing = store.scores.find(sc => sc.managerId === managerId && sc.competition === comp && sc.round === round);
-  const val = (typeof points === "number") ? points : null;
+  const incomingHasPoints = typeof points === "number";
+  const val = incomingHasPoints ? points : null;
+  const extraOk = extra && typeof extra === "object" && Object.keys(extra).length > 0;
+  const incomingWeak = !incomingHasPoints || source === "pending" || source === "ucl-adapter-demo";
+
+  if (existing) {
+    const existingHasPoints = typeof existing.points === "number";
+    // Periodic UCL sync used to write points:null over manual MD scores for anyone with a UCL teamId.
+    if (existingHasPoints && incomingWeak && source !== "manual-admin" && source !== "official-fpl") {
+      if (extraOk) {
+        Object.assign(existing, extra);
+        existing.updatedAt = nowISO();
+      }
+      return existing;
+    }
+    if (existing.source === "manual-admin" && source !== "manual-admin" && source !== "ucl-api") {
+      return existing;
+    }
+    if (incomingHasPoints) existing.points = val;
+    existing.source = source;
+    existing.isFinal = !!isFinal;
+    existing.updatedAt = nowISO();
+    if (extraOk) Object.assign(existing, extra);
+    return existing;
+  }
+
+  if (!incomingHasPoints && comp === "ucl") return null;
+
   const newData = {
     points: val,
     source,
     isFinal: !!isFinal,
     updatedAt: nowISO()
   };
-  // Only spread extra if actually provided (non-null, non-empty) — this preserves picks/extra for beef preview etc.
-  if (extra && typeof extra === 'object' && Object.keys(extra).length > 0) {
-    Object.assign(newData, extra);
-  }
-  if (existing) {
-    // always update core fields
-    existing.points = newData.points;
-    existing.source = newData.source;
-    existing.isFinal = newData.isFinal;
-    existing.updatedAt = newData.updatedAt;
-    if (extra && typeof extra === 'object' && Object.keys(extra).length > 0) {
-      Object.assign(existing, extra);
-    }
-  } else {
-    store.scores.push({
-      id: generateId("sc"),
-      managerId,
-      competition: comp,
-      round,
-      ...newData
-    });
-  }
+  if (extraOk) Object.assign(newData, extra);
+  store.scores.push({
+    id: generateId("sc"),
+    managerId,
+    competition: comp,
+    round,
+    ...newData
+  });
 }
 
 function computeRoundAverage(store, comp, round) {
@@ -2677,18 +2729,25 @@ function computeRoundAverage(store, comp, round) {
 
 function getManagerScore(managerId, comp, round) {
   const s = getStore();
-  return s.scores.find(sc => sc.managerId === managerId && sc.competition === comp && sc.round === round) || null;
+  const matches = (s.scores || []).filter(sc => sc.managerId === managerId && sc.competition === comp && sc.round === round);
+  if (!matches.length) return null;
+  const withPts = matches.filter(sc => typeof sc.points === "number");
+  const pool = withPts.length ? withPts : matches;
+  const manual = pool.find(sc => sc.source === "manual-admin");
+  if (manual) return manual;
+  pool.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  return pool[0];
 }
 
 async function syncUCL(roundsToSync = null) {
-  // UCL Fantasy API reality check (2026):
-  // - No public equivalent to FPL's /entry/{id}/event/{round}/picks/ or league standings for fantasy teams.
-  // - Official UCL Fantasy is closed; no reliable free picks/points API for user teams.
-  // - football-data.org (if key) gives real CL matches/standings only (useful for projections/context, not fantasy scores).
-  // - Therefore: we primarily support MANUAL admin entry for MD points (via adminManageUclMdScores).
-  //   Adapter (UCL_FANTASY_API_TEMPLATE) is optional fallback for those who build a private scraper/proxy.
-  //   Layout is made beautiful because most updates will be manual.
+  // UEFA Champions League Fantasy (gaming.uefa.com) has no public FPL-style API
+  // (/entry/{id}/event/{round}/picks). Player JSON feeds exist; manager MD totals do not.
+  // Club-score APIs (football-data.org etc.) are not fantasy points — they are not used.
+  // Production: preserve manual-admin MD scores. Optional UCL_FANTASY_API_TEMPLATE only.
   const s = await loadStore();
+  if (!UCL_TEMPLATE && !DEMO_MODE) {
+    return { ok: true, skipped: true, reason: "no-public-ucl-fantasy-api" };
+  }
   const current = s.settings.currentRound.ucl;
   const rounds = roundsToSync || [current - 1, current].filter(Boolean);
 
@@ -2781,6 +2840,7 @@ async function syncUCL(roundsToSync = null) {
         source = "ucl-adapter-demo";
       }
 
+      if (points === null) continue;
       const isFinal = r < current || (r === current && source !== "pending");
       upsertScore(s, mgr.id, "ucl", r, points, source, isFinal, extra);
     }
@@ -2800,22 +2860,6 @@ function getWalletBalance(managerId) {
   return s.ledger
     .filter(l => l.managerId === managerId)
     .reduce((sum, l) => sum + (l.amount || 0), 0);
-}
-
-let uclStatsCache = null;
-let uclStatsCacheTime = 0;
-
-async function getUCLStats() {
-  const now = Date.now();
-  if (uclStatsCache && (now - uclStatsCacheTime) < 1000 * 60 * 30) { // cache 30 min
-    return uclStatsCache;
-  }
-  const stats = await fetchUCLStats();
-  if (stats) {
-    uclStatsCache = stats;
-    uclStatsCacheTime = now;
-  }
-  return stats || { matches: [], standings: [] };
 }
 
 async function getProjectedPayouts() {
@@ -2849,11 +2893,7 @@ async function getProjectedPayouts() {
 
   const sponsored = (s.sponsorships || []).reduce((sum, sp) => sum + (sp.amount || 0), 0);
   const uclReserve = 0;
-
-  // Never open outbound TLS on a page-load path (FPL/football-data TLS drops were stalling login).
-  const uclStats = uclStatsCache || { matches: [] };
-  const upcomingMatches = (uclStats.matches || []).filter(m => m.status === 'SCHEDULED' || m.status === 'TIMED');
-  const upcomingUCLMatches = upcomingMatches.length;
+  const upcomingUCLMatches = 0;
 
   const overallFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.75) + voluntaryOverall + (fplPaid * extraToOverall);
   const cupFromWeeklyReserves = Math.floor(weeklyReserveFullSeason * 0.25) + voluntaryCup + (fplPaid * extraToCup);
@@ -2882,7 +2922,7 @@ async function getProjectedPayouts() {
       paidManagers: uclPaid,
       phaseReserve: 0,
       upcomingMatches: upcomingUCLMatches,
-      lastStatsUpdate: uclStats.lastUpdated || null,
+      lastStatsUpdate: null,
       overallWinnerPot: uclOverall,
       secondPlacePot: uclSecond,
       thirdPlacePot: uclThird
@@ -3012,50 +3052,6 @@ function safeFetchJSON(url, timeoutMs = 8000, extraHeaders = null) {
   });
 }
 
-async function fetchWithFootballAuth(url) {
-  if (!FOOTBALL_API_KEY) return null;
-
-  return new Promise((resolve) => {
-    const options = {
-      headers: {
-        "User-Agent": "DLeagueClubhouse/1.0",
-        "X-Auth-Token": FOOTBALL_API_KEY
-      }
-    };
-
-    const req = https.get(url, options, (res) => {
-      // Examine throttling headers as per football-data.org instructions
-      const remaining = res.headers["x-requests-available-minute"] || res.headers["x-requests-available-day"];
-      const reset = res.headers["x-requestcounter-reset"];
-      if (remaining !== undefined) {
-        console.log(`[football-data] Requests remaining: ${remaining} (reset in ${reset || 'unknown'})`);
-      }
-      if (res.statusCode === 429) {
-        console.warn("[football-data] Rate limited! Backing off.");
-        // Simple backoff: resolve null, caller can retry later
-        resolve(null);
-        return;
-      }
-
-      let data = "";
-      res.on("data", (c) => (data += c));
-      res.on("end", () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch {
-          resolve(null);
-        }
-      });
-    });
-
-    req.on("error", () => resolve(null));
-    req.setTimeout(10000, () => {
-      req.destroy();
-      resolve(null);
-    });
-  });
-}
-
 async function fetchFplLeagueStandings(leagueId, isH2h = false) {
   if (!leagueId) return null;
   const cacheKey = `${isH2h ? 'h2h' : 'classic'}:${leagueId}`;
@@ -3091,31 +3087,6 @@ async function fetchFplLeagueStandings(leagueId, isH2h = false) {
 // Fake pairings stay cleared; the H2H box uses realLeagues.fplH2h from standings.
 async function populateH2HFixtures(s) {
   s.h2h = [];
-}
-
-async function fetchUCLStats() {
-  if (!FOOTBALL_API_KEY) return null;
-  try {
-    // Using football-data.org v4 for UCL (competition code CL)
-    const matchesData = await fetchWithFootballAuth(
-      `${FOOTBALL_API_BASE}/competitions/CL/matches?status=FINISHED,SCHEDULED&limit=50`
-    );
-
-    const standingsData = await fetchWithFootballAuth(
-      `${FOOTBALL_API_BASE}/competitions/CL/standings`  // current season; add ?season=2026 if needed for 26/27
-    );
-
-    if (!matchesData) return null;
-
-    return {
-      matches: matchesData.matches || [],
-      standings: standingsData?.standings || [],
-      lastUpdated: new Date().toISOString()
-    };
-  } catch (e) {
-    console.warn("[UCL Stats] Failed to fetch third-party data:", e.message);
-    return null;
-  }
 }
 
 // ============ DEMO SEED ============
@@ -3418,8 +3389,7 @@ app.get("/api/config", (req, res) => {
     callbackUrl: PAYSTACK_CALLBACK,
     competitions: COMPETITIONS,
     liveProjectionTemplate: !!LIVE_FPL_TEMPLATE,
-    uclAdapterTemplate: !!UCL_TEMPLATE,
-    footballStatsApi: !!FOOTBALL_API_KEY
+    uclAdapterTemplate: !!UCL_TEMPLATE
   });
 });
 
@@ -4638,6 +4608,8 @@ app.post("/api/admin/set-ucl-md-scores", async (req, res) => {
     // Upsert as final (admin entered)
     upsertScore(s, mgrId, 'ucl', md, num, 'manual-admin', true, {});
   });
+  s.scores = mergeScoresPreferNumeric(s.scores, []);
+  writeAtomicCollection('scores', s.scores || []);
   writeAtomicSidecar(s);
   await persistStore();
   res.json({ ok: true, message: `UCL MD${md} scores saved (manual). Use finalize/settle to pay winner.` });
@@ -5799,7 +5771,18 @@ app.get("/api/standings", async (req, res) => {
       weekly: (s.settings.history && s.settings.history.weekly) || []
     },
     currentPrediction: predictionForViewer(livePrediction(s), predViewerId),
-    predictions: (s.settings.predictions || []).slice(-8).map(p => predictionForViewer(p, predViewerId))
+    predictions: (s.settings.predictions || []).slice(-8).map(p => predictionForViewer(p, predViewerId)),
+    // Slim UCL scores (no picks) so admin MD entry can re-open without losing values. Fast payload.
+    scores: (s.scores || [])
+      .filter(sc => sc && sc.competition === 'ucl')
+      .map(sc => ({
+        managerId: sc.managerId,
+        competition: 'ucl',
+        round: sc.round,
+        points: sc.points,
+        isFinal: !!sc.isFinal,
+        source: sc.source || ''
+      }))
   });
   setImmediate(() => {
     if (ids.fplClassic) fetchFplLeagueStandings(ids.fplClassic, false).catch(() => {});
@@ -6651,6 +6634,7 @@ async function boot() {
       writeAtomicCollection('ledger', s.ledger);
       writeAtomicCollection('beefs', s.beefs || []);
       writeAtomicCollection('sponsorships', s.sponsorships || []);
+      writeAtomicCollection('scores', s.scores || []);
       writeAtomicCollection('settings', s.settings || {});
       if (db) db.pragma("wal_checkpoint(FULL)");
       console.log('[MAINTENANCE] Sidecars + checkpoint refreshed while awake');

@@ -5160,7 +5160,7 @@ async function adminManageUclMdScores() {
   modal.innerHTML = `
     <div style="background:#1c1c1c;border:1px solid #333;padding:16px;border-radius:12px;max-width:620px;width:94%;">
       <div style="font-weight:bold;font-size:15px;margin-bottom:4px;">UCL MD${md} — Enter Points (manual)</div>
-      <div style="font-size:11px;color:#888;margin-bottom:8px;">Enter final points for each paid UCL manager. Use "Finalize &amp; Settle" to credit the winner automatically (same money logic as FPL).</div>
+      <div style="font-size:11px;color:#888;margin-bottom:8px;">UEFA Fantasy has no public FPL-style API, so MD points are entered here and stored durably. Use "Finalize &amp; Settle" to credit the winner (same money logic as FPL).</div>
       <div id="ucl-md-picks" style="max-height:380px;overflow:auto;"></div>
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
         <button id="ucl-md-save" style="background:#00ff85;color:#111;padding:7px 14px;border-radius:6px;font-weight:600;">SAVE POINTS</button>
