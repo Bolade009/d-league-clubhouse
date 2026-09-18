@@ -290,8 +290,19 @@ function writeAtomicCollection(name, data) {
           return;
         }
         if (data.length + 1 < existing.length) {
-          console.warn(`[atomic] REFUSE shrink ${name} ${existing.length} -> ${data.length}`);
-          return;
+          if (name === 'managers' && storeCache && storeCache.settings) {
+            const sets = deletedManagerSets(storeCache);
+            const existingAlive = existing.filter(m => !isTombstonedManager(m, sets));
+            if (data.length + 1 >= existingAlive.length) {
+              // allow shrink of tombstoned (expunged) managers
+            } else {
+              console.warn(`[atomic] REFUSE shrink ${name} ${existing.length} -> ${data.length}`);
+              return;
+            }
+          } else {
+            console.warn(`[atomic] REFUSE shrink ${name} ${existing.length} -> ${data.length}`);
+            return;
+          }
         }
       }
     }
@@ -317,6 +328,44 @@ function readSidecarData() {
     }
   } catch {}
   return null;
+}
+
+function deletedManagerSets(s) {
+  const settings = (s && s.settings) || {};
+  const ids = new Set(settings.deletedManagerIds || []);
+  const emails = new Set((settings.deletedManagerEmails || []).map(e => String(e || '').toLowerCase()).filter(Boolean));
+  return { ids, emails };
+}
+
+function isTombstonedManager(m, sets) {
+  if (!m) return true;
+  if (m.id && sets.ids.has(m.id)) return true;
+  if (m.email && sets.emails.has(String(m.email).toLowerCase())) return true;
+  return false;
+}
+
+function unionDeletedTombstones(intoSettings, fromSettings) {
+  intoSettings = intoSettings || {};
+  fromSettings = fromSettings || {};
+  intoSettings.deletedManagerIds = Array.from(new Set([
+    ...(intoSettings.deletedManagerIds || []),
+    ...(fromSettings.deletedManagerIds || [])
+  ].filter(Boolean)));
+  intoSettings.deletedManagerEmails = Array.from(new Set([
+    ...(intoSettings.deletedManagerEmails || []).map(e => String(e || '').toLowerCase()),
+    ...(fromSettings.deletedManagerEmails || []).map(e => String(e || '').toLowerCase())
+  ].filter(Boolean)));
+  return intoSettings;
+}
+
+function applyDeletedManagerFilter(s) {
+  if (!s) return s;
+  const sets = deletedManagerSets(s);
+  if (!sets.ids.size && !sets.emails.size) return s;
+  if (Array.isArray(s.managers)) {
+    s.managers = s.managers.filter(m => !isTombstonedManager(m, sets));
+  }
+  return s;
 }
 
 function preferRicherArray(name, current, incoming) {
@@ -408,9 +457,9 @@ function autoHealIfWiped(s) {
   const cachedN = (cachedBest && cachedBest.managers || []).length;
   if (cachedN > curN + 1) {
     console.warn(`[store] AUTO-HEAL from cached best: ${curN} -> merge ${cachedN}`);
-    return unionFromBackup(s, cachedBest);
+    return applyDeletedManagerFilter(unionFromBackup(s, cachedBest));
   }
-  if (curN >= 2) return s;
+  if (curN >= 2) return applyDeletedManagerFilter(s);
   const side = readSidecarData();
   const best = findBestBackupData();
   const diskN = Math.max((side && side.managers || []).length, (best && best.managers || []).length);
@@ -419,7 +468,7 @@ function autoHealIfWiped(s) {
     if (side) s = unionFromBackup(s, side);
     if (best) s = unionFromBackup(s, best);
   }
-  return s;
+  return applyDeletedManagerFilter(s);
 }
 
 // Reconstruct any beef records referenced by beef_stake payments but missing from beefs list.
@@ -440,7 +489,7 @@ function reconstructBeefsFromPayments(s) {
         participants: [p.managerId],
         category: 'Recovered beef (from payment record)',
         stake: stakeAmt,
-        status: 'accepted',
+        status: (s.ledger || []).some(l => l && l.type === 'beef_win' && l.beefId === p.beefId) ? 'settled' : 'accepted',
         paidBy: {},
         totalStaked: 0,
         prizePot: 0,
@@ -715,6 +764,7 @@ async function loadStore() {
     storeCache.settings.uclSecondPlacePot = storeCache.settings.uclSecondPlacePot || 0;
     storeCache.settings.uclThirdPlacePot = storeCache.settings.uclThirdPlacePot || 0;
     if (!Array.isArray(storeCache.settings.deletedManagerIds)) storeCache.settings.deletedManagerIds = [];
+    if (!Array.isArray(storeCache.settings.deletedManagerEmails)) storeCache.settings.deletedManagerEmails = [];
     updateSeasonPots(storeCache);  // ensure UCL overall pot is correct based on revenue
     // Initialize collection keys to arrays only if completely absent (first run); do not overwrite or persist empty if key missing after partial load
     ['managers','payments','scores','ledger','h2h','challenges','sponsorships','events','complaints','beefs','potBoosts'].forEach(k => {
@@ -744,11 +794,7 @@ async function loadStore() {
       });
       result.managers = Array.from(mgrById.values());
 
-      // Permanently exclude deleted managers (even if they lurk in backups/sidecars). Delete records the id.
-      const delIds = new Set((result.settings && result.settings.deletedManagerIds) || []);
-      if (delIds.size) {
-        result.managers = result.managers.filter(m => !delIds.has(m && m.id));
-      }
+      applyDeletedManagerFilter(result);
 
       // Ledger, payments, scores, complaints etc: union by id (preserve *all* historical + recent winnings/settlements)
       ['ledger', 'payments', 'scores', 'events', 'sponsorships', 'challenges', 'complaints', 'beefs', 'potBoosts'].forEach(key => {
@@ -793,6 +839,7 @@ async function loadStore() {
     const sidecar = sidecarData;
     const bestBackup = bestBackupData;
     storeCache = mergeSources(storeCache, sidecar, bestBackup);
+    applyDeletedManagerFilter(storeCache);
     storeCache.scores = mergeScoresPreferNumeric(storeCache.scores, []);
     const afterCount = (storeCache.managers || []).length;
 
@@ -989,13 +1036,17 @@ async function persistStore() {
     if (!db) initSQLite();
 
     storeCache = autoHealIfWiped(storeCache || createEmptyStore());
+    applyDeletedManagerFilter(storeCache);
 
-    // Safety guard: never clobber good data with empty managers on a persist
+    // Safety guard: never clobber good data with empty managers on a persist.
+    // Expunged managers are tombstoned — do not restore them from a longer atomic snapshot.
     const currentMgrCount = (storeCache.managers || []).length;
     const bestMgrs = loadAtomicCollection('managers') || [];
-    if (bestMgrs.length > currentMgrCount) {
-      console.warn(`[persist] Guard: current has ${currentMgrCount} managers, best atomic has ${bestMgrs.length} — restoring best`);
-      storeCache.managers = preferRicherArray('managers', storeCache.managers, bestMgrs);
+    const tomb = deletedManagerSets(storeCache);
+    const filteredBestMgrs = (bestMgrs || []).filter(m => !isTombstonedManager(m, tomb));
+    if (filteredBestMgrs.length > currentMgrCount) {
+      console.warn(`[persist] Guard: current has ${currentMgrCount} managers, best atomic alive has ${filteredBestMgrs.length} — restoring best (expunged excluded)`);
+      storeCache.managers = preferRicherArray('managers', storeCache.managers, filteredBestMgrs);
       const bestPays = loadAtomicCollection('payments');
       if (bestPays) storeCache.payments = preferRicherArray('payments', storeCache.payments, bestPays);
       const bestLed = loadAtomicCollection('ledger');
@@ -1011,8 +1062,16 @@ async function persistStore() {
       const bestScores = loadAtomicCollection('scores');
       if (bestScores) storeCache.scores = mergeScoresPreferNumeric(storeCache.scores, bestScores);
       const bestSet = loadAtomicCollection('settings');
-      if (bestSet) storeCache.settings = { ...(storeCache.settings || {}), ...bestSet };
+      if (bestSet) {
+        const keptTomb = {
+          deletedManagerIds: (storeCache.settings && storeCache.settings.deletedManagerIds) || [],
+          deletedManagerEmails: (storeCache.settings && storeCache.settings.deletedManagerEmails) || []
+        };
+        storeCache.settings = { ...(storeCache.settings || {}), ...bestSet };
+        unionDeletedTombstones(storeCache.settings, keptTomb);
+      }
     }
+    applyDeletedManagerFilter(storeCache);
 
     if ((storeCache.managers || []).length === 0) {
       console.error('[persist] ABORT persist of 0 managers — refusing to wipe disk');
@@ -1221,6 +1280,19 @@ function getPredictionsList(s) {
 
 function livePrediction(s) {
   return getPredictionsList(s).find(p => p && (p.status === 'open' || p.status === 'locked')) || null;
+}
+
+function parsePredictionOptions(raw) {
+  const arr = Array.isArray(raw) ? raw : String(raw || '').split(/\r?\n/);
+  const seen = new Set();
+  const out = [];
+  arr.forEach(x => {
+    const t = String(x || '').trim();
+    if (!t || seen.has(t.toLowerCase())) return;
+    seen.add(t.toLowerCase());
+    out.push(t);
+  });
+  return out.slice(0, 24);
 }
 
 // Blind pool: hide vote text until locked/settled. Viewer still sees their own text while open.
@@ -2173,6 +2245,7 @@ async function settleBeef(beefId, winnerManagerId) {
     id: generateId("ldg"),
     type: "beef_win",
     managerId: winner.id,
+    beefId: beef.id,
     competition: "fpl",
     round: (s.settings.currentRound && s.settings.currentRound.fpl) || 0,
     amount: winnerShare,
@@ -3361,10 +3434,13 @@ async function recoverOrphanedPaidManagers() {
   const hydrateSources = [...bestMgrs, ...sideMgrs];
 
   const recovered = [];
+  const tomb = deletedManagerSets(s);
   for (const mid of realPaidIds) {
+    if (tomb.ids.has(mid)) continue;
     if (!existing.has(mid)) {
       // Try to recover FULL original profile from best/sidecar if the id exists there
       const fromHydrate = hydrateSources.find(m => m.id === mid);
+      if (fromHydrate && isTombstonedManager(fromHydrate, tomb)) continue;
       const short = mid.slice(-6);
       const stub = fromHydrate ? {
         id: mid,
@@ -3601,6 +3677,10 @@ app.post("/api/admin/add-manager", async (req, res) => {
     createdAt: nowISO()
   };
   s.managers.push(mgr);
+  if (email) {
+    const em = String(email).toLowerCase();
+    s.settings.deletedManagerEmails = (s.settings.deletedManagerEmails || []).filter(e => String(e).toLowerCase() !== em);
+  }
   await persistStore();
   // Extra belt-and-suspenders for Render: re-load and force a sidecar write so the new manager is definitely in the durable snapshot
   try {
@@ -3667,11 +3747,19 @@ app.post("/api/admin/delete-manager", async (req, res) => {
   }
   try {
     s.managers.splice(idx, 1);
-    // Record for permanence across merges/reloads (prevents reappear from sidecar/db/backups)
-    s.settings.deletedManagerIds = Array.from(new Set([...(s.settings.deletedManagerIds || []), toDel.id]));
+    s.settings.deletedManagerIds = Array.from(new Set([...(s.settings.deletedManagerIds || []), toDel.id].filter(Boolean)));
+    if (toDel.email) {
+      s.settings.deletedManagerEmails = Array.from(new Set([
+        ...(s.settings.deletedManagerEmails || []).map(e => String(e).toLowerCase()),
+        String(toDel.email).toLowerCase()
+      ].filter(Boolean)));
+    }
+    applyDeletedManagerFilter(s);
+    writeAtomicCollection('managers', s.managers);
+    writeAtomicCollection('settings', s.settings);
     await persistStore();
-    await logEvent("manager_deleted_by_admin", { id: toDel.id, email: toDel.email, displayName: toDel.displayName });
-    res.json({ ok: true, message: `Manager ${toDel.displayName} removed from active managers list. History preserved in ledger/payments/beefs.`, deleted: toDel.id });
+    await logEvent("manager_deleted_by_admin", { id: toDel.id, email: toDel.email, displayName: toDel.displayName, expunged: true });
+    res.json({ ok: true, message: `Expunged ${toDel.displayName}. They will not come back from backups or paid-recovery.`, deleted: toDel.id });
   } catch (e) {
     console.error("delete-manager failed", e);
     return res.status(500).json({ error: "Failed to delete manager: " + (e.message || e) });
@@ -4751,22 +4839,25 @@ app.get("/api/predictions", async (req, res) => {
 
 app.post("/api/admin/prediction", async (req, res) => {
   if (!isAdminRequest(req)) return res.status(401).json({ error: "Unauthorized" });
-  const { title, prize } = req.body || {};
+  const { title, prize, options } = req.body || {};
   const t = String(title || '').trim();
   const amt = Math.max(0, Math.floor(Number(prize) || 0));
   if (!t) return res.status(400).json({ error: "Title required" });
+  const opts = parsePredictionOptions(options);
   const s = await loadStore();
   const list = getPredictionsList(s);
   let live = livePrediction(s);
   if (live) {
     live.title = t;
     live.prize = amt;
+    live.options = opts;
     live.updatedAt = nowISO();
   } else {
     live = {
       id: generateId("pred"),
       title: t,
       prize: amt,
+      options: opts,
       status: "open",
       votes: [],
       winners: [],
@@ -4782,13 +4873,19 @@ app.post("/api/admin/prediction", async (req, res) => {
 app.post("/api/predictions/:id/vote", async (req, res) => {
   const mgr = getAuthenticatedManager(req);
   if (!mgr) return res.status(401).json({ error: "Login required" });
-  const text = String((req.body && req.body.text) || '').trim();
+  let text = String((req.body && (req.body.text || req.body.option)) || '').trim();
   if (!text) return res.status(400).json({ error: "Enter your prediction" });
   if (text.length > 280) return res.status(400).json({ error: "Keep it under 280 characters" });
   const s = await loadStore();
   const pred = getPredictionsList(s).find(p => p.id === req.params.id);
   if (!pred) return res.status(404).json({ error: "Prediction not found" });
   if (pred.status !== "open") return res.status(400).json({ error: "Predictions are locked. No more entries." });
+  const opts = parsePredictionOptions(pred.options);
+  if (opts.length) {
+    const match = opts.find(o => o.toLowerCase() === text.toLowerCase());
+    if (!match) return res.status(400).json({ error: "Pick one of the listed options" });
+    text = match;
+  }
   pred.votes = pred.votes || [];
   const existing = pred.votes.find(v => v.managerId === mgr.id);
   if (existing) {
@@ -4805,7 +4902,7 @@ app.post("/api/predictions/:id/vote", async (req, res) => {
 app.post("/api/admin/prediction/:id/vote-for", async (req, res) => {
   if (!isAdminRequest(req)) return res.status(401).json({ error: "Unauthorized" });
   const managerId = (req.body && req.body.managerId) || '';
-  const text = String((req.body && req.body.text) || '').trim();
+  let text = String((req.body && (req.body.text || req.body.option)) || '').trim();
   if (!managerId || !text) return res.status(400).json({ error: "managerId and text required" });
   const s = await loadStore();
   const pred = getPredictionsList(s).find(p => p.id === req.params.id);
@@ -4813,6 +4910,12 @@ app.post("/api/admin/prediction/:id/vote-for", async (req, res) => {
   if (pred.status === "settled") return res.status(400).json({ error: "Already settled" });
   const who = (s.managers || []).find(m => m.id === managerId);
   if (!who) return res.status(404).json({ error: "Manager not found" });
+  const optsFor = parsePredictionOptions(pred.options);
+  if (optsFor.length) {
+    const match = optsFor.find(o => o.toLowerCase() === text.toLowerCase());
+    if (!match) return res.status(400).json({ error: "Pick one of the listed options" });
+    text = match;
+  }
   pred.votes = pred.votes || [];
   const existing = pred.votes.find(v => v.managerId === managerId);
   if (existing) {
@@ -4838,10 +4941,16 @@ app.post("/api/admin/prediction/:id/votes-bulk", async (req, res) => {
   let n = 0;
   votes.forEach(v => {
     const managerId = v && v.managerId;
-    const text = String((v && v.text) || '').trim();
+    let text = String((v && (v.text || v.option)) || '').trim();
     if (!managerId || !text) return;
     const who = (s.managers || []).find(m => m.id === managerId);
     if (!who) return;
+    const opts = parsePredictionOptions(pred.options);
+    if (opts.length) {
+      const match = opts.find(o => o.toLowerCase() === text.toLowerCase());
+      if (!match) return;
+      text = match;
+    }
     const existing = pred.votes.find(x => x.managerId === managerId);
     if (existing) {
       existing.text = text;

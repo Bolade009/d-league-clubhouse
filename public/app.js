@@ -416,21 +416,11 @@ async function loadAllData() {
   await loadStandings().catch(e => console.warn('standings load failed', e));
   fetchJSON('/api/beefs').then(d => {
       if (d && Array.isArray(d.beefs)) {
-        const serverBeefs = d.beefs;
-        let localBeefs = [];
-        try { localBeefs = JSON.parse(localStorage.getItem('dl_activeBeefs') || '[]'); } catch {}
-        // Merge to ensure beefs never disappear: keep any local-only (e.g. after transient server empty), prefer server data for known IDs
-        const byId = new Map();
-        (serverBeefs || []).forEach(b => { if (b && b.id) byId.set(b.id, { ...b }); });
-        (localBeefs || []).forEach(b => {
-          if (b && b.id && !byId.has(b.id)) {
-            byId.set(b.id, { ...b });
-          }
-        });
-        const mergedBeefs = Array.from(byId.values());
-        window.activeBeefs = mergedBeefs;
-        // Never nuke a good local backup with server [] on hard refresh
-        const toPersist = (mergedBeefs && mergedBeefs.length > 0) ? mergedBeefs : (serverBeefs && serverBeefs.length > 0 ? serverBeefs : localBeefs);
+        const done = new Set(['settled', 'declined', 'cancelled']);
+        // Server is source of truth for *active* beefs. Do not re-inject settled ones from localStorage.
+        const serverBeefs = (d.beefs || []).filter(b => b && !done.has(String(b.status || '').toLowerCase()));
+        window.activeBeefs = serverBeefs;
+        const toPersist = serverBeefs;
         try { localStorage.setItem('dl_activeBeefs', JSON.stringify(toPersist || [])); } catch {}
         (serverBeefs || []).forEach(sb => {
           const exists = playerChallenges.findIndex(pc => pc.serverId === sb.id);
@@ -456,8 +446,9 @@ async function loadAllData() {
       // fallback local backup so active beefs (paid or not) never disappear on refresh
       try {
         const backup = JSON.parse(localStorage.getItem('dl_activeBeefs') || '[]');
-        if (backup.length && (!window.activeBeefs || window.activeBeefs.length === 0)) {
-          window.activeBeefs = backup;
+        const live = (backup || []).filter(b => b && !['settled', 'declined', 'cancelled'].includes(String(b.status || '').toLowerCase()));
+        if (live.length && (!window.activeBeefs || window.activeBeefs.length === 0)) {
+          window.activeBeefs = live;
         }
       } catch {}
     }).then(() => { if (typeof renderActiveBeefs === 'function') renderActiveBeefs(); });
@@ -917,11 +908,7 @@ function renderActiveBeefs() {
   if (!container) return;
 
   const beefs = window.activeBeefs || [];
-  let active = beefs.filter(b => !['settled', 'declined', 'cancelled'].includes((b.status || '').toLowerCase()));
-  // Admin sees settled too, to have access to UNDO SETTLEMENT button
-  if (currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com') {
-    active = beefs;  // show all for admin, including settled for undo
-  }
+  const active = beefs.filter(b => !['settled', 'declined', 'cancelled'].includes((b.status || '').toLowerCase()));
 
   if (active.length === 0) {
     container.innerHTML = `
@@ -1111,7 +1098,7 @@ async function loadAdminOverview() {
             <button onclick="navigator.clipboard.writeText('${code}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500)" class="mt-1 text-[10px] px-3 py-0.5 bg-[#222] hover:bg-[#333] rounded">Copy Code</button>
             <button onclick="editManager('${(m.email||'').replace(/'/g,'\\\'')}', '${(m.displayName||'').replace(/'/g,'\\\'')}', '${(m.fplClubName||'').replace(/'/g,'\\\'')}', '${(m.uclClubName||m.ucl?.clubName||'').replace(/'/g,'\\\'')}', '${(m.fpl && m.fpl.teamId || '').replace(/'/g,'\\\'')}', '${(m.ucl && m.ucl.teamId || '').replace(/'/g,'\\\'')}', '${code.replace(/'/g,'\\\'')}')" class="mt-1 ml-1 text-[9px] px-2 py-0.5 bg-[#222] hover:bg-[#333] rounded">Edit</button>
             ${reclaimBtn}
-            ${!isAdmin ? `<button onclick="if(confirm('Delete ${ (m.displayName||'').replace(/'/g,'\\\'') }? History stays. This cannot be undone easily.')) deleteManager('${m.id || ''}', '${(m.email||'').replace(/'/g,'\\\'')}');" class="mt-1 ml-1 text-[9px] px-2 py-0.5 bg-red-900 text-white rounded">Delete</button>` : ''}
+            ${!isAdmin ? `<button onclick="if(confirm('EXPUNGE ${ (m.displayName||'').replace(/'/g,'\\\'') }? They will be removed permanently and will not come back from backups. Ledger/payments stay as records only.')) deleteManager('${m.id || ''}', '${(m.email||'').replace(/'/g,'\\\'')}');" class="mt-1 ml-1 text-[9px] px-2 py-0.5 bg-red-900 text-white rounded">Expunge</button>` : ''}
           </div>
         </div>`;
     }).join('') || '<div class="text-[#666] p-4">No managers</div>';
@@ -1873,6 +1860,7 @@ function renderPredictionWeek() {
   const locked = status === 'locked';
   const settled = status === 'settled';
   const statusLabel = open ? 'OPEN — submit now' : (locked ? 'LOCKED — no more entries' : 'SETTLED');
+  const options = Array.isArray(pred.options) ? pred.options.filter(Boolean) : [];
   const voteRows = votes.map(v => {
     const own = currentManager && v.managerId === currentManager.id;
     const reveal = locked || settled;
@@ -1890,6 +1878,15 @@ function renderPredictionWeek() {
         <span class="text-[#ccc]">${detail}</span></div>
     </div>`;
   }).join('') || `<div class="text-xs text-[#666]">No predictions in yet.</div>`;
+  const optionPick = options.length
+    ? `<div class="space-y-1.5">${options.map(opt => {
+        const sel = myVote && myVote.text === opt;
+        return `<label class="flex items-center gap-2 p-2 bg-[#111] border border-[#333] rounded-xl text-sm cursor-pointer">
+          <input type="radio" name="pred-opt" value="${escPred(opt)}" ${sel ? 'checked' : ''}>
+          <span>${escPred(opt)}</span>
+        </label>`;
+      }).join('')}</div>`
+    : `<textarea id="pred-vote-text" rows="2" maxlength="280" placeholder="Your prediction (open-ended)…" class="w-full p-2 bg-[#111] border border-[#333] rounded-xl text-sm">${escPred(myVote ? myVote.text : '')}</textarea>`;
   const winnersLine = settled && pred.winners && pred.winners.length
     ? `<div class="mt-2 text-sm text-[#00ff85]">Winners: ${pred.winners.map(w => `${escPred(w.displayName)} (₦${(w.amount||0).toLocaleString()})`).join(' · ')}</div>`
     : (settled ? `<div class="mt-2 text-sm text-[#888]">Settled — no winner. Prize not paid out.</div>` : '');
@@ -1906,9 +1903,9 @@ function renderPredictionWeek() {
       ${winnersLine}
       ${open ? `
         <div class="mt-3">
-          <textarea id="pred-vote-text" rows="2" maxlength="280" placeholder="Your prediction (open-ended)…" class="w-full p-2 bg-[#111] border border-[#333] rounded-xl text-sm">${escPred(myVote ? myVote.text : '')}</textarea>
+          ${optionPick}
           <button onclick="submitPredictionVote('${escPred(pred.id)}')" class="mt-2 px-5 py-2 bg-[#00ff85] text-black font-bold rounded-2xl text-sm">${myVote ? 'UPDATE MY PREDICTION' : 'SUBMIT PREDICTION'}</button>
-          <div class="text-[10px] text-[#666] mt-1">Blind pool: others only see that you entered. All predictions are revealed when the commissioner locks.</div>
+          <div class="text-[10px] text-[#666] mt-1">${options.length ? 'Pick one option. ' : ''}Blind pool: others only see that you entered. All predictions are revealed when the commissioner locks.</div>
         </div>
       ` : ''}
       <div class="mt-3 max-h-48 overflow-auto">${voteRows}</div>
@@ -1970,7 +1967,20 @@ function sharePredictionCard() {
     ? `D LEAGUE CLUBHOUSE\n\nPREDICTION OF THE WEEK — LOCKED\n\n${pred.title}\n\nPrize: ₦${prize.toLocaleString()}\n\nTHE PICKS:\n${pickLines.length ? pickLines.join('\n') : '(no entries)'}\n\nSee them in the Clubhouse:\n${link}`
     : `D LEAGUE CLUBHOUSE\n\nPREDICTION OF THE WEEK\n\n${pred.title}\n\nPrize: ₦${prize.toLocaleString()}\n${status}\n\nBlind pool — drop your answer in the Clubhouse (hidden until lock).\n\nEnter here:\n${link}`;
 
-  const W = 1080, H = 1080;
+  const W = 1080;
+  const measure = document.createElement('canvas').getContext('2d');
+  measure.font = 'bold 52px sans-serif';
+  const titleLines = wrapCanvasLines(measure, pred.title, W - 180, 8);
+  measure.font = '20px sans-serif';
+  const pickDrawn = [];
+  if (revealed) {
+    (pred.votes || []).forEach(v => {
+      const ln = `• ${v.displayName || 'Manager'}: ${v.text || ''}`;
+      wrapCanvasLines(measure, ln, W - 180, 40).forEach(w => pickDrawn.push(w));
+    });
+  }
+  const picksBlock = revealed ? (50 + Math.max(pickDrawn.length, 1) * 32) : 90;
+  const H = Math.max(1080, 360 + titleLines.length * 64 + 280 + picksBlock + 140);
   const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
@@ -2014,7 +2024,6 @@ function sharePredictionCard() {
 
   ctx.fillStyle = '#ffffff';
   ctx.font = 'bold 52px sans-serif';
-  const titleLines = wrapCanvasLines(ctx, pred.title, W - 180, 4);
   titleLines.forEach((ln, i) => ctx.fillText(ln, 90, 360 + i * 64));
 
   const prizeY = 360 + titleLines.length * 64 + 70;
@@ -2035,20 +2044,21 @@ function sharePredictionCard() {
 
   ctx.fillStyle = '#aaaaaa';
   ctx.font = '22px sans-serif';
-  if (revealed && pickLines.length) {
+  if (revealed) {
     ctx.fillStyle = '#ffaa00';
     ctx.font = 'bold 22px sans-serif';
     ctx.fillText('THE PICKS', 90, prizeY + 220);
     ctx.fillStyle = '#ffffff';
     ctx.font = '20px sans-serif';
-    let y = prizeY + 255;
-    pickLines.slice(0, 12).forEach(ln => {
-      const wrapped = wrapCanvasLines(ctx, ln, W - 180, 2);
-      wrapped.forEach(w => {
-        if (y < H - 120) { ctx.fillText(w, 90, y); y += 28; }
+    let y = prizeY + 258;
+    if (!pickDrawn.length) {
+      ctx.fillText('(no entries)', 90, y);
+    } else {
+      pickDrawn.forEach(w => {
+        ctx.fillText(w, 90, y);
+        y += 32;
       });
-    });
-    if (pickLines.length > 12) ctx.fillText('…and more in the Clubhouse', 90, Math.min(y, H - 120));
+    }
   } else {
     ctx.fillText('Blind pool. Your pick stays hidden until lock.', 90, H - 200);
     ctx.fillStyle = '#00ff85';
@@ -2058,7 +2068,7 @@ function sharePredictionCard() {
   ctx.fillStyle = '#666';
   ctx.font = '20px sans-serif';
   const urlShow = location.host || 'd-league-clubhouse.onrender.com';
-  ctx.fillText(urlShow, 90, H - 100);
+  ctx.fillText(urlShow, 90, H - 80);
 
   const modal = $('modal');
   const content = $('modal-content');
@@ -2113,8 +2123,9 @@ function handlePredictionDeepLink() {
 
 async function submitPredictionVote(id) {
   const ta = $('pred-vote-text');
-  const text = ta ? ta.value.trim() : '';
-  if (!text) return alert('Write your prediction first.');
+  const picked = document.querySelector('input[name="pred-opt"]:checked');
+  const text = picked ? picked.value.trim() : (ta ? ta.value.trim() : '');
+  if (!text) return alert(picked || document.querySelector('input[name="pred-opt"]') ? 'Pick an option first.' : 'Write your prediction first.');
   try {
     await fetchJSON(`/api/predictions/${id}/vote`, { method: 'POST', body: JSON.stringify({ text }) });
     await loadStandings();
@@ -2167,7 +2178,9 @@ async function adminSetPrediction() {
     <label style="font-size:11px;color:#aaa;">Question</label>
     <input id="pred-title" value="${escPred(cur.title || '')}" placeholder="e.g. Who scores first vs Arsenal?" style="width:100%;background:#111;border:1px solid #444;color:#fff;padding:8px;border-radius:6px;margin:4px 0 10px;">
     <label style="font-size:11px;color:#aaa;">Prize ₦</label>
-    <input id="pred-prize" type="number" value="${cur.prize != null ? Number(cur.prize) : 5000}" style="width:100%;background:#111;border:1px solid #444;color:#fff;padding:8px;border-radius:6px;margin:4px 0 12px;">
+    <input id="pred-prize" type="number" value="${cur.prize != null ? Number(cur.prize) : 5000}" style="width:100%;background:#111;border:1px solid #444;color:#fff;padding:8px;border-radius:6px;margin:4px 0 10px;">
+    <label style="font-size:11px;color:#aaa;">Options (one per line — managers pick from these. Leave blank for free text)</label>
+    <textarea id="pred-options" rows="5" placeholder="Arsenal&#10;Chelsea&#10;Draw" style="width:100%;background:#111;border:1px solid #444;color:#fff;padding:8px;border-radius:6px;margin:4px 0 12px;">${escPred((cur.options || []).join('\n'))}</textarea>
     <button id="pred-save" style="background:#00ff85;color:#111;padding:8px 14px;border-radius:6px;font-weight:700;margin-right:8px;">SAVE / GO LIVE</button>
     <button id="pred-picks" style="background:#222;color:#fff;padding:8px 14px;border-radius:6px;margin-right:8px;">ENTER PICKS FOR MANAGERS</button>
     <button id="pred-cancel" style="padding:8px 14px;border-radius:6px;border:1px solid #444;">CLOSE</button>
@@ -2177,9 +2190,10 @@ async function adminSetPrediction() {
   modal.querySelector('#pred-save').onclick = async () => {
     const title = modal.querySelector('#pred-title').value.trim();
     const prize = Number(modal.querySelector('#pred-prize').value) || 0;
+    const options = (modal.querySelector('#pred-options').value || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
     if (!title) return alert('Need a question');
     try {
-      const res = await fetchJSON('/api/admin/prediction', { method: 'POST', body: JSON.stringify({ title, prize }) });
+      const res = await fetchJSON('/api/admin/prediction', { method: 'POST', body: JSON.stringify({ title, prize, options }) });
       await loadStandings();
       renderPredictionWeek();
       if (typeof loadAdminOverview === 'function') loadAdminOverview();
@@ -2211,11 +2225,18 @@ async function adminEnterPredictionForManager() {
   if (!mgrs.length) return alert('No managers found.');
   const voteById = {};
   (pred.votes || []).forEach(v => { if (v.managerId) voteById[v.managerId] = v.text || ''; });
+  const options = Array.isArray(pred.options) ? pred.options.filter(Boolean) : [];
   const rows = mgrs.map(m => {
     const existing = voteById[m.id] || '';
+    const field = options.length
+      ? `<select class="pred-admin-text" data-mid="${escPred(m.id)}" style="flex:1;background:#f8f8f8;color:#111;border:1px solid #555;padding:6px 8px;border-radius:6px;">
+          <option value="">— pick —</option>
+          ${options.map(o => `<option value="${escPred(o)}" ${existing === o ? 'selected' : ''}>${escPred(o)}</option>`).join('')}
+        </select>`
+      : `<input class="pred-admin-text" data-mid="${escPred(m.id)}" value="${escPred(existing)}" placeholder="their prediction…" style="flex:1;background:#f8f8f8;color:#111;border:1px solid #555;padding:6px 8px;border-radius:6px;">`;
     return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px;">
       <span style="width:180px;flex-shrink:0;">${escPred(m.displayName)}</span>
-      <input class="pred-admin-text" data-mid="${escPred(m.id)}" value="${escPred(existing)}" placeholder="their prediction…" style="flex:1;background:#f8f8f8;color:#111;border:1px solid #555;padding:6px 8px;border-radius:6px;">
+      ${field}
     </div>`;
   }).join('');
   const modal = openAdminSheet(`
@@ -2400,14 +2421,15 @@ async function reclaimPaidManager(managerId, currentName, currentClub) {
 }
 
 async function deleteManager(id, email) {
-  if (!confirm('Really delete this manager from the list? Historical ledger/payments/beefs stay for records. Cannot easily undo.')) return;
+  if (!confirm('Expunge this manager permanently? They will not reappear from backups or paid-recovery. Ledger/payments stay as audit only.')) return;
   try {
     const res = await fetchJSON('/api/admin/delete-manager', {
       method: 'POST',
       body: JSON.stringify({ managerId: id, email })
     });
-    alert(res.message || 'Manager removed.');
+    alert(res.message || 'Manager expunged.');
     loadAdminOverview();
+    if (typeof loadStandings === 'function') loadStandings();
   } catch (e) {
     alert('Delete failed: ' + (e.message || e));
   }
@@ -2951,18 +2973,14 @@ window.activeBeefs = window.activeBeefs || [];
 try {
   if ((!window.activeBeefs || window.activeBeefs.length === 0)) {
     const b = JSON.parse(localStorage.getItem('dl_activeBeefs') || '[]');
-    if (b.length) window.activeBeefs = b;
+    const live = (b || []).filter(x => x && !['settled', 'declined', 'cancelled'].includes(String(x.status || '').toLowerCase()));
+    if (live.length) window.activeBeefs = live;
   }
 } catch {}
-// Also merge on any future refresh to be extra safe
 window.mergeBeefsForSafety = function(serverB) {
-  try {
-    const loc = JSON.parse(localStorage.getItem('dl_activeBeefs') || '[]');
-    const m = new Map();
-    (serverB||[]).forEach(x=>x&&x.id&&m.set(x.id,x));
-    (loc||[]).forEach(x=>x&&x.id&&!m.has(x.id)&&m.set(x.id,x));
-    return Array.from(m.values());
-  } catch { return serverB || loc || []; }
+  const done = new Set(['settled', 'declined', 'cancelled']);
+  const live = (arr) => (arr || []).filter(x => x && !done.has(String(x.status || '').toLowerCase()));
+  return live(serverB);
 };
 
 function savePlayerChallenges() {
@@ -4901,10 +4919,14 @@ async function refreshAdminBeefsList() {
     const bdata = await fetchJSON('/api/admin/beefs');
     let bh = `<div class="font-black text-lg mb-2 text-[#ffaa00]">⚔️ BEEFS — ADMIN (manual settle + preview)</div>
       <div class="text-[10px] text-[#888] mb-2">Use SETTLE button (shows computed winner if data available for the round). Beefs persist.</div>`;
-    const bl = (bdata.beefs || []);
-    if (bl.length === 0) {
+    const blAll = (bdata.beefs || []);
+    const blLive = blAll.filter(bf => !['settled', 'declined', 'cancelled'].includes((bf.status || '').toLowerCase()));
+    const blDone = blAll.filter(bf => ['settled', 'declined', 'cancelled'].includes((bf.status || '').toLowerCase()));
+    const bl = blLive;
+    if (blAll.length === 0) {
       bh += `<div class="text-xs text-[#666]">No beefs found.</div>`;
     } else {
+      if (!bl.length) bh += `<div class="text-xs text-[#888] mb-2">No active beefs.</div>`;
       bl.forEach(bf => {
         const pstr = (bf.paidDetails || []).map(p=> `${p.displayName} ₦${p.amount}`).join(' • ') || 'no payments';
         const pz = bf.currentPot || bf.prizePot || 0;
@@ -4949,6 +4971,20 @@ async function refreshAdminBeefsList() {
           ${settleUI}
         </div>`;
       });
+      if (blDone.length) {
+        bh += `<div class="mt-4 mb-1 text-[10px] uppercase tracking-widest text-[#666]">Settled / closed (undo only — not shown on dashboard)</div>`;
+        blDone.forEach(bf => {
+          const pstr = (bf.paidDetails || []).map(p=> `${p.displayName} ₦${p.amount}`).join(' • ') || 'no payments';
+          const pz = bf.currentPot || bf.prizePot || 0;
+          const presetB = (BEEF_PRESETS || []).find(p => p.id === bf.category);
+          const bDesc = presetB ? presetB.desc : bf.category;
+          bh += `<div class="mb-2 p-2 bg-black/40 rounded text-xs border border-[#333] opacity-80">
+            <div><strong>${bf.proposerName}</strong> vs ${(bf.opponentNames||[]).join(', ')} | ${bDesc} | Pot ₦${pz}</div>
+            <div>Status: ${bf.status} | Paid: ${pstr}</div>
+            ${bf.status === 'settled' ? `<button onclick="adminCancelBeef('${bf.id}')" class="mt-1 px-2 py-0.5 bg-red-700 text-white text-[10px] rounded">UNDO SETTLEMENT</button>` : ''}
+          </div>`;
+        });
+      }
     }
     container.innerHTML = bh;
   } catch(e){ console.warn('refresh admin beefs failed', e); }
