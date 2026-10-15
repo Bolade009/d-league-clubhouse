@@ -1847,6 +1847,7 @@ async function settleWeeklyPot(comp, round) {
     }
   }
   backfillWeeklyHistoryFromLedger(s);
+  if (comp === "ucl") alignUclCurrentToSettled(s);
 
   writeAtomicSidecar(s);
   writeAtomicCollection('settings', s.settings || {});
@@ -1895,6 +1896,39 @@ function backfillWeeklyHistoryFromLedger(s) {
     added += 1;
   });
   return added;
+}
+
+// Latest UCL matchday that already has a winner. Display follows this unless an admin
+// has moved the clubhouse onto a later matchday.
+function highestSettledUclMd(s) {
+  let max = 0;
+  const weekly = (s && s.settings && s.settings.history && s.settings.history.weekly) || [];
+  weekly.forEach(h => {
+    const comp = h && (h.comp || h.competition) || "";
+    if (comp !== "ucl") return;
+    const r = Number(h.round);
+    if (Number.isFinite(r) && r > max) max = r;
+  });
+  (s && s.ledger || []).forEach(l => {
+    if (!l || l.type !== "weekly_win" || l.competition !== "ucl") return;
+    const r = Number(l.round);
+    if (Number.isFinite(r) && r > max) max = r;
+  });
+  if (max > 17) max = 17;
+  return max;
+}
+
+// Move the shown UCL matchday forward to the latest settled one. Never rewinds a later choice.
+function alignUclCurrentToSettled(s) {
+  if (!s) return false;
+  s.settings = s.settings || {};
+  s.settings.currentRound = s.settings.currentRound || { fpl: 1, ucl: 1 };
+  const settled = highestSettledUclMd(s);
+  const cur = Number(s.settings.currentRound.ucl) || 1;
+  const next = Math.min(17, Math.max(cur, settled || 0));
+  if (next === cur) return false;
+  s.settings.currentRound.ucl = next;
+  return true;
 }
 
 async function settleUclEndOfSeason() {
@@ -4752,6 +4786,29 @@ app.post("/api/admin/set-ucl-md-scores", async (req, res) => {
   res.json({ ok: true, message: `UCL MD${md} scores saved (manual). Use finalize/settle to pay winner.` });
 });
 
+// Admin chooses which UCL matchday the clubhouse shows. Does not settle or move money.
+// A settled matchday stays on screen: choosing an earlier MD keeps the latest settled one.
+app.post("/api/admin/set-current-ucl-md", async (req, res) => {
+  if (!DEMO_MODE && !isAdminRequest(req)) return res.status(401).json({ error: "Unauthorized" });
+  const md = Number((req.body || {}).md);
+  if (!Number.isInteger(md) || md < 1 || md > 17) {
+    return res.status(400).json({ error: "md must be a whole number from 1 to 17" });
+  }
+  const s = await loadStore();
+  s.settings.currentRound = s.settings.currentRound || { fpl: 1, ucl: 1 };
+  s.settings.currentRound.ucl = md;
+  const settled = highestSettledUclMd(s);
+  if (md < settled) s.settings.currentRound.ucl = settled;
+  writeAtomicSidecar(s);
+  writeAtomicCollection("settings", s.settings);
+  await persistStore();
+  const shown = s.settings.currentRound.ucl;
+  const message = md < settled
+    ? `UCL is showing MD${shown}. That is the latest settled matchday.`
+    : `UCL is showing MD${shown}.`;
+  res.json({ ok: true, currentRound: s.settings.currentRound, message });
+});
+
 // Admin toggles league lock (simple manual control, no date logic)
 app.post("/api/admin/set-league-lock", async (req, res) => {
   if (!DEMO_MODE) {
@@ -5885,6 +5942,13 @@ app.get("/api/me", async (req, res) => {
 });
 
 app.get("/api/standings", async (req, res) => {
+  const s0 = await loadStore();
+  const histAdded = backfillWeeklyHistoryFromLedger(s0);
+  const uclMoved = alignUclCurrentToSettled(s0);
+  if (histAdded || uclMoved) {
+    writeAtomicCollection("settings", s0.settings || {});
+    setImmediate(() => { persistStore().catch(() => {}); });
+  }
   const lb = getFullLeaderboard();
   const s = getStore();
   try { await populateH2HFixtures(s); } catch (e) {}
@@ -5907,11 +5971,6 @@ app.get("/api/standings", async (req, res) => {
   }
 
   const predViewerId = (getAuthenticatedManager(req) || {}).id;
-  const histAdded = backfillWeeklyHistoryFromLedger(s);
-  if (histAdded) {
-    writeAtomicCollection('settings', s.settings || {});
-    setImmediate(() => { persistStore().catch(() => {}); });
-  }
   res.json({
     currentRound: s.settings.currentRound,
     roundAverages: s.settings.roundAverages,

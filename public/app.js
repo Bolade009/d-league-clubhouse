@@ -1161,7 +1161,7 @@ async function loadAdminOverview() {
       <!-- EXPLICIT UCL MD MANAGEMENT - unmistakable for admin -->
       <div class="mb-4 p-4 bg-[#0a1a12] border-2 border-[#00ff85] rounded-3xl">
         <div class="font-black text-[#00ff85] text-base mb-1 tracking-[-0.3px]">UCL MD SCORES — ENTER &amp; FINALIZE</div>
-        <div class="text-xs text-[#ccc] mb-2">Manually enter points for each MD (admin only). Finalize to auto-settle the MD winner (90% to wallet) and accumulate reserves for end-of-season 2nd/3rd. Scores build totals for overall ranking. Saves immediately.</div>
+        <div class="text-xs text-[#ccc] mb-2">Clubhouse is showing MD${(standingsData && standingsData.currentRound && standingsData.currentRound.ucl) || "?"}. Enter points for a matchday, then use SET AS CURRENT on that form so the UCL screen uses it. Finalizing a matchday also makes that settled matchday the one on screen.</div>
         <button onclick="adminManageUclMdScores()" class="px-5 py-2 bg-[#00ff85] hover:bg-white text-black font-bold rounded-2xl text-sm active:scale-[0.985]">OPEN UCL MD SELECTOR — ENTER POINTS &amp; FINALIZE</button>
         <div class="text-[10px] mt-1.5 text-[#666]">Also available as "UCL MD SCORES (manual + finalize)" in the top button row.</div>
       </div>
@@ -5189,10 +5189,12 @@ async function adminManageUclMdScores() {
   modal.innerHTML = `
     <div style="background:#1c1c1c;border:1px solid #333;padding:16px;border-radius:12px;max-width:620px;width:94%;">
       <div style="font-weight:bold;font-size:15px;margin-bottom:4px;">UCL MD${md} — Enter Points (manual)</div>
-      <div style="font-size:11px;color:#888;margin-bottom:8px;">UEFA Fantasy has no public FPL-style API, so MD points are entered here and stored durably. Use "Finalize &amp; Settle" to credit the winner (same money logic as FPL).</div>
+      <div id="ucl-md-current-label" style="font-size:11px;color:#00ff85;margin-bottom:6px;">Clubhouse is showing MD${standingsData.currentRound?.ucl || "?"}.</div>
+      <div style="font-size:11px;color:#888;margin-bottom:8px;">UEFA Fantasy has no public FPL-style API, so MD points are entered here and stored durably. SET AS CURRENT changes only the matchday on the UCL screen. Finalize credits the winner for this matchday.</div>
       <div id="ucl-md-picks" style="max-height:380px;overflow:auto;"></div>
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
         <button id="ucl-md-save" style="background:#00ff85;color:#111;padding:7px 14px;border-radius:6px;font-weight:600;">SAVE POINTS</button>
+        <button id="ucl-md-current" style="background:#111;color:#00ff85;padding:7px 14px;border-radius:6px;font-weight:600;border:1px solid #00ff85;">SET MD${md} AS CURRENT</button>
         <button id="ucl-md-finalize" style="background:#ffaa00;color:#111;padding:7px 14px;border-radius:6px;font-weight:600;">FINALIZE MD${md} &amp; SETTLE WINNER</button>
         <button id="ucl-md-cancel" style="padding:7px 14px;border-radius:6px;border:1px solid #444;">CANCEL</button>
       </div>
@@ -5239,6 +5241,22 @@ async function adminManageUclMdScores() {
       await loadStandings();
       renderUclTailored();
     } catch (e) { alert('Save failed: ' + e.message); }
+  };
+
+  modal.querySelector('#ucl-md-current').onclick = async () => {
+    try {
+      const res = await fetchJSON('/api/admin/set-current-ucl-md', {
+        method: 'POST',
+        body: JSON.stringify({ md })
+      });
+      await loadAllData();
+      renderUclTailored();
+      if (typeof renderUCLRace === 'function') renderUCLRace();
+      const shown = (standingsData && standingsData.currentRound && standingsData.currentRound.ucl) || md;
+      const label = modal.querySelector('#ucl-md-current-label');
+      if (label) label.textContent = 'Clubhouse is showing MD' + shown + '.';
+      alert(res.message || ('UCL is showing MD' + shown));
+    } catch (e) { alert('Could not set current MD: ' + e.message); }
   };
 
   modal.querySelector('#ucl-md-finalize').onclick = async () => {
