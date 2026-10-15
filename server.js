@@ -2756,6 +2756,7 @@ async function syncFPL(roundsToSync = null) {
             };
           });
           extra.transfers = picksData.entry_history?.event_transfers || 0;
+          extra.transferCost = Math.max(0, Number(picksData.entry_history?.event_transfers_cost) || 0);
         }
 
         // Fallback to entry summary
@@ -2774,6 +2775,9 @@ async function syncFPL(roundsToSync = null) {
       // Upsert score with extra FPL details
       upsertScore(s, mgr.id, "fpl", r, points, source, isFinal, extra);
     }
+    // One history call covers every GW, including hits on weeks this sync does not re-fetch.
+    // GW points stay as FPL's event score. The season total is FPL's total_points (hits already off).
+    await reconcileFplHistory(s, mgr);
   }
 
   // Compute round average from official scores
@@ -2802,6 +2806,25 @@ async function syncFPL(roundsToSync = null) {
 
   await logEvent("sync_fpl_completed", { rounds, managers: s.managers.length });
   return { ok: true };
+}
+
+// Official season total from /entry/{id}/history/. total_points already subtracts
+// event_transfers_cost, which entry_history.points does not. GW rows keep the
+// event score FPL shows for that week; the season total uses total_points.
+async function reconcileFplHistory(s, mgr) {
+  if (!s || !mgr || !mgr.fpl || !mgr.fpl.teamId) return;
+  const hist = await safeFetchJSON(`${FPL_BASE}/entry/${mgr.fpl.teamId}/history/`);
+  if (!hist || !Array.isArray(hist.current)) return;
+  let latestTotal = null;
+  for (const ev of hist.current) {
+    const round = Number(ev.event);
+    if (!Number.isFinite(round) || round < 1) continue;
+    const cost = Math.max(0, Number(ev.event_transfers_cost) || 0);
+    const existing = (s.scores || []).find(sc => sc.managerId === mgr.id && sc.competition === "fpl" && Number(sc.round) === round);
+    if (existing) existing.transferCost = cost;
+    if (typeof ev.total_points === "number") latestTotal = ev.total_points;
+  }
+  if (latestTotal != null) mgr.fplOverallPoints = latestTotal;
 }
 
 function computeLivePointsFromPicks(picks, liveData) {
@@ -3116,9 +3139,11 @@ function buildManagerView(mgr, opts = {}) {
   const currentFpl = getManagerScore(mgr.id, "fpl", s.settings.currentRound.fpl);
   const currentUcl = getManagerScore(mgr.id, "ucl", s.settings.currentRound.ucl);
 
-  const fplTotal = s.scores
-    .filter(sc => sc.managerId === mgr.id && sc.competition === "fpl" && typeof sc.points === "number")
-    .reduce((a, b) => a + b.points, 0);
+  const fplRows = s.scores.filter(sc => sc.managerId === mgr.id && sc.competition === "fpl" && typeof sc.points === "number");
+  const fplGross = fplRows.reduce((a, b) => a + b.points, 0);
+  const fplHits = fplRows.reduce((a, b) => a + Math.max(0, Number(b.transferCost) || 0), 0);
+  // Prefer FPL's own season total (hits already deducted). Fallback subtracts stored hits.
+  const fplTotal = typeof mgr.fplOverallPoints === "number" ? mgr.fplOverallPoints : (fplGross - fplHits);
 
   const uclTotal = s.scores
     .filter(sc => sc.managerId === mgr.id && sc.competition === "ucl" && typeof sc.points === "number")
@@ -4890,7 +4915,7 @@ app.get("/api/predictions", async (req, res) => {
   const list = getPredictionsList(s);
   res.json({
     current: predictionForViewer(livePrediction(s), vid),
-    recent: list.slice(-8).map(p => predictionForViewer(p, vid))
+    recent: list.map(p => predictionForViewer(p, vid))
   });
 });
 
@@ -5993,7 +6018,7 @@ app.get("/api/standings", async (req, res) => {
       weekly: (s.settings.history && s.settings.history.weekly) || []
     },
     currentPrediction: predictionForViewer(livePrediction(s), predViewerId),
-    predictions: (s.settings.predictions || []).slice(-8).map(p => predictionForViewer(p, predViewerId)),
+    predictions: (s.settings.predictions || []).map(p => predictionForViewer(p, predViewerId)),
     // Slim UCL scores (no picks) so admin MD entry can re-open without losing values. Fast payload.
     scores: (s.scores || [])
       .filter(sc => sc && sc.competition === 'ucl')

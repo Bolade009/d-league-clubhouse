@@ -1835,13 +1835,50 @@ function isCommissionerClient() {
   return !!(currentManager && currentManager.email && currentManager.email.toLowerCase() === 'bolade.oladejo@gmail.com');
 }
 
+function pastPredictionsHtml() {
+  const list = (standingsData && Array.isArray(standingsData.predictions)) ? standingsData.predictions : [];
+  const liveId = standingsData && standingsData.currentPrediction && standingsData.currentPrediction.id;
+  const past = list.filter(p => p && p.id !== liveId).slice().reverse();
+  if (!past.length) return '';
+  const cards = past.map(p => {
+    const winners = Array.isArray(p.winners) ? p.winners : [];
+    const votes = Array.isArray(p.votes) ? p.votes : [];
+    const settled = p.status === 'settled';
+    let result = 'Open.';
+    if (settled && winners.length) result = 'Winners: ' + winners.map(w => escPred(w.displayName || 'Manager')).join(', ');
+    else if (settled) result = 'No winner. Prize not paid out.';
+    else if (p.status === 'locked') result = 'Locked. Waiting to be settled.';
+    const reveal = settled || p.status === 'locked';
+    const picks = reveal
+      ? votes.filter(v => v && v.text).map(v => `<div class="text-xs text-[#ccc] py-0.5">${escPred(v.displayName || 'Manager')} — ${escPred(v.text)}</div>`).join('')
+      : '';
+    const when = p.settledAt || p.createdAt || '';
+    let whenLabel = '';
+    if (when) {
+      const dt = new Date(when);
+      if (!isNaN(dt.getTime())) whenLabel = dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    }
+    return `<div class="border border-[#333] rounded-2xl p-3 bg-[#111]">
+      <div class="font-semibold">${escPred(p.title || 'Prediction')}</div>
+      <div class="text-xs text-[#888] mt-0.5">Prize ₦${Number(p.prize || 0).toLocaleString()}${whenLabel ? ' · ' + whenLabel : ''} · ${votes.length} pick${votes.length === 1 ? '' : 's'}</div>
+      <div class="text-sm mt-1 ${winners.length ? 'text-[#00ff85]' : 'text-[#ccc]'}">${result}</div>
+      ${picks ? `<details class="mt-1"><summary class="text-[11px] text-[#888] cursor-pointer">Show picks</summary><div class="mt-1">${picks}</div></details>` : ''}
+    </div>`;
+  }).join('');
+  return `<div class="mt-4">
+    <div class="font-black text-sm tracking-[-0.3px] text-[#ccc] mb-2">PREVIOUS PREDICTIONS</div>
+    <div class="space-y-2">${cards}</div>
+  </div>`;
+}
+
 function renderPredictionWeek() {
   const el = $('prediction-week');
   if (!el) return;
   const pred = (standingsData && standingsData.currentPrediction) || null;
   const admin = isCommissionerClient();
+  const history = pastPredictionsHtml();
   if (!pred) {
-    el.innerHTML = admin
+    el.innerHTML = (admin
       ? `<div class="p-5 bg-[#0a1a12] border-2 border-[#00ff85] rounded-3xl">
            <div class="font-black text-xl text-[#00ff85] tracking-[-0.5px]">PREDICTION OF THE WEEK</div>
            <div class="text-sm text-[#ccc] mt-1">No live prediction yet. Set the title + prize after the group decides.</div>
@@ -1850,7 +1887,7 @@ function renderPredictionWeek() {
       : `<div class="p-5 bg-[#1c1c1c] border border-[#333] rounded-3xl">
            <div class="font-black text-xl tracking-[-0.5px]">PREDICTION OF THE WEEK</div>
            <div class="text-sm text-[#888] mt-1">Waiting for this week's question. Check back after the commissioner posts it.</div>
-         </div>`;
+         </div>`) + history;
     return;
   }
   const votes = pred.votes || [];
@@ -1921,6 +1958,7 @@ function renderPredictionWeek() {
         </div>
       ` : ''}
     </div>
+    ${history}
   `;
 }
 
