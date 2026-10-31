@@ -1358,13 +1358,11 @@ async function loadAdminOverview() {
           <button onclick="restoreFromBestBackup()" class="mt-2 ml-2 px-3 py-1 bg-emerald-600 text-white rounded text-xs font-bold">RESTORE FROM BEST BACKUP ON DISK (no paste)</button>
 
           <div class="mt-3 pt-2 border-t border-[#333]">
-            <div class="font-bold text-[#00ff85] mb-1">🛡️ FREE TIER SLEEP PREVENTION (set & forget, no manual after)</div>
-            <div class="text-[10px]">Render free sleeps after ~15min no traffic (root of WAL/sidecar issues). Use a <b>free external pinger</b> to send traffic to /health every 5 min. This wakes it automatically.</div>
-            <div class="mt-1">1. Go to <a href="https://cron-job.org" target="_blank" class="underline">cron-job.org</a> (free, no CC) or UptimeRobot.</div>
-            <div class="mt-1">2. Create job pinging exactly: <code class="bg-black px-1">${window.location.origin}/health</code> every 5 minutes (GET).</div>
-            <div class="mt-1">From your GO54/other hosting: Add to crontab: <code class="bg-black px-1">*/5 * * * * curl -s ${window.location.origin}/health &gt;/dev/null</code></div>
-            <div class="mt-1 text-[10px] text-[#888]">Our /health now does full auto-heal + sidecar promote on every ping. Combined with the 5min maintenance loop while awake, state stays consistent. GitHub Actions also works (free).</div>
-            <div class="mt-1 text-[10px]">Tip: Leave this admin tab open — it auto-pings every 60s to help during your session. Keep Mac plugged in.</div>
+            <div class="font-bold text-[#ffcc00] mb-1">RENDER FREE — OFFLINE BACKUPS REQUIRED</div>
+            <div class="text-[11px]">Render Free does not preserve local SQLite or JSON after redeploy, restart, or idle spin-down. A scheduled ping cannot guarantee persistence or protect money records.</div>
+            <div class="mt-1">Download the FULL EXPORT before deploying and after every important payment/settlement. Store it securely outside Render and GitHub.</div>
+            <div class="mt-1">If the app reports recovery mode, use <a class="underline text-[#00ff85]" href="/recovery.html">UPLOAD FULL BACKUP JSON</a> to restore the complete league. Payments are paused while recovery is required.</div>
+            <div class="text-[10px] mt-2 text-[#ffcc00]">Manual backups are temporary only. Use an external persistent database for reliable live operations.</div>
           </div>
         `;
         panel.appendChild(pbox);
