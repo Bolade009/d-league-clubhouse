@@ -40,15 +40,35 @@ function persistedCounts(dataDir) {
     counts[name] = Math.max(counts[name],
       collectionLength(readJSON(path.join(dataDir, 'current-' + name + '.json')), name));
   }
+  // SQLite may be the only surviving source after a partial disk or JSON-sidecar failure.
+  const dbPath = path.join(dataDir, 'dleague.db');
+  if (fs.existsSync(dbPath)) {
+    let db;
+    try {
+      const Database = require('better-sqlite3');
+      db = new Database(dbPath, { readonly: true, fileMustExist: true });
+      for (const name of Object.keys(counts)) {
+        const row = db.prepare('SELECT value FROM store WHERE key = ?').get(name);
+        if (row) counts[name] = Math.max(counts[name],
+          collectionLength(JSON.parse(row.value), name));
+      }
+    } catch (e) {
+      console.warn('[DATA PROTECTION] Read-only SQLite check unavailable:', e.message);
+    } finally {
+      try { if (db) db.close(); } catch {}
+    }
+  }
   return counts;
 }
 
 function enforcePersistedDataFloor(dataDir, env = process.env, demoMode = false) {
   if (demoMode) return { checked: false, reason: 'demo mode' };
   const expected = {
-    managers: nonnegativeFloor(env.DLEAGUE_MIN_MANAGERS, 'DLEAGUE_MIN_MANAGERS'),
-    payments: nonnegativeFloor(env.DLEAGUE_MIN_PAYMENTS, 'DLEAGUE_MIN_PAYMENTS'),
-    ledger: nonnegativeFloor(env.DLEAGUE_MIN_LEDGER, 'DLEAGUE_MIN_LEDGER')
+    // This is a live, already-populated league. A blank admin-only datastore must not serve production.
+    // Operators can raise floors to known pre-deploy counts, or explicitly set 0 for a new installation.
+    managers: nonnegativeFloor(env.DLEAGUE_MIN_MANAGERS ?? '2', 'DLEAGUE_MIN_MANAGERS'),
+    payments: nonnegativeFloor(env.DLEAGUE_MIN_PAYMENTS ?? '1', 'DLEAGUE_MIN_PAYMENTS'),
+    ledger: nonnegativeFloor(env.DLEAGUE_MIN_LEDGER ?? '1', 'DLEAGUE_MIN_LEDGER')
   };
   if (!Object.values(expected).some(Boolean)) return { checked: false, reason: 'no protection floor configured' };
   const actual = persistedCounts(dataDir);
