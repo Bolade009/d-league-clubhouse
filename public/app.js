@@ -5837,3 +5837,21 @@ async function loadFplLeague() {
 }
 
 bootstrap();
+
+
+/** Show an unmistakable link to backup recovery whenever Render Free has lost data. */
+window.addEventListener('load', async () => {
+  try {
+    const response = await fetch('/api/recovery/status', { cache: 'no-store' });
+    if (!response.ok) return;
+    const status = await response.json();
+    if (!status.recoveryRequired) return;
+    const notice = document.createElement('div');
+    notice.setAttribute('role', 'alert');
+    notice.style.cssText = 'position:fixed;z-index:99999;top:0;left:0;right:0;background:#32220d;border-bottom:2px solid #ffc15e;color:#fff;padding:12px 18px;font:600 14px/1.5 system-ui;text-align:center;';
+    notice.innerHTML = 'DLeague is temporarily in BACKUP RECOVERY MODE. Live payments and changes are paused. ' +
+      '<a href="/recovery.html" style="color:#00ff85;text-decoration:underline;font-weight:900">COMMISSIONER: UPLOAD SAVED BACKUP</a>';
+    document.body.prepend(notice);
+    document.body.style.paddingTop = '68px';
+  } catch {}
+}, { once: true });
