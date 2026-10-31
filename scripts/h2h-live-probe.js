@@ -36,4 +36,31 @@ const targets = [
       }
     } catch (e) { console.log('\n' + name + ': network error:', e.message); }
   }
+  // Exercise the same importer used by the server against the real FPL endpoint.
+  const { fetchH2HFixtures } = require('../h2h-fixtures');
+  const { strict: assert } = require('node:assert');
+  for (const round of [9, 10]) {
+    try {
+      const imported = await fetchH2HFixtures({
+        leagueId: league, gameweek: round,
+        fetchJSON: async url => {
+          const r = await fetch(url, {
+            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+            signal: AbortSignal.timeout(12000),
+          });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        }
+      });
+      assert.equal(Object.keys(imported.fixtures).length, imported.matchCount * 2);
+      for (const [entry, opponent] of Object.entries(imported.fixtures)) {
+        assert.equal(imported.fixtures[opponent], entry);
+      }
+      console.log('IMPORTER VALIDATED GW' + round + ': ' + imported.matchCount + ' real matches, ' +
+        Object.keys(imported.fixtures).length + ' paired entries, pages=' + imported.pages);
+    } catch (e) {
+      console.log('IMPORTER FAILED GW' + round + ': ' + (e.message || e));
+      process.exitCode = 1;
+    }
+  }
 })().catch(e => { console.error(e); process.exitCode = 1; });
