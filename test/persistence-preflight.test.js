@@ -41,10 +41,13 @@ test('requires all configured data collections to meet their floors', t => {
     /payments=0/);
 });
 
-test('demo mode and unconfigured production do not block boot', t => {
+test('demo bypasses guard but blank live production is refused by default', t => {
   const dir = tempDir(t);
   assert.equal(enforcePersistedDataFloor(dir, { DLEAGUE_MIN_MANAGERS: 2 }, true).checked, false);
-  assert.equal(enforcePersistedDataFloor(dir, {}, false).checked, false);
+  assert.throws(() => enforcePersistedDataFloor(dir, {}, false), /DATA PROTECTION.*managers=0/);
+  assert.equal(enforcePersistedDataFloor(dir, {
+    DLEAGUE_MIN_MANAGERS: '0', DLEAGUE_MIN_PAYMENTS: '0', DLEAGUE_MIN_LEDGER: '0'
+  }).checked, false);
 });
 
 test('rejects malformed deployment floors instead of silently disabling checks', t => {
