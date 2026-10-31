@@ -3278,7 +3278,7 @@ const h2hSyncInFlight = new Map();
 async function syncH2HFixtures(s, gameweek, force = false) {
   const leagueId = String((s.settings.leagueIds || {}).fplH2h || '').trim();
   const gw = Number(gameweek);
-  if (!/^[1-9]\\d*$/.test(leagueId)) return { ok: false, reason: 'H2H league ID not configured' };
+  if (!/^[1-9]\d*$/.test(leagueId)) return { ok: false, reason: 'H2H league ID not configured' };
   if (!Number.isInteger(gw) || gw < 1 || gw > 38) return { ok: false, reason: 'Invalid GW' };
   s.settings.h2hAutoFixtures = s.settings.h2hAutoFixtures || {};
   s.settings.h2hAutoSync = s.settings.h2hAutoSync || {};
