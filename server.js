@@ -6872,11 +6872,8 @@ async function boot() {
     console.log("[BOOT] Persisted data floor validated:", JSON.stringify(persistencePreflight.actual));
   }
   console.log("[BOOT] Starting with hardened persistence (current-state.json sidecar + multi-source merge + WAL checkpoints)");
-  console.log("🛡️ TO KEEP RENDER FREE AWAKE 24/7 (set & forget):");
-  console.log("   - Use free https://cron-job.org : Create GET cron to " + (process.env.RENDER_EXTERNAL_URL || 'https://d-league-clubhouse.onrender.com') + "/health every 5 min");
-  console.log("   - Or from your GO54: */5 * * * * curl -s " + (process.env.RENDER_EXTERNAL_URL || 'https://d-league-clubhouse.onrender.com') + "/health > /dev/null");
-  console.log("   - Or leave admin cockpit tab open (it auto-pings /health every 60s)");
-  console.log("   /health now does full auto-heal on every ping.");
+  console.warn('[STORAGE] Render Free local databases are ephemeral: redeploy, restart or idle spin-down can wipe all managers and ledgers.');
+  console.warn('[STORAGE] Store a full export OFF the server after every important transaction, or migrate to persistent external storage.');
 
   // IMPORTANT: Do not select a managers-only atomic collection as the whole store here.
   // It used to win the equal-count tie against full SQLite/sidecar snapshots and overwrite
