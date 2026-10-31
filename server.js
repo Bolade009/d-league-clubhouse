@@ -6808,42 +6808,10 @@ async function boot() {
   console.log("   - Or leave admin cockpit tab open (it auto-pings /health every 60s)");
   console.log("   /health now does full auto-heal on every ping.");
 
-  // VERY EARLY: promote best state from disk atomics before any other logic or persist
-  // This ensures even on fresh deploy process, we load the best known data first.
-  try {
-    const atomicM = loadAtomicCollection('managers');
-    const atomicP = loadAtomicCollection('payments');
-    const atomicL = loadAtomicCollection('ledger');
-    const atomicB = loadAtomicCollection('beefs');
-    let side = null;
-    try {
-      const p = path.join(DATA_DIR, 'current-state.json');
-      if (fsSync.existsSync(p)) {
-        const d = JSON.parse(fsSync.readFileSync(p, 'utf8'));
-        if (d && Array.isArray(d.managers)) side = d;
-      }
-    } catch {}
-    const bestB = findBestBackupData();
-
-    let bestState = {};
-    const candidates = [atomicM ? {managers: atomicM} : null, side, bestB].filter(Boolean);
-    candidates.forEach(c => {
-      if (!bestState.managers || (c.managers && c.managers.length > (bestState.managers || []).length)) {
-        bestState = c;
-      }
-    });
-    if (bestState.managers && bestState.managers.length > 0) {
-      storeCache = { ...createEmptyStore(), ...bestState };
-      if (atomicP) storeCache.payments = preferRicherArray('payments', storeCache.payments, atomicP);
-      if (atomicL) storeCache.ledger = preferRicherArray('ledger', storeCache.ledger, atomicL);
-      if (atomicB) storeCache.beefs = preferRicherArray('beefs', storeCache.beefs, atomicB);
-      storeCache = autoHealIfWiped(storeCache);
-      writeAtomicSidecar(storeCache);
-      console.log(`[BOOT EARLY PROMOTE] Loaded best state with ${storeCache.managers.length} managers from disk`);
-    }
-  } catch (e) {
-    console.warn('[BOOT EARLY PROMOTE] failed', e.message);
-  }
+  // IMPORTANT: Do not select a managers-only atomic collection as the whole store here.
+  // It used to win the equal-count tie against full SQLite/sidecar snapshots and overwrite
+  // ledgers, scores, payments and settings with defaults before loadStore could merge them.
+  // loadStore performs the multi-source recovery first; only it may promote data to disk.
 
   let store = await loadStore();
   console.log(`[BOOT] Initial loadStore: ${store.managers?.length || 0} managers, payments: ${(store.payments||[]).length}`);
