@@ -4419,7 +4419,21 @@ function renderFplTailored() {
         // Manual overrides take precedence; valid official data fills unassigned matchups.
         const autoFixtures = (standingsData.h2hAutoFixtures && standingsData.h2hAutoFixtures[currentGw]) || {};
         const manualFixtures = (standingsData.h2hFixtures && standingsData.h2hFixtures[currentGw]) || {};
-        const fixtures = { ...autoFixtures, ...manualFixtures };
+        // Avoid contradictory opponents when an admin overrides a pairing.
+        const manualParticipants = new Set([
+          ...Object.keys(manualFixtures), ...Object.values(manualFixtures).map(String)
+        ]);
+        const fixtures = {};
+        Object.entries(autoFixtures).forEach(([entry, opponent]) => {
+          if (!manualParticipants.has(String(entry)) && !manualParticipants.has(String(opponent))) {
+            fixtures[entry] = opponent;
+          }
+        });
+        Object.assign(fixtures, manualFixtures);
+        // Complete a one-sided manual override when its reverse is unassigned.
+        Object.entries(manualFixtures).forEach(([entry, opponent]) => {
+          if (opponent && !fixtures[String(opponent)]) fixtures[String(opponent)] = entry;
+        });
 
         // Map D-League managers by their FPL teamId (entry) for proper manager (club) names
         const mgrByTeamId = {};
