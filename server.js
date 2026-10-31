@@ -34,6 +34,7 @@ const ADMIN_ACCESS_CODE = "DLeagueAdmin!2026@*";
 
 const FPL_BASE = "https://fantasy.premierleague.com/api";
 const { fetchH2HFixtures } = require("./h2h-fixtures");
+const { enforcePersistedDataFloor } = require("./persistence-preflight");
 
 // Optional email transport (set SMTP_* in env on Render for real emails)
 let mailer = null;
@@ -6797,6 +6798,9 @@ app.get("*", (req, res) => {
 // ============ BOOT ============
 
 async function boot() {
+  // Must run before ANY state promotion or admin seeding: a blank disk must not be mistaken for a new season.
+  const persistencePreflight = enforcePersistedDataFloor(DATA_DIR, process.env, DEMO_MODE);
+  if (persistencePreflight.checked) console.log("[BOOT] Persisted data floor validated:", JSON.stringify(persistencePreflight.actual));
   console.log("[BOOT] Starting with hardened persistence (current-state.json sidecar + multi-source merge + WAL checkpoints)");
   console.log("🛡️ TO KEEP RENDER FREE AWAKE 24/7 (set & forget):");
   console.log("   - Use free https://cron-job.org : Create GET cron to " + (process.env.RENDER_EXTERNAL_URL || 'https://d-league-clubhouse.onrender.com') + "/health every 5 min");
