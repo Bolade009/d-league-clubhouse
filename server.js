@@ -28,7 +28,8 @@ const UCL_TEMPLATE = process.env.UCL_FANTASY_API_TEMPLATE || "";
 
 // Live admin (only this email can see backend admin view + trigger protected actions)
 const ADMIN_EMAIL = "bolade.oladejo@gmail.com";
-const ADMIN_ACCESS_CODE = "DLeagueAdmin!2026@*";
+// Render should provide a rotated private admin code; fallback preserves legacy login until migrated.
+const ADMIN_ACCESS_CODE = process.env.ADMIN_ACCESS_CODE || "DLeagueAdmin!2026@*";
 
 // No protected auto-restored managers in production. All managers come from real registration + payment.
 
@@ -6490,6 +6491,9 @@ app.post("/api/sync/run", async (req, res) => {
 
 // Full export (protected)
 app.get("/api/export/full", requireExportAuth, async (req, res) => {
+  if (recoveryRequired) {
+    return res.status(409).json({ error: 'Recovery mode: refusing an admin-only or incomplete full export. Upload your saved good backup first.' });
+  }
   const s = await loadStore();
   res.setHeader("Content-Type", "application/json");
   res.setHeader("Content-Disposition", `attachment; filename="d-league-export-${Date.now()}.json"`);
