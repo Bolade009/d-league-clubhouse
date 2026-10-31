@@ -1144,7 +1144,8 @@ async function loadAdminOverview() {
           <button onclick="promptSetLeagues()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">SET LEAGUE IDs</button>
           <button onclick="promptEditServiceFees()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">EDIT SERVICE FEES</button>
           <button onclick="emergencySync()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">FORCE SYNC</button>
-          <button onclick="adminManageH2HFixtures()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">H2H FIXTURES (enter matchups)</button>
+          <button onclick="adminManageH2HFixtures()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">H2H FIXTURES (manual override)</button>
+          <button onclick="adminSyncH2HFixtures()" class="px-6 py-2 bg-[#153522] hover:bg-[#225533] rounded-2xl text-sm font-bold text-[#00ff85]">SYNC H2H FROM FPL</button>
           <button onclick="adminManageUclMdScores()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">UCL MD SCORES (manual + finalize)</button>
           <button onclick="adminSetPrediction()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">PREDICTION OF THE WEEK</button>
         </div>
@@ -4415,7 +4416,10 @@ function renderFplTailored() {
         let results = [...h2hData.standings.results].sort((a,b) => (a.rank||999) - (b.rank||999));
         // H2H always shows fixtures for the *current* GW (not current+1/next). Matches the saved per-GW data from admin.
         const currentGw = (standingsData.currentRound && standingsData.currentRound.fpl) || 1;
-        const fixtures = (standingsData.h2hFixtures && standingsData.h2hFixtures[currentGw]) || {};
+        // Manual overrides take precedence; valid official data fills unassigned matchups.
+        const autoFixtures = (standingsData.h2hAutoFixtures && standingsData.h2hAutoFixtures[currentGw]) || {};
+        const manualFixtures = (standingsData.h2hFixtures && standingsData.h2hFixtures[currentGw]) || {};
+        const fixtures = { ...autoFixtures, ...manualFixtures };
 
         // Map D-League managers by their FPL teamId (entry) for proper manager (club) names
         const mgrByTeamId = {};
@@ -4442,7 +4446,7 @@ function renderFplTailored() {
           const totalPts = (w * 3) + d;
 
           // Current fixture (H2H always shows current GW, not +1/next): resolve using fixtures map
-          let fixtureName = 'TBD';
+          let fixtureName = 'Not yet synced';
           let fixturePts = '';
           let oppKey = fixtures[tid];
           if (!oppKey) {
@@ -4498,7 +4502,13 @@ function renderFplTailored() {
           </div>`;
         });
         htmlList += `</div>`;
-        html = htmlList;
+        const syncStatus = (standingsData.h2hAutoSync && standingsData.h2hAutoSync[currentGw]) || null;
+        const source = Object.keys(manualFixtures).length ? 'Manual overrides + official FPL fixtures' : 'Official FPL fixtures';
+        const syncLine = syncStatus
+          ? (syncStatus.ok ? `${source} · Last sync: ${new Date(syncStatus.at).toLocaleString()}` :
+            `Official FPL sync unavailable · ${syncStatus.reason || 'Retry later'} · Existing fixtures retained`)
+          : 'Official FPL fixture sync pending';
+        html = `<div class="text-[10px] text-[#888] mb-2">${String(syncLine).replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch]))}</div>` + htmlList;
       } else {
         html = `H2H ID set (${lids.fplH2h}) — loading data...`;
       }
@@ -5044,6 +5054,26 @@ async function settleBeefWithSelected(beefId, selectElId) {
     if (typeof loadAdminOverview === 'function') loadAdminOverview();
   } catch (e) {
     alert('Settle failed: ' + (e.message || e));
+  }
+}
+
+async function adminSyncH2HFixtures() {
+  const currentGw = Number((standingsData && standingsData.currentRound && standingsData.currentRound.fpl) || 1);
+  const requested = prompt('Import official FPL H2H fixtures for which GW (1–38)?', String(currentGw));
+  if (requested === null) return;
+  const gw = Number(requested);
+  if (!Number.isInteger(gw) || gw < 1 || gw > 38) return alert('Enter a valid gameweek from 1 to 38.');
+  try {
+    const res = await fetchJSON('/api/admin/sync-h2h-fixtures', {
+      method: 'POST',
+      body: JSON.stringify({ gw })
+    });
+    if (!res.ok) return alert('H2H sync failed: ' + (res.reason || res.error || 'Unknown response'));
+    alert('Imported ' + res.matchCount + ' official FPL matchups for GW' + gw + '. Existing manual overrides kept.');
+    await loadStandings();
+    renderFplTailored();
+  } catch (e) {
+    alert('H2H sync unavailable: ' + (e.message || e) + '. Previously saved fixtures are unchanged.');
   }
 }
 
