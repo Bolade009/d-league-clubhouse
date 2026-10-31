@@ -35,6 +35,9 @@ const ADMIN_ACCESS_CODE = "DLeagueAdmin!2026@*";
 const FPL_BASE = "https://fantasy.premierleague.com/api";
 const { fetchH2HFixtures } = require("./h2h-fixtures");
 const { enforcePersistedDataFloor } = require("./persistence-preflight");
+const { snapshotCounts, validateSnapshot } = require("./backup-validation");
+const EPHEMERAL_RECOVERY_ENABLED = process.env.DLEAGUE_EPHEMERAL_RECOVERY === "true";
+let recoveryRequired = false;
 
 // Optional email transport (set SMTP_* in env on Render for real emails)
 let mailer = null;
@@ -108,8 +111,31 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false
 }));
 app.use(cors({ origin: false }));
+// Only the authorized backup restore endpoint accepts larger JSON than ordinary API calls.
+// Verify both the private export token AND admin identity before parsing a large body.
+app.use('/api/admin/restore-from-export', (req, res, next) => {
+  if (req.method !== 'POST') return next();
+  if (!EXPORT_TOKEN || req.headers['x-export-token'] !== EXPORT_TOKEN) {
+    return res.status(403).json({ error: 'A valid private EXPORT_TOKEN header is required to restore a backup' });
+  }
+  if (!isAdminRequest(req)) return res.status(403).json({ error: 'Admin login required' });
+  return express.json({ limit: '12mb' })(req, res, next);
+});
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: false, limit: REQUEST_BODY_LIMIT }));
+
+// Free Render disks disappear on spin-down/restart. Keep all live API mutations disabled
+// until a verified off-host backup has been uploaded and persisted.
+app.use('/api', (req, res, next) => {
+  if (!recoveryRequired) return next();
+  const allowed = new Set([
+    '/auth/login', '/config', '/recovery/status',
+    '/admin/restore-from-export', '/admin/persistence-status', '/export/full'
+  ]);
+  if (allowed.has(req.path)) return next();
+  res.setHeader('Retry-After', '300');
+  return res.status(503).json({ error: 'DLeague recovery required: restore a verified backup before resuming normal service' });
+});
 
 // Serve frontend
 app.use(express.static(path.join(BASE_DIR, "public"), { maxAge: IS_PRODUCTION ? "1h" : 0 }));
@@ -3606,6 +3632,16 @@ exports.seedDemoIfNeeded = seedDemoData;
 
 // ============ ROUTES ============
 
+app.get('/api/recovery/status', (req, res) => {
+  const s = getStore();
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    recoveryRequired,
+    ephemeralRecoveryEnabled: EPHEMERAL_RECOVERY_ENABLED,
+    counts: snapshotCounts(s)
+  });
+});
+
 app.get("/health", (req, res) => {
   // FAST health check for Render deploy readiness and uptime pings.
   // Full self-heal + atomic writes happen on boot and via explicit admin actions.
@@ -4131,12 +4167,30 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
     if (!allowed) return res.status(401).json({ error: "Unauthorized" });
   }
 
+  // The upload route requires a second private token, even if an admin has logged in.
+  if (!EXPORT_TOKEN || req.headers['x-export-token'] !== EXPORT_TOKEN) {
+    return res.status(403).json({ error: 'Valid private EXPORT_TOKEN required for restore' });
+  }
   const { data } = req.body || {};
-  if (!data || !Array.isArray(data.managers) || data.managers.length === 0) {
-    return res.status(400).json({ error: "Provide valid full export in 'data' field with managers array" });
+  const existing = getStore();
+  let incomingCounts;
+  try {
+    incomingCounts = validateSnapshot(data, existing, recoveryRequired);
+    const minimums = {
+      managers: Number(process.env.DLEAGUE_MIN_MANAGERS ?? 2),
+      payments: Number(process.env.DLEAGUE_MIN_PAYMENTS ?? 1),
+      ledger: Number(process.env.DLEAGUE_MIN_LEDGER ?? 1)
+    };
+    const insufficient = Object.keys(minimums).filter(k =>
+      Number.isFinite(minimums[k]) && incomingCounts[k] < minimums[k]);
+    if (insufficient.length) throw new Error(
+      'Backup fails the configured minimums: ' +
+      insufficient.map(k => k + '=' + incomingCounts[k] + ' (required ' + minimums[k] + ')').join(', '));
+  } catch (err) {
+    return res.status(400).json({ error: String(err.message || err) });
   }
 
-  const before = (getStore().managers || []).length;
+  const before = (existing.managers || []).length;
 
   // Safety: if the export JSON has no beefs (e.g. old snapshot) but we currently have paid beefs,
   // preserve them + their paidBy so we don't lose data during restore (especially after 502s or partial writes).
@@ -4241,6 +4295,12 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
   const after = (getStore().managers || []).length;
 
   await logEvent("restored_from_export", { before, after, managers: after });
+  // Only release the public API when a complete and valid backup has landed successfully.
+  if (recoveryRequired) {
+    enforcePersistedDataFloor(DATA_DIR, process.env, DEMO_MODE);
+    recoveryRequired = false;
+    console.log('[BACKUP RECOVERY] Verified backup restored. Normal API service resumed.');
+  }
 
   res.json({
     ok: true,
@@ -6799,8 +6859,17 @@ app.get("*", (req, res) => {
 
 async function boot() {
   // Must run before ANY state promotion or admin seeding: a blank disk must not be mistaken for a new season.
-  const persistencePreflight = enforcePersistedDataFloor(DATA_DIR, process.env, DEMO_MODE);
-  if (persistencePreflight.checked) console.log("[BOOT] Persisted data floor validated:", JSON.stringify(persistencePreflight.actual));
+  let persistencePreflight;
+  try {
+    persistencePreflight = enforcePersistedDataFloor(DATA_DIR, process.env, DEMO_MODE);
+  } catch (error) {
+    if (!EPHEMERAL_RECOVERY_ENABLED || DEMO_MODE) throw error;
+    recoveryRequired = true;
+    console.error('[BACKUP RECOVERY] Starting in restricted restoration mode:', error.message);
+  }
+  if (persistencePreflight && persistencePreflight.checked) {
+    console.log("[BOOT] Persisted data floor validated:", JSON.stringify(persistencePreflight.actual));
+  }
   console.log("[BOOT] Starting with hardened persistence (current-state.json sidecar + multi-source merge + WAL checkpoints)");
   console.log("🛡️ TO KEEP RENDER FREE AWAKE 24/7 (set & forget):");
   console.log("   - Use free https://cron-job.org : Create GET cron to " + (process.env.RENDER_EXTERNAL_URL || 'https://d-league-clubhouse.onrender.com') + "/health every 5 min");
@@ -6899,6 +6968,7 @@ async function boot() {
     // Initial after start
     setTimeout(async () => {
       try {
+        if (recoveryRequired) return;
         await syncFPL();
         await syncUCL();
         await autoSettleIfNeeded();
@@ -6924,6 +6994,7 @@ async function boot() {
   // No sleep prevention from inside (Render free will sleep without traffic), but instant heal on any traffic.
   setInterval(async () => {
     try {
+      if (recoveryRequired) return;
       const s = await loadStore();
       writeAtomicSidecar(s);
       writeAtomicCollection('managers', s.managers);
