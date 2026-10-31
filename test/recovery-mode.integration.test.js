@@ -26,6 +26,7 @@ test('Render Free empty disk enters recovery, blocks live APIs and restores full
     env: { ...process.env, NODE_ENV:'production', DEMO_MODE:'false',
       DATA_DIR:dir, PORT:String(port), DLEAGUE_EPHEMERAL_RECOVERY:'true',
       SYNC_TOKEN:'TEST_ONLY_SYNC_TOKEN', EXPORT_TOKEN:'TEST_ONLY_EXPORT_TOKEN',
+      ADMIN_ACCESS_CODE:'TEST_ONLY_ADMIN_CODE',
       DLEAGUE_MIN_MANAGERS:'2', DLEAGUE_MIN_PAYMENTS:'1', DLEAGUE_MIN_LEDGER:'1',
       PAYSTACK_SECRET_KEY:'', PAYSTACK_PUBLIC_KEY:'', SMTP_HOST:'' },
     stdio:['ignore','pipe','pipe']
@@ -68,15 +69,24 @@ test('Render Free empty disk enters recovery, blocks live APIs and restores full
     scores:[],events:[],beefs:[],sponsorships:[],h2h:[],challenges:[]
   };
 
-  // A restoration without the second private token must be rejected.
+  // Real commissioner file-upload flow: log in, then present private export token.
+  let loginResponse = await fetch(base+'/api/auth/login',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({email:'bolade.oladejo@gmail.com',code:'TEST_ONLY_ADMIN_CODE'})
+  });
+  assert.equal(loginResponse.status,200);
+  const login=await loginResponse.json();
+  assert.ok(login.token);
+  response=await fetch(base+'/api/export/full',{headers:{'x-export-token':'TEST_ONLY_EXPORT_TOKEN'}});
+  assert.equal(response.status,409,'Must refuse downloading empty recovery-mode backups');
   response = await fetch(base+'/api/admin/restore-from-export', {
-    method:'POST',headers:{'x-sync-token':'TEST_ONLY_SYNC_TOKEN','Content-Type':'application/json'},
+    method:'POST',headers:{'Authorization':'Bearer '+login.token,'Content-Type':'application/json'},
     body:JSON.stringify({data:backup})
   });
-  assert.equal(response.status,403);
+  assert.equal(response.status,403,'Backup upload requires separate private export token');
   response = await fetch(base+'/api/admin/restore-from-export', {
     method:'POST',
-    headers:{'x-sync-token':'TEST_ONLY_SYNC_TOKEN','x-export-token':'TEST_ONLY_EXPORT_TOKEN','Content-Type':'application/json'},
+    headers:{'Authorization':'Bearer '+login.token,'x-export-token':'TEST_ONLY_EXPORT_TOKEN','Content-Type':'application/json'},
     body:JSON.stringify({data:backup})
   });
   const body = await response.json();
