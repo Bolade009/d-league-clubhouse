@@ -15,7 +15,8 @@ jobs:
       - run: node --check server.js
       - run: node --check public/app.js
       - run: node --check h2h-fixtures.js
-      - run: node --test test/h2h-fixtures.test.js
+      - run: node --check persistence-preflight.js
+      - run: node --test test/*.test.js
 
       - name: Read-only live FPL league 346910 probe
         run: node scripts/h2h-live-probe.js
