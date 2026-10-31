@@ -33,6 +33,7 @@ const ADMIN_ACCESS_CODE = "DLeagueAdmin!2026@*";
 // No protected auto-restored managers in production. All managers come from real registration + payment.
 
 const FPL_BASE = "https://fantasy.premierleague.com/api";
+const { fetchH2HFixtures } = require("./h2h-fixtures");
 
 // Optional email transport (set SMTP_* in env on Render for real emails)
 let mailer = null;
@@ -2787,8 +2788,13 @@ async function syncFPL(roundsToSync = null) {
   s.settings.lastSyncAt = nowISO();
   await persistStore();
 
-  // H2H wiring on sync (now uses real fplH2h data, no fake pairs)
-  try { await populateH2HFixtures(s); await persistStore(); } catch (e) { console.warn('[H2H] populate failed', e.message); }
+  // Update the current and upcoming official FPL H2H fixtures (cached; non-destructive on error).
+  try {
+    const gw = Number(s.settings.currentRound.fpl) || current;
+    await syncH2HFixtures(s, gw);
+    if (gw < 38) await syncH2HFixtures(s, gw + 1);
+    await persistStore();
+  } catch (e) { console.warn('[H2H] auto-sync failed:', e.message); }
 
   // Sync cadence: initial on boot, /sync/run (force), periodic ~30min, + after some pay/settle triggers.
   // Live points now prioritize computeLive for !finished (responsive to FPL site during GW).
@@ -3262,6 +3268,57 @@ async function fetchFplLeagueStandings(leagueId, isH2h = false) {
     return hit.data;
   }
   return doFetch();
+}
+
+// Store official FPL H2H fixtures separately from manual overrides. Never erase prior results.
+const H2H_SUCCESS_TTL_MS = 6 * 60 * 60 * 1000;
+const H2H_ERROR_TTL_MS = 30 * 60 * 1000;
+const h2hSyncInFlight = new Map();
+
+async function syncH2HFixtures(s, gameweek, force = false) {
+  const leagueId = String((s.settings.leagueIds || {}).fplH2h || '').trim();
+  const gw = Number(gameweek);
+  if (!/^[1-9]\\d*$/.test(leagueId)) return { ok: false, reason: 'H2H league ID not configured' };
+  if (!Number.isInteger(gw) || gw < 1 || gw > 38) return { ok: false, reason: 'Invalid GW' };
+  s.settings.h2hAutoFixtures = s.settings.h2hAutoFixtures || {};
+  s.settings.h2hAutoSync = s.settings.h2hAutoSync || {};
+  const key = String(gw);
+  const previous = s.settings.h2hAutoSync[key];
+  const now = Date.now();
+  const unchangedLeague = previous && previous.leagueId === leagueId;
+  const hasSaved = s.settings.h2hAutoFixtures[key] && Object.keys(s.settings.h2hAutoFixtures[key]).length;
+  if (!force && unchangedLeague && previous.at && now - Date.parse(previous.at) <
+    (previous.ok && hasSaved ? H2H_SUCCESS_TTL_MS : H2H_ERROR_TTL_MS)) {
+    return { ...previous, cached: true };
+  }
+  const flightKey = leagueId + ':' + key;
+  if (h2hSyncInFlight.has(flightKey)) return h2hSyncInFlight.get(flightKey);
+
+  const task = (async () => {
+    try {
+      const found = await fetchH2HFixtures({
+        leagueId, gameweek: gw,
+        fetchJSON: url => safeFetchJSON(url, 6000, { Accept: 'application/json' })
+      });
+      // Do not accidentally install old-league fixtures if an admin changes league during fetch.
+      if (String((s.settings.leagueIds || {}).fplH2h || '') !== leagueId) {
+        return { ok: false, reason: 'League ID changed during sync' };
+      }
+      s.settings.h2hAutoFixtures[key] = found.fixtures;
+      const status = { ok: true, at: nowISO(), leagueId, matchCount: found.matchCount, pages: found.pages };
+      s.settings.h2hAutoSync[key] = status;
+      return status;
+    } catch (error) {
+      const status = { ok: false, at: nowISO(), leagueId, reason: String(error.message || error).slice(0, 180) };
+      s.settings.h2hAutoSync[key] = status;
+      console.warn('[H2H] GW' + gw + ' auto-sync:', status.reason);
+      return status;
+    } finally {
+      h2hSyncInFlight.delete(flightKey);
+    }
+  })();
+  h2hSyncInFlight.set(flightKey, task);
+  return task;
 }
 
 // H2H wiring: do NOT fetch FPL here on every page load (that was a major stall).
@@ -4731,6 +4788,11 @@ app.post("/api/admin/set-leagues", async (req, res) => {
 
   const { fplClassic, fplH2h, ucl } = req.body || {};
   const s = await loadStore();
+  if (String((s.settings.leagueIds || {}).fplH2h || '') !== String(fplH2h || '')) {
+    // Old league pairings must never be displayed for the newly selected H2H league.
+    s.settings.h2hAutoFixtures = {};
+    s.settings.h2hAutoSync = {};
+  }
   s.settings.leagueIds = {
     fplClassic: fplClassic || "",
     fplH2h: fplH2h || "",
@@ -4742,6 +4804,20 @@ app.post("/api/admin/set-leagues", async (req, res) => {
   try { await populateH2HFixtures(s); await persistStore(); } catch (e) {}
   await logEvent("leagues_configured", { fplClassic, fplH2h, ucl });
   res.json({ ok: true, leagueIds: s.settings.leagueIds, message: "League IDs saved. If fplH2h set, real H2H ranks/records will show in FPL list + H2H box (map uses manager fplTeam.teamId == FPL entry id)." });
+});
+
+// Re-fetch official H2H fixtures for any GW. Manual fixtures remain untouched.
+app.post('/api/admin/sync-h2h-fixtures', async (req, res) => {
+  if (!isAdminRequest(req)) return res.status(403).json({ error: 'Unauthorized' });
+  const s = await loadStore();
+  const gw = Number((req.body || {}).gw || (s.settings.currentRound || {}).fpl);
+  if (!Number.isInteger(gw) || gw < 1 || gw > 38) {
+    return res.status(400).json({ error: 'GW must be between 1 and 38' });
+  }
+  const status = await syncH2HFixtures(s, gw, true);
+  await persistStore();
+  res.status(status.ok ? 200 : 502).json({ ...status, gw,
+    message: status.ok ? 'Official H2H fixtures imported' : 'Existing fixtures preserved' });
 });
 
 // Admin sets H2H fixtures per GW (managerId -> opponentId) for next fixtures display. GW1 concluded.
@@ -6004,6 +6080,8 @@ app.get("/api/standings", async (req, res) => {
     realLeagues,  // Admin can use this for real standings/H2H
     leagueIds: ids,
     h2hFixtures: s.settings.h2hFixtures || {},
+    h2hAutoFixtures: s.settings.h2hAutoFixtures || {},
+    h2hAutoSync: s.settings.h2hAutoSync || {},
     sponsorships: s.sponsorships || [],
     potBoosts: (s.potBoosts || []).slice(-20).map(b => {  // limit recent to keep responses small/fast
       const m = s.managers.find(mm => mm.id === b.managerId);
