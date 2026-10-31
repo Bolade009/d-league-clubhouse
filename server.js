@@ -28,11 +28,17 @@ const UCL_TEMPLATE = process.env.UCL_FANTASY_API_TEMPLATE || "";
 
 // Live admin (only this email can see backend admin view + trigger protected actions)
 const ADMIN_EMAIL = "bolade.oladejo@gmail.com";
-const ADMIN_ACCESS_CODE = "DLeagueAdmin!2026@*";
+// Render should provide a rotated private admin code; fallback preserves legacy login until migrated.
+const ADMIN_ACCESS_CODE = process.env.ADMIN_ACCESS_CODE || "DLeagueAdmin!2026@*";
 
 // No protected auto-restored managers in production. All managers come from real registration + payment.
 
 const FPL_BASE = "https://fantasy.premierleague.com/api";
+const { fetchH2HFixtures } = require("./h2h-fixtures");
+const { enforcePersistedDataFloor } = require("./persistence-preflight");
+const { snapshotCounts, validateSnapshot } = require("./backup-validation");
+const EPHEMERAL_RECOVERY_ENABLED = process.env.DLEAGUE_EPHEMERAL_RECOVERY === "true";
+let recoveryRequired = false;
 
 // Optional email transport (set SMTP_* in env on Render for real emails)
 let mailer = null;
@@ -106,8 +112,31 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false
 }));
 app.use(cors({ origin: false }));
+// Only the authorized backup restore endpoint accepts larger JSON than ordinary API calls.
+// Verify both the private export token AND admin identity before parsing a large body.
+app.use('/api/admin/restore-from-export', (req, res, next) => {
+  if (req.method !== 'POST') return next();
+  if (!EXPORT_TOKEN || req.headers['x-export-token'] !== EXPORT_TOKEN) {
+    return res.status(403).json({ error: 'A valid private EXPORT_TOKEN header is required to restore a backup' });
+  }
+  if (!isAdminRequest(req)) return res.status(403).json({ error: 'Admin login required' });
+  return express.json({ limit: '12mb' })(req, res, next);
+});
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: false, limit: REQUEST_BODY_LIMIT }));
+
+// Free Render disks disappear on spin-down/restart. Keep all live API mutations disabled
+// until a verified off-host backup has been uploaded and persisted.
+app.use('/api', (req, res, next) => {
+  if (!recoveryRequired) return next();
+  const allowed = new Set([
+    '/auth/login', '/config', '/recovery/status',
+    '/admin/restore-from-export', '/admin/persistence-status', '/export/full'
+  ]);
+  if (allowed.has(req.path)) return next();
+  res.setHeader('Retry-After', '300');
+  return res.status(503).json({ error: 'DLeague recovery required: restore a verified backup before resuming normal service' });
+});
 
 // Serve frontend
 app.use(express.static(path.join(BASE_DIR, "public"), { maxAge: IS_PRODUCTION ? "1h" : 0 }));
@@ -1321,8 +1350,9 @@ function requireSyncAuth(req, res, next) {
 function requireExportAuth(req, res, next) {
   if (DEMO_MODE) return next();
   const token = req.headers["x-export-token"] || req.query.token;
-  if (EXPORT_TOKEN && token !== EXPORT_TOKEN) {
-    return res.status(403).json({ error: "Invalid export token" });
+  // Never disclose personal/financial backup data if a deployment omitted its export secret.
+  if (!EXPORT_TOKEN || token !== EXPORT_TOKEN) {
+    return res.status(403).json({ error: "Valid EXPORT_TOKEN required" });
   }
   next();
 }
@@ -2787,8 +2817,13 @@ async function syncFPL(roundsToSync = null) {
   s.settings.lastSyncAt = nowISO();
   await persistStore();
 
-  // H2H wiring on sync (now uses real fplH2h data, no fake pairs)
-  try { await populateH2HFixtures(s); await persistStore(); } catch (e) { console.warn('[H2H] populate failed', e.message); }
+  // Update the current and upcoming official FPL H2H fixtures (cached; non-destructive on error).
+  try {
+    const gw = Number(s.settings.currentRound.fpl) || current;
+    await syncH2HFixtures(s, gw);
+    if (gw < 38) await syncH2HFixtures(s, gw + 1);
+    await persistStore();
+  } catch (e) { console.warn('[H2H] auto-sync failed:', e.message); }
 
   // Sync cadence: initial on boot, /sync/run (force), periodic ~30min, + after some pay/settle triggers.
   // Live points now prioritize computeLive for !finished (responsive to FPL site during GW).
@@ -3264,6 +3299,57 @@ async function fetchFplLeagueStandings(leagueId, isH2h = false) {
   return doFetch();
 }
 
+// Store official FPL H2H fixtures separately from manual overrides. Never erase prior results.
+const H2H_SUCCESS_TTL_MS = 6 * 60 * 60 * 1000;
+const H2H_ERROR_TTL_MS = 30 * 60 * 1000;
+const h2hSyncInFlight = new Map();
+
+async function syncH2HFixtures(s, gameweek, force = false) {
+  const leagueId = String((s.settings.leagueIds || {}).fplH2h || '').trim();
+  const gw = Number(gameweek);
+  if (!/^[1-9]\d*$/.test(leagueId)) return { ok: false, reason: 'H2H league ID not configured' };
+  if (!Number.isInteger(gw) || gw < 1 || gw > 38) return { ok: false, reason: 'Invalid GW' };
+  s.settings.h2hAutoFixtures = s.settings.h2hAutoFixtures || {};
+  s.settings.h2hAutoSync = s.settings.h2hAutoSync || {};
+  const key = String(gw);
+  const previous = s.settings.h2hAutoSync[key];
+  const now = Date.now();
+  const unchangedLeague = previous && previous.leagueId === leagueId;
+  const hasSaved = s.settings.h2hAutoFixtures[key] && Object.keys(s.settings.h2hAutoFixtures[key]).length;
+  if (!force && unchangedLeague && previous.at && now - Date.parse(previous.at) <
+    (previous.ok && hasSaved ? H2H_SUCCESS_TTL_MS : H2H_ERROR_TTL_MS)) {
+    return { ...previous, cached: true };
+  }
+  const flightKey = leagueId + ':' + key;
+  if (h2hSyncInFlight.has(flightKey)) return h2hSyncInFlight.get(flightKey);
+
+  const task = (async () => {
+    try {
+      const found = await fetchH2HFixtures({
+        leagueId, gameweek: gw,
+        fetchJSON: url => safeFetchJSON(url, 6000, { Accept: 'application/json' })
+      });
+      // Do not accidentally install old-league fixtures if an admin changes league during fetch.
+      if (String((s.settings.leagueIds || {}).fplH2h || '') !== leagueId) {
+        return { ok: false, reason: 'League ID changed during sync' };
+      }
+      s.settings.h2hAutoFixtures[key] = found.fixtures;
+      const status = { ok: true, at: nowISO(), leagueId, matchCount: found.matchCount, pages: found.pages };
+      s.settings.h2hAutoSync[key] = status;
+      return status;
+    } catch (error) {
+      const status = { ok: false, at: nowISO(), leagueId, reason: String(error.message || error).slice(0, 180) };
+      s.settings.h2hAutoSync[key] = status;
+      console.warn('[H2H] GW' + gw + ' auto-sync:', status.reason);
+      return status;
+    } finally {
+      h2hSyncInFlight.delete(flightKey);
+    }
+  })();
+  h2hSyncInFlight.set(flightKey, task);
+  return task;
+}
+
 // H2H wiring: do NOT fetch FPL here on every page load (that was a major stall).
 // Fake pairings stay cleared; the H2H box uses realLeagues.fplH2h from standings.
 async function populateH2HFixtures(s) {
@@ -3547,6 +3633,16 @@ async function recoverOrphanedPaidManagers() {
 exports.seedDemoIfNeeded = seedDemoData;
 
 // ============ ROUTES ============
+
+app.get('/api/recovery/status', (req, res) => {
+  const s = getStore();
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    recoveryRequired,
+    ephemeralRecoveryEnabled: EPHEMERAL_RECOVERY_ENABLED,
+    counts: snapshotCounts(s)
+  });
+});
 
 app.get("/health", (req, res) => {
   // FAST health check for Render deploy readiness and uptime pings.
@@ -4073,12 +4169,30 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
     if (!allowed) return res.status(401).json({ error: "Unauthorized" });
   }
 
+  // The upload route requires a second private token, even if an admin has logged in.
+  if (!EXPORT_TOKEN || req.headers['x-export-token'] !== EXPORT_TOKEN) {
+    return res.status(403).json({ error: 'Valid private EXPORT_TOKEN required for restore' });
+  }
   const { data } = req.body || {};
-  if (!data || !Array.isArray(data.managers) || data.managers.length === 0) {
-    return res.status(400).json({ error: "Provide valid full export in 'data' field with managers array" });
+  const existing = getStore();
+  let incomingCounts;
+  try {
+    incomingCounts = validateSnapshot(data, existing, recoveryRequired);
+    const minimums = {
+      managers: Number(process.env.DLEAGUE_MIN_MANAGERS ?? 2),
+      payments: Number(process.env.DLEAGUE_MIN_PAYMENTS ?? 1),
+      ledger: Number(process.env.DLEAGUE_MIN_LEDGER ?? 1)
+    };
+    const insufficient = Object.keys(minimums).filter(k =>
+      Number.isFinite(minimums[k]) && incomingCounts[k] < minimums[k]);
+    if (insufficient.length) throw new Error(
+      'Backup fails the configured minimums: ' +
+      insufficient.map(k => k + '=' + incomingCounts[k] + ' (required ' + minimums[k] + ')').join(', '));
+  } catch (err) {
+    return res.status(400).json({ error: String(err.message || err) });
   }
 
-  const before = (getStore().managers || []).length;
+  const before = (existing.managers || []).length;
 
   // Safety: if the export JSON has no beefs (e.g. old snapshot) but we currently have paid beefs,
   // preserve them + their paidBy so we don't lose data during restore (especially after 502s or partial writes).
@@ -4183,6 +4297,12 @@ app.post("/api/admin/restore-from-export", async (req, res) => {
   const after = (getStore().managers || []).length;
 
   await logEvent("restored_from_export", { before, after, managers: after });
+  // Only release the public API when a complete and valid backup has landed successfully.
+  if (recoveryRequired) {
+    enforcePersistedDataFloor(DATA_DIR, process.env, DEMO_MODE);
+    recoveryRequired = false;
+    console.log('[BACKUP RECOVERY] Verified backup restored. Normal API service resumed.');
+  }
 
   res.json({
     ok: true,
@@ -4731,6 +4851,11 @@ app.post("/api/admin/set-leagues", async (req, res) => {
 
   const { fplClassic, fplH2h, ucl } = req.body || {};
   const s = await loadStore();
+  if (String((s.settings.leagueIds || {}).fplH2h || '') !== String(fplH2h || '')) {
+    // Old league pairings must never be displayed for the newly selected H2H league.
+    s.settings.h2hAutoFixtures = {};
+    s.settings.h2hAutoSync = {};
+  }
   s.settings.leagueIds = {
     fplClassic: fplClassic || "",
     fplH2h: fplH2h || "",
@@ -4742,6 +4867,20 @@ app.post("/api/admin/set-leagues", async (req, res) => {
   try { await populateH2HFixtures(s); await persistStore(); } catch (e) {}
   await logEvent("leagues_configured", { fplClassic, fplH2h, ucl });
   res.json({ ok: true, leagueIds: s.settings.leagueIds, message: "League IDs saved. If fplH2h set, real H2H ranks/records will show in FPL list + H2H box (map uses manager fplTeam.teamId == FPL entry id)." });
+});
+
+// Re-fetch official H2H fixtures for any GW. Manual fixtures remain untouched.
+app.post('/api/admin/sync-h2h-fixtures', async (req, res) => {
+  if (!isAdminRequest(req)) return res.status(403).json({ error: 'Unauthorized' });
+  const s = await loadStore();
+  const gw = Number((req.body || {}).gw || (s.settings.currentRound || {}).fpl);
+  if (!Number.isInteger(gw) || gw < 1 || gw > 38) {
+    return res.status(400).json({ error: 'GW must be between 1 and 38' });
+  }
+  const status = await syncH2HFixtures(s, gw, true);
+  await persistStore();
+  res.status(status.ok ? 200 : 502).json({ ...status, gw,
+    message: status.ok ? 'Official H2H fixtures imported' : 'Existing fixtures preserved' });
 });
 
 // Admin sets H2H fixtures per GW (managerId -> opponentId) for next fixtures display. GW1 concluded.
@@ -6004,6 +6143,8 @@ app.get("/api/standings", async (req, res) => {
     realLeagues,  // Admin can use this for real standings/H2H
     leagueIds: ids,
     h2hFixtures: s.settings.h2hFixtures || {},
+    h2hAutoFixtures: s.settings.h2hAutoFixtures || {},
+    h2hAutoSync: s.settings.h2hAutoSync || {},
     sponsorships: s.sponsorships || [],
     potBoosts: (s.potBoosts || []).slice(-20).map(b => {  // limit recent to keep responses small/fast
       const m = s.managers.find(mm => mm.id === b.managerId);
@@ -6350,6 +6491,9 @@ app.post("/api/sync/run", async (req, res) => {
 
 // Full export (protected)
 app.get("/api/export/full", requireExportAuth, async (req, res) => {
+  if (recoveryRequired) {
+    return res.status(409).json({ error: 'Recovery mode: refusing an admin-only or incomplete full export. Upload your saved good backup first.' });
+  }
   const s = await loadStore();
   res.setHeader("Content-Type", "application/json");
   res.setHeader("Content-Disposition", `attachment; filename="d-league-export-${Date.now()}.json"`);
@@ -6719,49 +6863,26 @@ app.get("*", (req, res) => {
 // ============ BOOT ============
 
 async function boot() {
-  console.log("[BOOT] Starting with hardened persistence (current-state.json sidecar + multi-source merge + WAL checkpoints)");
-  console.log("🛡️ TO KEEP RENDER FREE AWAKE 24/7 (set & forget):");
-  console.log("   - Use free https://cron-job.org : Create GET cron to " + (process.env.RENDER_EXTERNAL_URL || 'https://d-league-clubhouse.onrender.com') + "/health every 5 min");
-  console.log("   - Or from your GO54: */5 * * * * curl -s " + (process.env.RENDER_EXTERNAL_URL || 'https://d-league-clubhouse.onrender.com') + "/health > /dev/null");
-  console.log("   - Or leave admin cockpit tab open (it auto-pings /health every 60s)");
-  console.log("   /health now does full auto-heal on every ping.");
-
-  // VERY EARLY: promote best state from disk atomics before any other logic or persist
-  // This ensures even on fresh deploy process, we load the best known data first.
+  // Must run before ANY state promotion or admin seeding: a blank disk must not be mistaken for a new season.
+  let persistencePreflight;
   try {
-    const atomicM = loadAtomicCollection('managers');
-    const atomicP = loadAtomicCollection('payments');
-    const atomicL = loadAtomicCollection('ledger');
-    const atomicB = loadAtomicCollection('beefs');
-    let side = null;
-    try {
-      const p = path.join(DATA_DIR, 'current-state.json');
-      if (fsSync.existsSync(p)) {
-        const d = JSON.parse(fsSync.readFileSync(p, 'utf8'));
-        if (d && Array.isArray(d.managers)) side = d;
-      }
-    } catch {}
-    const bestB = findBestBackupData();
-
-    let bestState = {};
-    const candidates = [atomicM ? {managers: atomicM} : null, side, bestB].filter(Boolean);
-    candidates.forEach(c => {
-      if (!bestState.managers || (c.managers && c.managers.length > (bestState.managers || []).length)) {
-        bestState = c;
-      }
-    });
-    if (bestState.managers && bestState.managers.length > 0) {
-      storeCache = { ...createEmptyStore(), ...bestState };
-      if (atomicP) storeCache.payments = preferRicherArray('payments', storeCache.payments, atomicP);
-      if (atomicL) storeCache.ledger = preferRicherArray('ledger', storeCache.ledger, atomicL);
-      if (atomicB) storeCache.beefs = preferRicherArray('beefs', storeCache.beefs, atomicB);
-      storeCache = autoHealIfWiped(storeCache);
-      writeAtomicSidecar(storeCache);
-      console.log(`[BOOT EARLY PROMOTE] Loaded best state with ${storeCache.managers.length} managers from disk`);
-    }
-  } catch (e) {
-    console.warn('[BOOT EARLY PROMOTE] failed', e.message);
+    persistencePreflight = enforcePersistedDataFloor(DATA_DIR, process.env, DEMO_MODE);
+  } catch (error) {
+    if (!EPHEMERAL_RECOVERY_ENABLED || DEMO_MODE) throw error;
+    recoveryRequired = true;
+    console.error('[BACKUP RECOVERY] Starting in restricted restoration mode:', error.message);
   }
+  if (persistencePreflight && persistencePreflight.checked) {
+    console.log("[BOOT] Persisted data floor validated:", JSON.stringify(persistencePreflight.actual));
+  }
+  console.log("[BOOT] Starting with hardened persistence (current-state.json sidecar + multi-source merge + WAL checkpoints)");
+  console.warn('[STORAGE] Render Free local databases are ephemeral: redeploy, restart or idle spin-down can wipe all managers and ledgers.');
+  console.warn('[STORAGE] Store a full export OFF the server after every important transaction, or migrate to persistent external storage.');
+
+  // IMPORTANT: Do not select a managers-only atomic collection as the whole store here.
+  // It used to win the equal-count tie against full SQLite/sidecar snapshots and overwrite
+  // ledgers, scores, payments and settings with defaults before loadStore could merge them.
+  // loadStore performs the multi-source recovery first; only it may promote data to disk.
 
   let store = await loadStore();
   console.log(`[BOOT] Initial loadStore: ${store.managers?.length || 0} managers, payments: ${(store.payments||[]).length}`);
@@ -6849,6 +6970,7 @@ async function boot() {
     // Initial after start
     setTimeout(async () => {
       try {
+        if (recoveryRequired) return;
         await syncFPL();
         await syncUCL();
         await autoSettleIfNeeded();
@@ -6858,6 +6980,7 @@ async function boot() {
     // Periodic every 30 min to catch GW/MD conclusion
     setInterval(async () => {
       try {
+        if (recoveryRequired) return;
         console.log('[AUTO SYNC] Running periodic refresh and settle...');
         await syncFPL();
         await syncUCL();
@@ -6874,6 +6997,7 @@ async function boot() {
   // No sleep prevention from inside (Render free will sleep without traffic), but instant heal on any traffic.
   setInterval(async () => {
     try {
+      if (recoveryRequired) return;
       const s = await loadStore();
       writeAtomicSidecar(s);
       writeAtomicCollection('managers', s.managers);

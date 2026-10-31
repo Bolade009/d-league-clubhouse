@@ -1,5 +1,98 @@
 # D League Clubhouse — Deployment Guide
 
+## Render Free backup-and-upload recovery (temporary workaround)
+
+Render Free has **no persistent disks**, and local SQLite/JSON can disappear on every
+deploy, restart, or idle spin-down. For a live league accepting payments, this is
+**not a durable storage solution**. Use an external persistent database (or paid
+persistent disk) for reliable operation. Do NOT rely on a 5-minute pinger.
+
+### Before deploying this branch — on the current working DLeague app
+
+1. Open the Admin Cockpit and click **DOWNLOAD FULL EXPORT** (works on the current
+   live app). Enter your private `EXPORT_TOKEN` if configured.
+2. Store the complete downloaded JSON **off Render and off GitHub**, and verify it
+   includes the real expected counts of `managers`, `payments`, `ledger` and
+   `settings`. This export contains sensitive manager/payment information.
+3. Only AFTER downloading the full backup, in Render → your EXISTING production
+   web service → Environment, set:
+   - `DLEAGUE_EPHEMERAL_RECOVERY=true`
+   - `EXPORT_TOKEN` to a long private secret (required for upload and export).
+   - `ADMIN_ACCESS_CODE` to a NEW strong, private commissioner login code. The
+     old code is hardcoded in the public repository, so it should be rotated.
+     Use this new code for the recovery page after deployment.
+   - Optional: `DLEAGUE_MIN_MANAGERS`, `DLEAGUE_MIN_PAYMENTS`, `DLEAGUE_MIN_LEDGER`
+     to the actual verified counts, to detect partial data loss.
+   - Leave `DEMO_MODE=false` and existing Paystack settings as they are.
+   **Changing Render environment settings can restart the service and erase local
+   data on Free — do not do so until that off-host export is safe.**
+4. Merge/deploy the PR only after confirming the full export is stored and readable.
+
+### After the new release deploys (and whenever Render Free loses data)
+
+1. Open `https://d-league-clubhouse.onrender.com/recovery.html`.
+2. Sign in as commissioner with the Admin login and the private `EXPORT_TOKEN`.
+3. Choose the saved FULL export JSON file. Inspect the shown counts.
+4. Click **Verify & Restore Backup** and confirm.
+5. Confirm the app reports recovery complete, then reload, sign in and inspect
+   managers, paid statuses, ledger, wallet totals and H2H fixtures.
+6. Download a fresh full export after every significant change or transaction.
+
+When the app detects fewer than the configured count floors, it serves the
+recovery page and admin login while ordinary APIs (including Paystack webhook)
+return **503**. Automatic sync and settlements remain paused until the backup
+is successfully restored.
+
+The upload endpoint accepts at most 12 MB JSON and requires both an authenticated
+admin token AND the separate private export token before accepting a large request.
+Older snapshots that would discard existing manager, payment or ledger records are
+rejected. A successful restore is verified before recovery mode is lifted.
+
+**Caution:** If someone pays between the previous backup and a server reset, their
+local payment record may be lost. Webhook retries are not a substitute for a
+permanent transaction database or reconciliation against Paystack. Perform
+independent payment reconciliation before resuming financial activity when
+recovering from older exports.
+
+---
+
+## CRITICAL: Protect paid DLeague records before any production deploy
+
+DLeague is a live, funded league. **A code rollback does NOT restore missing database records.**
+Render only retains SQLite and JSON changes across deployments when the actual web service
+has a paid persistent disk attached at exactly the directory used by `DATA_DIR`.
+The checked-in `render.yaml` is not proof that a manually created Render service has a disk.
+
+1. In the production Render dashboard, verify the web service is Starter (or higher), its
+   **Disk** is mounted at `/app/data`, and **Environment** includes `DATA_DIR=/app/data`.
+   Never switch the service to Free; Free has no persistent disk.
+2. In DLeague Admin, use **DOWNLOAD FULL EXPORT** and store the downloaded JSON file
+   **outside Render**, in a secure private location. Confirm the JSON contains the expected
+   counts for `managers`, `payments` and `ledger`. Exports may include sensitive
+   manager information and access codes: **never commit them to GitHub**.
+3. Compare the Admin **PERSISTENCE HEALTH** panel values for DB managers, sidecar
+   managers, backup managers and atomic collections. Investigate any unexpectedly low value.
+   Never click restore without verifying which snapshot is actually current.
+4. The production boot has a *read-only data floor gate*. Without `DLEAGUE_EPHEMERAL_RECOVERY=true`, it refuses to
+   boot with fewer than **2 managers**, **1 payment**, or **1 ledger entry** in the surviving
+   SQLite/sidecar/atomic/backup files. This stops a new blank directory from silently
+   serving an admin-only league. It cannot recover a missing disk or replace off-host backups.
+   For stronger protection, set Render Environment variables
+   `DLEAGUE_MIN_MANAGERS`, `DLEAGUE_MIN_PAYMENTS`, and `DLEAGUE_MIN_LEDGER`
+   to conservative counts from the verified export before merging/deploying. These are
+   *minimums*, not secret values. To intentionally initialize a new league, explicitly
+   set all three to `0`, after ensuring you are not wiping production data.
+5. If a deployment is rejected with `[DATA PROTECTION]`, **do not bypass the guard**.
+   Confirm the disk mount, directory and source of truth, restore records from a verified
+   off-host export if necessary, and only retry after the preflight passes.
+6. After deployment, confirm that managers, payments, ledger and H2H data still match
+   the pre-deploy baseline. Only then resume administration.
+
+**IMPORTANT:** A cron pinger or uptime monitor cannot make an ephemeral filesystem persistent.
+A backup saved to the same ephemeral Render filesystem can disappear with it.
+
+---
+
 ## Production Checklist
 
 1. Set `DEMO_MODE=false`

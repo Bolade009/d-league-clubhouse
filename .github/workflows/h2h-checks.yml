@@ -1,0 +1,24 @@
+name: H2H importer checks
+on:
+  push:
+    branches: [feature/fpl-h2h-auto-sync]
+  pull_request:
+    branches: [main]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --omit=dev
+      - run: node --check server.js
+      - run: node --check public/app.js
+      - run: node --check h2h-fixtures.js
+      - run: node --check persistence-preflight.js
+      - run: node --test test/*.test.js
+
+      - name: Read-only live FPL league 346910 probe
+        run: node scripts/h2h-live-probe.js
+        continue-on-error: true

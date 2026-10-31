@@ -1144,7 +1144,8 @@ async function loadAdminOverview() {
           <button onclick="promptSetLeagues()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">SET LEAGUE IDs</button>
           <button onclick="promptEditServiceFees()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">EDIT SERVICE FEES</button>
           <button onclick="emergencySync()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">FORCE SYNC</button>
-          <button onclick="adminManageH2HFixtures()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">H2H FIXTURES (enter matchups)</button>
+          <button onclick="adminManageH2HFixtures()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">H2H FIXTURES (manual override)</button>
+          <button onclick="adminSyncH2HFixtures()" class="px-6 py-2 bg-[#153522] hover:bg-[#225533] rounded-2xl text-sm font-bold text-[#00ff85]">SYNC H2H FROM FPL</button>
           <button onclick="adminManageUclMdScores()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">UCL MD SCORES (manual + finalize)</button>
           <button onclick="adminSetPrediction()" class="px-6 py-2 bg-[#222] hover:bg-[#333] rounded-2xl text-sm font-medium">PREDICTION OF THE WEEK</button>
         </div>
@@ -1353,17 +1354,15 @@ async function loadAdminOverview() {
           <div class="mt-1">Sample emails: ${emails || '(none)'}</div>
           <div class="mt-1 text-[#888]">Last: ${pstatus.sidecarLastPersisted || 'unknown'}</div>
           <button onclick="reconcileAndPersist()" class="mt-2 px-3 py-1 bg-[#ffcc00] text-black rounded text-xs font-bold">FORCE RECONCILE (rarely needed)</button>
-          <button onclick="restoreFromExportPrompt()" class="mt-2 ml-2 px-3 py-1 bg-blue-600 text-white rounded text-xs font-bold">RESTORE FROM MY PREVIOUS EXPORT JSON</button>
+          <button onclick="window.open('/recovery.html','_blank','noopener')" class="mt-2 ml-2 px-3 py-1 bg-blue-600 text-white rounded text-xs font-bold">UPLOAD FULL BACKUP JSON (FILE)</button>
           <button onclick="restoreFromBestBackup()" class="mt-2 ml-2 px-3 py-1 bg-emerald-600 text-white rounded text-xs font-bold">RESTORE FROM BEST BACKUP ON DISK (no paste)</button>
 
           <div class="mt-3 pt-2 border-t border-[#333]">
-            <div class="font-bold text-[#00ff85] mb-1">🛡️ FREE TIER SLEEP PREVENTION (set & forget, no manual after)</div>
-            <div class="text-[10px]">Render free sleeps after ~15min no traffic (root of WAL/sidecar issues). Use a <b>free external pinger</b> to send traffic to /health every 5 min. This wakes it automatically.</div>
-            <div class="mt-1">1. Go to <a href="https://cron-job.org" target="_blank" class="underline">cron-job.org</a> (free, no CC) or UptimeRobot.</div>
-            <div class="mt-1">2. Create job pinging exactly: <code class="bg-black px-1">${window.location.origin}/health</code> every 5 minutes (GET).</div>
-            <div class="mt-1">From your GO54/other hosting: Add to crontab: <code class="bg-black px-1">*/5 * * * * curl -s ${window.location.origin}/health &gt;/dev/null</code></div>
-            <div class="mt-1 text-[10px] text-[#888]">Our /health now does full auto-heal + sidecar promote on every ping. Combined with the 5min maintenance loop while awake, state stays consistent. GitHub Actions also works (free).</div>
-            <div class="mt-1 text-[10px]">Tip: Leave this admin tab open — it auto-pings every 60s to help during your session. Keep Mac plugged in.</div>
+            <div class="font-bold text-[#ffcc00] mb-1">RENDER FREE — OFFLINE BACKUPS REQUIRED</div>
+            <div class="text-[11px]">Render Free does not preserve local SQLite or JSON after redeploy, restart, or idle spin-down. A scheduled ping cannot guarantee persistence or protect money records.</div>
+            <div class="mt-1">Download the FULL EXPORT before deploying and after every important payment/settlement. Store it securely outside Render and GitHub.</div>
+            <div class="mt-1">If the app reports recovery mode, use <a class="underline text-[#00ff85]" href="/recovery.html">UPLOAD FULL BACKUP JSON</a> to restore the complete league. Payments are paused while recovery is required.</div>
+            <div class="text-[10px] mt-2 text-[#ffcc00]">Manual backups are temporary only. Use an external persistent database for reliable live operations.</div>
           </div>
         `;
         panel.appendChild(pbox);
@@ -1518,16 +1517,37 @@ async function loadAdminOverview() {
     const exportBtn = document.createElement('button');
     exportBtn.className = 'mt-3 px-4 py-1 text-xs bg-[#222] hover:bg-[#333] border border-[#444] rounded';
     exportBtn.textContent = 'DOWNLOAD FULL EXPORT (current-state + ledger + everything) → save offline';
-    exportBtn.onclick = () => {
-      const token = prompt('Enter your EXPORT_TOKEN:');
+    exportBtn.onclick = async () => {
+      const token = prompt('Enter your private EXPORT_TOKEN (from Render Environment):');
       if (!token) return;
-      const url = `/api/export/full?token=${encodeURIComponent(token)}`;
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `d-league-full-export-${Date.now()}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      try {
+        const response = await fetch('/api/export/full', {
+          headers: {
+            'x-export-token': token.trim(),
+            ...(currentToken ? { Authorization: 'Bearer ' + currentToken } : {})
+          },
+          cache: 'no-store'
+        });
+        if (!response.ok) throw new Error('Backup request rejected (HTTP ' + response.status + '). Check EXPORT_TOKEN.');
+        const data = await response.json();
+        if (!data || !Array.isArray(data.managers) ||
+            !Array.isArray(data.payments) || !Array.isArray(data.ledger) || !data.settings) {
+          throw new Error('Incomplete server export: refusing to save an invalid backup');
+        }
+        const filename = `d-league-full-export-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
+        const blobUrl = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+        alert('Full backup downloaded. Verify the file is stored outside Render.\n\n' +
+          data.managers.length + ' managers • ' + data.payments.length + ' payments • ' +
+          data.ledger.length + ' ledger records.\n\n' +
+          'Save a NEW backup after every payment or significant change.');
+      } catch (error) { alert('Backup FAILED: ' + (error.message || error)); }
     };
     panel.appendChild(exportBtn);
   } catch(e) { console.warn('admin overview failed', e); }
@@ -1591,6 +1611,10 @@ async function reconcileAndPersist() {
     alert('Reconcile failed: ' + (e.message || e) + ' — try the curl persistence-status instead.');
   }
 }
+
+// File picker is on a dedicated recovery page so it remains accessible even if
+// Render Free restarts with an empty datastore and ordinary APIs are paused.
+function openBackupFileRecovery() { window.open('/recovery.html', '_blank', 'noopener'); }
 
 async function restoreFromExportPrompt() {
   const jsonStr = prompt('Paste the FULL content of your previous export JSON here (the one you downloaded before the bad deploy). It must be valid JSON starting with { "managers": [...');
@@ -4415,7 +4439,24 @@ function renderFplTailored() {
         let results = [...h2hData.standings.results].sort((a,b) => (a.rank||999) - (b.rank||999));
         // H2H always shows fixtures for the *current* GW (not current+1/next). Matches the saved per-GW data from admin.
         const currentGw = (standingsData.currentRound && standingsData.currentRound.fpl) || 1;
-        const fixtures = (standingsData.h2hFixtures && standingsData.h2hFixtures[currentGw]) || {};
+        // Manual overrides take precedence; valid official data fills unassigned matchups.
+        const autoFixtures = (standingsData.h2hAutoFixtures && standingsData.h2hAutoFixtures[currentGw]) || {};
+        const manualFixtures = (standingsData.h2hFixtures && standingsData.h2hFixtures[currentGw]) || {};
+        // Avoid contradictory opponents when an admin overrides a pairing.
+        const manualParticipants = new Set([
+          ...Object.keys(manualFixtures), ...Object.values(manualFixtures).map(String)
+        ]);
+        const fixtures = {};
+        Object.entries(autoFixtures).forEach(([entry, opponent]) => {
+          if (!manualParticipants.has(String(entry)) && !manualParticipants.has(String(opponent))) {
+            fixtures[entry] = opponent;
+          }
+        });
+        Object.assign(fixtures, manualFixtures);
+        // Complete a one-sided manual override when its reverse is unassigned.
+        Object.entries(manualFixtures).forEach(([entry, opponent]) => {
+          if (opponent && !fixtures[String(opponent)]) fixtures[String(opponent)] = entry;
+        });
 
         // Map D-League managers by their FPL teamId (entry) for proper manager (club) names
         const mgrByTeamId = {};
@@ -4442,7 +4483,7 @@ function renderFplTailored() {
           const totalPts = (w * 3) + d;
 
           // Current fixture (H2H always shows current GW, not +1/next): resolve using fixtures map
-          let fixtureName = 'TBD';
+          let fixtureName = 'Not yet synced';
           let fixturePts = '';
           let oppKey = fixtures[tid];
           if (!oppKey) {
@@ -4498,7 +4539,13 @@ function renderFplTailored() {
           </div>`;
         });
         htmlList += `</div>`;
-        html = htmlList;
+        const syncStatus = (standingsData.h2hAutoSync && standingsData.h2hAutoSync[currentGw]) || null;
+        const source = Object.keys(manualFixtures).length ? 'Manual overrides + official FPL fixtures' : 'Official FPL fixtures';
+        const syncLine = syncStatus
+          ? (syncStatus.ok ? `${source} · Last sync: ${new Date(syncStatus.at).toLocaleString()}` :
+            `Official FPL sync unavailable · ${syncStatus.reason || 'Retry later'} · Existing fixtures retained`)
+          : 'Official FPL fixture sync pending';
+        html = `<div class="text-[10px] text-[#888] mb-2">${String(syncLine).replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch]))}</div>` + htmlList;
       } else {
         html = `H2H ID set (${lids.fplH2h}) — loading data...`;
       }
@@ -5044,6 +5091,26 @@ async function settleBeefWithSelected(beefId, selectElId) {
     if (typeof loadAdminOverview === 'function') loadAdminOverview();
   } catch (e) {
     alert('Settle failed: ' + (e.message || e));
+  }
+}
+
+async function adminSyncH2HFixtures() {
+  const currentGw = Number((standingsData && standingsData.currentRound && standingsData.currentRound.fpl) || 1);
+  const requested = prompt('Import official FPL H2H fixtures for which GW (1–38)?', String(currentGw));
+  if (requested === null) return;
+  const gw = Number(requested);
+  if (!Number.isInteger(gw) || gw < 1 || gw > 38) return alert('Enter a valid gameweek from 1 to 38.');
+  try {
+    const res = await fetchJSON('/api/admin/sync-h2h-fixtures', {
+      method: 'POST',
+      body: JSON.stringify({ gw })
+    });
+    if (!res.ok) return alert('H2H sync failed: ' + (res.reason || res.error || 'Unknown response'));
+    alert('Imported ' + res.matchCount + ' official FPL matchups for GW' + gw + '. Existing manual overrides kept.');
+    await loadStandings();
+    renderFplTailored();
+  } catch (e) {
+    alert('H2H sync unavailable: ' + (e.message || e) + '. Previously saved fixtures are unchanged.');
   }
 }
 
@@ -5768,3 +5835,21 @@ async function loadFplLeague() {
 }
 
 bootstrap();
+
+
+/** Show an unmistakable link to backup recovery whenever Render Free has lost data. */
+window.addEventListener('load', async () => {
+  try {
+    const response = await fetch('/api/recovery/status', { cache: 'no-store' });
+    if (!response.ok) return;
+    const status = await response.json();
+    if (!status.recoveryRequired) return;
+    const notice = document.createElement('div');
+    notice.setAttribute('role', 'alert');
+    notice.style.cssText = 'position:fixed;z-index:99999;top:0;left:0;right:0;background:#32220d;border-bottom:2px solid #ffc15e;color:#fff;padding:12px 18px;font:600 14px/1.5 system-ui;text-align:center;';
+    notice.innerHTML = 'DLeague is temporarily in BACKUP RECOVERY MODE. Live payments and changes are paused. ' +
+      '<a href="/recovery.html" style="color:#00ff85;text-decoration:underline;font-weight:900">COMMISSIONER: UPLOAD SAVED BACKUP</a>';
+    document.body.prepend(notice);
+    document.body.style.paddingTop = '68px';
+  } catch {}
+}, { once: true });

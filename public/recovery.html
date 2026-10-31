@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>DLeague — Backup Recovery</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #080a0a; color: #f4faf6; padding: 24px; }
+    main { max-width: 630px; width: 100%; padding: 28px; border: 1px solid #294233; background: #111714; border-radius: 18px; box-shadow: 0 20px 70px #0008; }
+    h1 { font-size: 29px; line-height: 1.1; margin: 12px 0; }
+    h2 { font-size: 17px; margin: 26px 0 12px; }
+    p { color: #a8bbae; line-height: 1.5; }
+    .brand { letter-spacing: 0.13em; color: #00ff85; font-weight: 900; }
+    label { display:block; font-size: 13px; margin: 14px 0 7px; color: #c7d8ce; }
+    input { display:block; width:100%; border:1px solid #44614d; border-radius:9px; background: #060a08; color:#fff; padding:12px; font-size:15px; }
+    button { cursor:pointer; padding:12px 16px; border:0; border-radius:9px; font-weight:700; background:#00ff85; color:#050a06; }
+    button:disabled { cursor:not-allowed; opacity:.5 }
+    .muted { font-size:12px; color:#9cb2a4 }
+    .notice { background:#213225; border:1px solid #49694c; border-radius:9px; padding:12px; margin:14px 0; }
+    .warn { background:#392a17; border-color:#c49b56; color:#ffe6bd; }
+    .status { font-size:14px; white-space:pre-wrap; margin-top:14px; }
+    .hidden { display:none; }
+    a { color:#00ff85; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">DLEAGUE / RECOVERY</div>
+    <h1>Restore the clubhouse safely</h1>
+    <p>This page is for the league commissioner only. Upload the full private JSON export saved <strong>before</strong> the deploy or reset. Managers, payments, ledger, scores and settings will be restored together.</p>
+    <div class="notice warn" id="service-status">Checking database recovery status…</div>
+    <h2>1. Authenticate as commissioner</h2>
+    <label for="email">Admin email</label>
+    <input id="email" type="email" autocomplete="username" value="bolade.oladejo@gmail.com">
+    <label for="password">Admin access code</label>
+    <input id="password" type="password" autocomplete="current-password" placeholder="Enter admin access code">
+    <label for="backup-secret">Private EXPORT_TOKEN from Render Environment</label>
+    <input id="backup-secret" type="password" autocomplete="off" placeholder="Enter EXPORT_TOKEN">
+    <h2>2. Select the complete backup</h2>
+    <label for="file">Your downloaded d-league-export-*.json</label>
+    <input id="file" type="file" accept=".json,application/json">
+    <div class="notice hidden" id="preview"></div>
+    <p class="muted">The file is transmitted directly to your DLeague server over HTTPS. It is never sent to GitHub. Maximum upload: 11 MB. If the current server has newer records, the restore is refused rather than discarding them.</p>
+    <button id="restore" disabled>Verify &amp; Restore Backup</button>
+    <div class="status" id="result" role="status" aria-live="polite"></div>
+    <p class="muted"><a href="/">Return to DLeague</a>. On Render Free, local data can disappear on every spin-down or restart. Consider external permanent storage when ready.</p>
+  </main>
+  <script src="/recovery.js" defer></script>
+</body>
+</html>
