@@ -1,5 +1,42 @@
 # D League Clubhouse — Deployment Guide
 
+## CRITICAL: Protect paid DLeague records before any production deploy
+
+DLeague is a live, funded league. **A code rollback does NOT restore missing database records.**
+Render only retains SQLite and JSON changes across deployments when the actual web service
+has a paid persistent disk attached at exactly the directory used by `DATA_DIR`.
+The checked-in `render.yaml` is not proof that a manually created Render service has a disk.
+
+1. In the production Render dashboard, verify the web service is Starter (or higher), its
+   **Disk** is mounted at `/app/data`, and **Environment** includes `DATA_DIR=/app/data`.
+   Never switch the service to Free; Free has no persistent disk.
+2. In DLeague Admin, use **DOWNLOAD FULL EXPORT** and store the downloaded JSON file
+   **outside Render**, in a secure private location. Confirm the JSON contains the expected
+   counts for `managers`, `payments` and `ledger`. Exports may include sensitive
+   manager information and access codes: **never commit them to GitHub**.
+3. Compare the Admin **PERSISTENCE HEALTH** panel values for DB managers, sidecar
+   managers, backup managers and atomic collections. Investigate any unexpectedly low value.
+   Never click restore without verifying which snapshot is actually current.
+4. The production boot has a *read-only data floor gate*. By default, it refuses to
+   boot with fewer than **2 managers**, **1 payment**, or **1 ledger entry** in the surviving
+   SQLite/sidecar/atomic/backup files. This stops a new blank directory from silently
+   serving an admin-only league. It cannot recover a missing disk or replace off-host backups.
+   For stronger protection, set Render Environment variables
+   `DLEAGUE_MIN_MANAGERS`, `DLEAGUE_MIN_PAYMENTS`, and `DLEAGUE_MIN_LEDGER`
+   to conservative counts from the verified export before merging/deploying. These are
+   *minimums*, not secret values. To intentionally initialize a new league, explicitly
+   set all three to `0`, after ensuring you are not wiping production data.
+5. If a deployment is rejected with `[DATA PROTECTION]`, **do not bypass the guard**.
+   Confirm the disk mount, directory and source of truth, restore records from a verified
+   off-host export if necessary, and only retry after the preflight passes.
+6. After deployment, confirm that managers, payments, ledger and H2H data still match
+   the pre-deploy baseline. Only then resume administration.
+
+**IMPORTANT:** A cron pinger or uptime monitor cannot make an ephemeral filesystem persistent.
+A backup saved to the same ephemeral Render filesystem can disappear with it.
+
+---
+
 ## Production Checklist
 
 1. Set `DEMO_MODE=false`
