@@ -1354,7 +1354,7 @@ async function loadAdminOverview() {
           <div class="mt-1">Sample emails: ${emails || '(none)'}</div>
           <div class="mt-1 text-[#888]">Last: ${pstatus.sidecarLastPersisted || 'unknown'}</div>
           <button onclick="reconcileAndPersist()" class="mt-2 px-3 py-1 bg-[#ffcc00] text-black rounded text-xs font-bold">FORCE RECONCILE (rarely needed)</button>
-          <button onclick="restoreFromExportPrompt()" class="mt-2 ml-2 px-3 py-1 bg-blue-600 text-white rounded text-xs font-bold">RESTORE FROM MY PREVIOUS EXPORT JSON</button>
+          <button onclick="window.open('/recovery.html','_blank','noopener')" class="mt-2 ml-2 px-3 py-1 bg-blue-600 text-white rounded text-xs font-bold">UPLOAD FULL BACKUP JSON (FILE)</button>
           <button onclick="restoreFromBestBackup()" class="mt-2 ml-2 px-3 py-1 bg-emerald-600 text-white rounded text-xs font-bold">RESTORE FROM BEST BACKUP ON DISK (no paste)</button>
 
           <div class="mt-3 pt-2 border-t border-[#333]">
@@ -1519,16 +1519,37 @@ async function loadAdminOverview() {
     const exportBtn = document.createElement('button');
     exportBtn.className = 'mt-3 px-4 py-1 text-xs bg-[#222] hover:bg-[#333] border border-[#444] rounded';
     exportBtn.textContent = 'DOWNLOAD FULL EXPORT (current-state + ledger + everything) → save offline';
-    exportBtn.onclick = () => {
-      const token = prompt('Enter your EXPORT_TOKEN:');
+    exportBtn.onclick = async () => {
+      const token = prompt('Enter your private EXPORT_TOKEN (from Render Environment):');
       if (!token) return;
-      const url = `/api/export/full?token=${encodeURIComponent(token)}`;
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `d-league-full-export-${Date.now()}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      try {
+        const response = await fetch('/api/export/full', {
+          headers: {
+            'x-export-token': token.trim(),
+            ...(currentToken ? { Authorization: 'Bearer ' + currentToken } : {})
+          },
+          cache: 'no-store'
+        });
+        if (!response.ok) throw new Error('Backup request rejected (HTTP ' + response.status + '). Check EXPORT_TOKEN.');
+        const data = await response.json();
+        if (!data || !Array.isArray(data.managers) ||
+            !Array.isArray(data.payments) || !Array.isArray(data.ledger) || !data.settings) {
+          throw new Error('Incomplete server export: refusing to save an invalid backup');
+        }
+        const filename = `d-league-full-export-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
+        const blobUrl = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+        alert('Full backup downloaded. Verify the file is stored outside Render.\n\n' +
+          data.managers.length + ' managers • ' + data.payments.length + ' payments • ' +
+          data.ledger.length + ' ledger records.\n\n' +
+          'Save a NEW backup after every payment or significant change.');
+      } catch (error) { alert('Backup FAILED: ' + (error.message || error)); }
     };
     panel.appendChild(exportBtn);
   } catch(e) { console.warn('admin overview failed', e); }
@@ -1592,6 +1613,10 @@ async function reconcileAndPersist() {
     alert('Reconcile failed: ' + (e.message || e) + ' — try the curl persistence-status instead.');
   }
 }
+
+// File picker is on a dedicated recovery page so it remains accessible even if
+// Render Free restarts with an empty datastore and ordinary APIs are paused.
+function openBackupFileRecovery() { window.open('/recovery.html', '_blank', 'noopener'); }
 
 async function restoreFromExportPrompt() {
   const jsonStr = prompt('Paste the FULL content of your previous export JSON here (the one you downloaded before the bad deploy). It must be valid JSON starting with { "managers": [...');
