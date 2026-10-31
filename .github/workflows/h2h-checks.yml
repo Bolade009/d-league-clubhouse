@@ -12,6 +12,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - run: npm ci --omit=dev
       - run: node --check server.js
       - run: node --check public/app.js
       - run: node --check h2h-fixtures.js
