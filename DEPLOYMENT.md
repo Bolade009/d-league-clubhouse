@@ -18,6 +18,9 @@ persistent disk) for reliable operation. Do NOT rely on a 5-minute pinger.
    web service → Environment, set:
    - `DLEAGUE_EPHEMERAL_RECOVERY=true`
    - `EXPORT_TOKEN` to a long private secret (required for upload and export).
+   - `ADMIN_ACCESS_CODE` to a NEW strong, private commissioner login code. The
+     old code is hardcoded in the public repository, so it should be rotated.
+     Use this new code for the recovery page after deployment.
    - Optional: `DLEAGUE_MIN_MANAGERS`, `DLEAGUE_MIN_PAYMENTS`, `DLEAGUE_MIN_LEDGER`
      to the actual verified counts, to detect partial data loss.
    - Leave `DEMO_MODE=false` and existing Paystack settings as they are.
