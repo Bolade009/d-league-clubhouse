@@ -1349,8 +1349,9 @@ function requireSyncAuth(req, res, next) {
 function requireExportAuth(req, res, next) {
   if (DEMO_MODE) return next();
   const token = req.headers["x-export-token"] || req.query.token;
-  if (EXPORT_TOKEN && token !== EXPORT_TOKEN) {
-    return res.status(403).json({ error: "Invalid export token" });
+  // Never disclose personal/financial backup data if a deployment omitted its export secret.
+  if (!EXPORT_TOKEN || token !== EXPORT_TOKEN) {
+    return res.status(403).json({ error: "Valid EXPORT_TOKEN required" });
   }
   next();
 }
@@ -6978,6 +6979,7 @@ async function boot() {
     // Periodic every 30 min to catch GW/MD conclusion
     setInterval(async () => {
       try {
+        if (recoveryRequired) return;
         console.log('[AUTO SYNC] Running periodic refresh and settle...');
         await syncFPL();
         await syncUCL();
