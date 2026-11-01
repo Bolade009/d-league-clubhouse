@@ -16,7 +16,7 @@ async function freePort() {
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-test('Render Free empty disk enters recovery, blocks live APIs and restores full state via upload', { timeout: 25000 }, async t => {
+test('Render Free empty disk starts normally and still allows full backup upload', { timeout: 25000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dleague-restore-'));
   const port = await freePort();
   const base = 'http://127.0.0.1:' + port;
@@ -50,12 +50,12 @@ test('Render Free empty disk enters recovery, blocks live APIs and restores full
   let response = await fetch(base+'/api/recovery/status');
   assert.equal(response.status,200);
   let status = await response.json();
-  assert.equal(status.recoveryRequired,true);
+  assert.equal(status.recoveryRequired,false);
 
   response = await fetch(base+'/api/community');
-  assert.equal(response.status,503);
+  assert.equal(response.status,200,'Normal league API must be accessible with an empty DB');
   response = await fetch(base+'/api/paystack/webhook', {method:'POST', headers:{'Content-Type':'application/json'},body:JSON.stringify({event:'charge.success'})});
-  assert.equal(response.status,503);
+  assert.notEqual(response.status,503,'No recovery-mode shutdown of payment API');
 
   const backup = {
     managers:[
@@ -78,7 +78,7 @@ test('Render Free empty disk enters recovery, blocks live APIs and restores full
   const login=await loginResponse.json();
   assert.ok(login.token);
   response=await fetch(base+'/api/export/full',{headers:{'x-export-token':'TEST_ONLY_EXPORT_TOKEN'}});
-  assert.equal(response.status,409,'Must refuse downloading empty recovery-mode backups');
+  assert.equal(response.status,200,'Normal export route must be available');
   response = await fetch(base+'/api/admin/restore-from-export', {
     method:'POST',headers:{'Authorization':'Bearer '+login.token,'Content-Type':'application/json'},
     body:JSON.stringify({data:backup})
@@ -107,5 +107,5 @@ test('Render Free empty disk enters recovery, blocks live APIs and restores full
   assert.ok(restored.payments.some(x=>x.id==='payment_test_1'));
   assert.ok(restored.ledger.some(x=>x.id==='ledger_test_1'));
   assert.ok(restored.managers.some(x=>x.id==='mgr_test_beta'));
-  console.log('RECOVERY INTEGRATION: empty disk -> 503 maintenance -> upload -> 3 managers, 1 payment, 1 ledger, settings intact');
+  console.log('RESTORE INTEGRATION: empty disk starts normally -> upload -> 3 managers, 1 payment, 1 ledger, settings intact');
 });
